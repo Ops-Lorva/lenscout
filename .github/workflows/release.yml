@@ -1,0 +1,377 @@
+name: Release
+
+# Un tag `vX.Y.Z` construit, signe et publie les trois plateformes.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build Linux (.deb)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i.bak "s/^version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml && rm Cargo.toml.bak
+          sed -i.bak "s/\"version\": \"0\.0\.0\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libdbus-1-dev libssl-dev pkg-config build-essential file
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Tauri build
+        env:
+          NO_STRIP: "true"
+        run: npx tauri build --bundles deb
+
+      - name: Collect artifacts
+        id: artifacts
+        env:
+          TAG_RAW: ${{ github.ref_name }}
+        run: |
+          TAG="$TAG_RAW"
+          set -e
+          DEB=$(find target/release/bundle/deb -name "*.deb" | head -1)
+          cp "$DEB" "lenscout_${TAG}_amd64.deb"
+          echo "deb=lenscout_${TAG}_amd64.deb" >> "$GITHUB_OUTPUT"
+
+      # Signature minisign de l'asset publié (vérifiée par l'updater avant de
+      # lancer l'installeur). Génère lenscout_<TAG>_amd64.deb.sig.
+      - name: Sign artifact (minisign)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri signer sign "${{ steps.artifacts.outputs.deb }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: |
+            ${{ steps.artifacts.outputs.deb }}
+            ${{ steps.artifacts.outputs.deb }}.sig
+          retention-days: 1
+
+
+  build-windows:
+    name: Build Windows (NSIS .exe)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i.bak "s/^version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml && rm Cargo.toml.bak
+          sed -i.bak "s/\"version\": \"0\.0\.0\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Tauri build
+        run: npx tauri build
+
+      - name: Collect artifact
+        id: artifacts
+        shell: bash
+        env:
+          TAG_RAW: ${{ github.ref_name }}
+        run: |
+          TAG="$TAG_RAW"
+          set -e
+          NSIS=$(find target/release/bundle/nsis -name "*-setup.exe" | head -1)
+          DEST="lenscout_${TAG}_x64-setup.exe"
+          cp "$NSIS" "$DEST"
+          echo "exe=$DEST" >> "$GITHUB_OUTPUT"
+
+      # Signature minisign de l'installeur (vérifiée par l'updater avant lancement).
+      - name: Sign artifact (minisign)
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri signer sign "${{ steps.artifacts.outputs.exe }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            ${{ steps.artifacts.outputs.exe }}
+            ${{ steps.artifacts.outputs.exe }}.sig
+          retention-days: 1
+
+
+  build-macos:
+    name: Build macOS universal DMG + PKG
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i.bak "s/^version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml && rm Cargo.toml.bak
+          sed -i.bak "s/\"version\": \"0\.0\.0\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup Rust (arm64 + x64 targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Import Apple signing certificates (app + installer)
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+        run: |
+          set -e
+          KEYCHAIN=build.keychain
+          KEYCHAIN_PWD=$(openssl rand -base64 24)
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+
+          # Developer ID Application (pour codesign du .app).
+          # `-A` autorise n'importe quel binaire à utiliser la clé privée sans
+          # prompt ACL — indispensable en CI sans session GUI, et safe ici
+          # puisque le keychain est éphémère et détruit à la fin du job.
+          echo "$APPLE_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -A
+          rm /tmp/cert.p12
+
+          # Developer ID Installer (pour signer le .pkg avec pkgbuild --sign).
+          echo "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > /tmp/installer.p12
+          security import /tmp/installer.p12 -k "$KEYCHAIN" -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" -A
+          rm /tmp/installer.p12
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign:,productsign:,productbuild:,pkgbuild: -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN"
+
+          echo "=== codesigning identities ==="
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          echo "=== all identities ==="
+          security find-identity -v "$KEYCHAIN"
+
+      - name: Build & sign Tauri app + DMG (universal)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # Tauri code-signe le .app, le notarise et le staple, puis produit le
+        # DMG à partir du .app déjà stapled. On réutilise ce .app pour le .pkg.
+        run: npx tauri build --target universal-apple-darwin --bundles app,dmg --verbose
+
+      - name: Build signed .pkg
+        id: pkg
+        env:
+          TAG_RAW: ${{ github.ref_name }}
+        run: |
+          TAG="$TAG_RAW"
+          set -e
+          APP_PATH=$(ls -d target/universal-apple-darwin/release/bundle/macos/*.app | head -1)
+          echo "app: $APP_PATH"
+
+          # Identité Developer ID Installer — extraite dynamiquement du keychain
+          # pour ne pas dépendre d'un secret supplémentaire.
+          INSTALLER_ID=$(security find-identity -v | grep "Developer ID Installer" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$INSTALLER_ID" ]; then
+            echo "Developer ID Installer cert introuvable dans le keychain"
+            security find-identity -v
+            exit 1
+          fi
+          echo "installer identity: $INSTALLER_ID"
+
+          # pkgbuild avec --root <dossier> copie tout le contenu du dossier
+          # à --install-location. Aucun script d'installation : Lenscout pose
+          # lui-même ses réglages système, à la demande.
+          PKG_ROOT=$(mktemp -d)
+          cp -R "$APP_PATH" "$PKG_ROOT/"
+
+          SIGNED_PKG="lenscout_${TAG}_universal.pkg"
+
+          # Générer un component-plist et forcer BundleIsRelocatable=NO —
+          # sinon macOS Installer cherche un Lenscout.app existant ailleurs
+          # sur le disque et install "en place" au lieu de /Applications,
+          # ce qui laissait le .pkg apparemment sans effet chez l'utilisateur.
+          COMPONENT_PLIST="$(mktemp).plist"
+          pkgbuild --analyze --root "$PKG_ROOT" "$COMPONENT_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$COMPONENT_PLIST"
+          cat "$COMPONENT_PLIST"
+
+          pkgbuild \
+            --root "$PKG_ROOT" \
+            --component-plist "$COMPONENT_PLIST" \
+            --install-location /Applications \
+            --identifier io.lenscout.app.pkg \
+            --version "${TAG#v}" \
+            --sign "$INSTALLER_ID" \
+            "$SIGNED_PKG"
+
+          rm -rf "$PKG_ROOT" "$COMPONENT_PLIST"
+          pkgutil --check-signature "$SIGNED_PKG"
+          pkgutil --payload-files "$SIGNED_PKG" | head -20
+
+          echo "pkg=$SIGNED_PKG" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize .pkg
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PKG: ${{ steps.pkg.outputs.pkg }}
+        run: |
+          set -e
+          xcrun notarytool submit "$PKG" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_PASSWORD" \
+            --wait
+          xcrun stapler staple "$PKG"
+          xcrun stapler validate "$PKG"
+
+      - name: Collect artifacts (DMG + PKG)
+        id: artifacts
+        env:
+          TAG_RAW: ${{ github.ref_name }}
+          PKG: ${{ steps.pkg.outputs.pkg }}
+        run: |
+          TAG="$TAG_RAW"
+          set -e
+          DMG_ORIG=$(ls target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          DMG_DEST="lenscout_${TAG}_universal.dmg"
+          cp "$DMG_ORIG" "$DMG_DEST"
+          shasum -a 256 "$DMG_DEST" > "${DMG_DEST}.sha256"
+          shasum -a 256 "$PKG"      > "${PKG}.sha256"
+          echo "dmg=$DMG_DEST" >> "$GITHUB_OUTPUT"
+          echo "dmg_sha=${DMG_DEST}.sha256" >> "$GITHUB_OUTPUT"
+          echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
+          echo "pkg_sha=${PKG}.sha256" >> "$GITHUB_OUTPUT"
+
+      # Signature minisign du .pkg (celui que l'updater télécharge et vérifie).
+      # Après notarisation/staple : le staple modifie le .pkg, on signe la
+      # version finale. Le DMG est signé aussi, pour la distribution directe.
+      - name: Sign artifact (minisign)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npx tauri signer sign "${{ steps.artifacts.outputs.pkg }}"
+          npx tauri signer sign "${{ steps.artifacts.outputs.dmg }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: |
+            ${{ steps.artifacts.outputs.dmg }}
+            ${{ steps.artifacts.outputs.dmg }}.sig
+            ${{ steps.artifacts.outputs.dmg_sha }}
+            ${{ steps.artifacts.outputs.pkg }}
+            ${{ steps.artifacts.outputs.pkg }}.sig
+            ${{ steps.artifacts.outputs.pkg_sha }}
+          retention-days: 1
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+
+      - name: Flatten
+        run: |
+          mkdir -p release
+          find dist -type f -exec cp {} release/ \;
+          ls -lh release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: release/*
+          generate_release_notes: true

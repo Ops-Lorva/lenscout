@@ -1,4 +1,5 @@
 mod commands;
+mod updater;
 
 use commands::accounts::{
     StartupNotice, cmd_account_create, cmd_account_remove, cmd_account_update, cmd_accounts_list,
@@ -6,6 +7,7 @@ use commands::accounts::{
 };
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
 use commands::stream::{StreamState, cmd_stream_ack, cmd_stream_start, cmd_stream_stop};
+use commands::update::{cmd_apply_update, cmd_check_update};
 use commands::app::{cmd_app_version, cmd_interface_details, cmd_list_interfaces};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_scan_start};
 use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
@@ -62,6 +64,8 @@ pub fn run() {
             cmd_stream_start,
             cmd_stream_stop,
             cmd_stream_ack,
+            cmd_check_update,
+            cmd_apply_update,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de Lenscout")
