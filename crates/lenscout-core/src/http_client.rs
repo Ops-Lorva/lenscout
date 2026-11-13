@@ -67,6 +67,9 @@ impl ReqwestCameraHttp {
             // Une caméra neuve sert son HTTPS avec un certificat auto-signé :
             // il n'existe aucune autorité à laquelle la rattacher.
             .danger_accept_invalid_certs(true)
+            // Jamais de proxy : les variables HTTP(S)_PROXY du poste ne doivent
+            // voir passer ni le trafic des caméras ni leurs réponses Digest.
+            .no_proxy()
             .build()
             .expect("client HTTP");
         Self { client, timeout }
