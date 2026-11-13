@@ -140,7 +140,13 @@ fn short(text: &str) -> String {
 fn require_text_ok(resp: &HttpResponse) -> Result<(), VapixError> {
     require_success(resp)?;
     let body = String::from_utf8_lossy(&resp.body);
-    if body.contains("Error") {
+    // Seule une ligne qui commence par `# Error` (param.cgi) ou `Error`
+    // (pwdgrp.cgi, « Error: invalid password. ») est un échec.
+    let failed = body
+        .lines()
+        .map(str::trim_start)
+        .any(|l| l.starts_with("# Error") || l.starts_with("Error"));
+    if failed {
         return Err(VapixError::Rejected(short(&body)));
     }
     Ok(())
@@ -305,6 +311,48 @@ pub async fn activate(
 /// Une coupure après l'envoi (la caméra quitte son adresse) n'est pas une
 /// erreur : le rescan confirmera. Seule une connexion impossible (rien n'est
 /// parti) ou un refus d'authentification en sont.
+/// Refuse avant l'envoi ce qu'une caméra n'appliquerait pas ou qui la rendrait
+/// injoignable.
+fn validate_static(
+    ip: Ipv4Addr,
+    mask: Ipv4Addr,
+    gateway: Option<Ipv4Addr>,
+    dns: &[Ipv4Addr],
+) -> Result<(), VapixError> {
+    let reject = |m: &str| Err(VapixError::Rejected(m.to_string()));
+    let m = u32::from(mask);
+    if m.leading_ones() + m.trailing_zeros() != 32 {
+        return reject("masque invalide");
+    }
+    if m.leading_ones() == 0 || m.leading_ones() >= 31 {
+        return reject("masque /0, /31 ou /32 refusé");
+    }
+    let a = u32::from(ip);
+    if ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_multicast()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+    {
+        return reject("adresse IP non utilisable");
+    }
+    if a & m == a || a | !m == a {
+        return reject("adresse réseau ou broadcast refusée");
+    }
+    if let Some(gw) = gateway {
+        if gw == ip {
+            return reject("passerelle identique à l'IP");
+        }
+        if u32::from(gw) & m != a & m {
+            return reject("passerelle hors du sous-réseau");
+        }
+    }
+    if dns.len() > 2 {
+        return reject("2 DNS au plus");
+    }
+    Ok(())
+}
+
 pub async fn set_network(
     http: &dyn CameraHttp,
     base: &str,
@@ -320,14 +368,15 @@ pub async fn set_network(
             gateway,
             dns,
         } => {
+            validate_static(*ip, *mask, *gateway, dns)?;
             body.push_str(&format!(
                 "&Network.BootProto=none&Network.IPAddress={ip}&Network.SubnetMask={mask}"
             ));
             if let Some(gw) = gateway {
                 body.push_str(&format!("&Network.DefaultRouter={gw}"));
             }
-            // La caméra n'a que deux emplacements DNS.
-            for (i, server) in dns.iter().take(2).enumerate() {
+            // La caméra n'a que deux emplacements DNS (`validate_static`).
+            for (i, server) in dns.iter().enumerate() {
                 body.push_str(&format!("&Network.DNSServer{}={server}", i + 1));
             }
         }
@@ -710,6 +759,131 @@ mod tests {
             .await,
             Err(VapixError::Net(NetError::Auth))
         ));
+    }
+
+    fn ip(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
+
+    fn static_net(addr: &str, mask: &str, gw: Option<&str>, dns: &[&str]) -> NetworkSettings {
+        NetworkSettings::Static {
+            ip: ip(addr),
+            mask: ip(mask),
+            gateway: gw.map(ip),
+            dns: dns.iter().map(|d| ip(d)).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_static_settings_are_rejected_without_sending() {
+        let cases = [
+            (
+                "masque non contigu",
+                static_net("10.0.50.11", "255.0.255.0", None, &[]),
+            ),
+            ("masque /0", static_net("10.0.50.11", "0.0.0.0", None, &[])),
+            (
+                "masque /31",
+                static_net("10.0.50.11", "255.255.255.254", None, &[]),
+            ),
+            (
+                "masque /32",
+                static_net("10.0.50.11", "255.255.255.255", None, &[]),
+            ),
+            (
+                "IP 0.0.0.0",
+                static_net("0.0.0.0", "255.255.255.0", None, &[]),
+            ),
+            (
+                "IP loopback",
+                static_net("127.0.0.1", "255.255.255.0", None, &[]),
+            ),
+            (
+                "IP multicast",
+                static_net("224.0.0.5", "255.255.255.0", None, &[]),
+            ),
+            (
+                "IP link-local",
+                static_net("169.254.10.5", "255.255.0.0", None, &[]),
+            ),
+            (
+                "adresse réseau",
+                static_net("10.0.50.0", "255.255.255.0", None, &[]),
+            ),
+            (
+                "broadcast",
+                static_net("10.0.50.255", "255.255.255.0", None, &[]),
+            ),
+            (
+                "passerelle hors sous-réseau",
+                static_net("10.0.50.11", "255.255.255.0", Some("10.0.51.1"), &[]),
+            ),
+            (
+                "passerelle = IP",
+                static_net("10.0.50.11", "255.255.255.0", Some("10.0.50.11"), &[]),
+            ),
+            (
+                "3 DNS",
+                static_net(
+                    "10.0.50.11",
+                    "255.255.255.0",
+                    None,
+                    &["10.0.50.1", "10.0.50.2", "10.0.50.3"],
+                ),
+            ),
+        ];
+        let http = FakeHttp::new().on(Method::Post, "/axis-cgi/param.cgi", 200, "OK");
+        for (name, net) in cases {
+            let err = set_network(&http, BASE, &creds("root", "x"), &net)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, VapixError::Rejected(m) if !m.contains('\n')),
+                "{name}: {err:?}"
+            );
+        }
+        assert!(http.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn valid_static_settings_pass_validation() {
+        let http = FakeHttp::new().on(Method::Post, "/axis-cgi/param.cgi", 200, "OK");
+        for net in [
+            static_net(
+                "10.0.50.11",
+                "255.255.255.0",
+                Some("10.0.50.1"),
+                &["10.0.50.1", "10.0.50.2"],
+            ),
+            static_net("10.0.50.11", "255.255.254.0", Some("10.0.51.1"), &[]),
+            static_net("10.0.50.10", "255.255.255.252", None, &[]),
+        ] {
+            set_network(&http, BASE, &creds("root", "x"), &net)
+                .await
+                .unwrap();
+        }
+        assert_eq!(http.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn pwdgrp_style_error_line_is_rejected_but_mid_text_error_is_not() {
+        let http = FakeHttp::new().on(
+            Method::Post,
+            "/axis-cgi/pwdgrp.cgi",
+            200,
+            "Error: invalid password.",
+        );
+        assert!(matches!(
+            activate(&http, BASE, &creds("root", "x")).await,
+            Err(VapixError::Rejected(_))
+        ));
+        let http = FakeHttp::new().on(
+            Method::Post,
+            "/axis-cgi/pwdgrp.cgi",
+            200,
+            "Created account root. (No Error)",
+        );
+        assert!(activate(&http, BASE, &creds("root", "x")).await.is_ok());
     }
 
     fn time(servers: &[&str]) -> TimeSettings {

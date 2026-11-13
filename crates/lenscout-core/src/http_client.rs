@@ -51,6 +51,7 @@ fn choose_auth<'a>(https: bool, challenges: &[&'a str]) -> AuthChoice<'a> {
 
 pub struct ReqwestCameraHttp {
     client: Client,
+    timeout: Duration,
 }
 
 impl ReqwestCameraHttp {
@@ -68,7 +69,7 @@ impl ReqwestCameraHttp {
             .danger_accept_invalid_certs(true)
             .build()
             .expect("client HTTP");
-        Self { client }
+        Self { client, timeout }
     }
 
     fn build(
@@ -95,6 +96,27 @@ impl ReqwestCameraHttp {
         Ok(b)
     }
 
+    /// Ouvre et referme une connexion TCP avant la requête. reqwest ne sait
+    /// pas dire si un délai est tombé pendant la connexion ou pendant la
+    /// lecture (même erreur `TimedOut`) ; or « rien n'est parti » (`Unreachable`)
+    /// et « la requête est partie, la caméra se tait » (`Timeout`) n'ont pas le
+    /// même sens pour `vapix::set_network`.
+    async fn check_connect(&self, url: &str) -> Result<(), NetError> {
+        let unreachable = || NetError::Unreachable("connexion impossible".into());
+        let Ok(url) = Url::parse(url) else {
+            return Ok(());
+        };
+        let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
+            return Ok(());
+        };
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        match tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect((host, port))).await
+        {
+            Ok(Ok(_)) => Ok(()),
+            _ => Err(unreachable()),
+        }
+    }
+
     /// Requête sans `Authorization`, puis, sur 401, une seule relance avec la
     /// réponse au défi. Un second 401 est un refus d'authentification.
     async fn execute(
@@ -102,6 +124,7 @@ impl ReqwestCameraHttp {
         req: &HttpRequest,
         creds: Option<&Credentials>,
     ) -> Result<reqwest::Response, NetError> {
+        self.check_connect(&req.url).await?;
         let first = self.build(req, None)?.send().await.map_err(map_err)?;
         if first.status().as_u16() != 401 {
             return Ok(first);
@@ -169,10 +192,12 @@ fn answer_challenge(
 
 /// Le message n'est jamais celui de reqwest tel quel : il embarque l'URL.
 fn map_err(e: reqwest::Error) -> NetError {
-    if e.is_timeout() {
-        NetError::Timeout
-    } else if e.is_connect() {
+    // Une connexion qui échoue, délai compris, n'a rien envoyé : `Unreachable`.
+    // Seul un délai de lecture (requête déjà partie) est un `Timeout`.
+    if e.is_connect() {
         NetError::Unreachable("connexion impossible".into())
+    } else if e.is_timeout() {
+        NetError::Timeout
     } else {
         NetError::Io(e.without_url().to_string())
     }
@@ -263,6 +288,10 @@ mod tests {
                             Ok(0) | Err(_) => break,
                             Ok(n) => raw.extend_from_slice(&buf[..n]),
                         }
+                    }
+                    if raw.is_empty() {
+                        // Simple test de connexion (`check_connect`), pas une requête.
+                        continue;
                     }
                     let text = String::from_utf8_lossy(&raw).into_owned();
                     let n = {
@@ -427,6 +456,20 @@ mod tests {
         let err = client().send(get(server.url("/")), None).await.unwrap_err();
         assert!(matches!(err, NetError::Auth), "{err:?}");
         assert_eq!(server.request_count(), 1);
+    }
+
+    /// Une connexion qui échoue (délai compris) n'a rien envoyé : c'est
+    /// `Unreachable`, jamais `Timeout`, que `vapix::set_network` lirait
+    /// comme « la caméra a changé d'adresse ». 192.0.2.0/24 (TEST-NET-1)
+    /// n'est routée nulle part.
+    #[tokio::test]
+    async fn connect_failure_is_unreachable_not_timeout() {
+        let http = ReqwestCameraHttp::new(Duration::from_millis(300));
+        let err = http
+            .send(get("http://192.0.2.1/".into()), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::Unreachable(_)), "{err:?}");
     }
 
     #[tokio::test]
