@@ -8,7 +8,6 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::secret::Secret;
 use crate::transport::{
     ByteStream, CameraHttp, Credentials, Datagram, HttpRequest, HttpResponse, Method, NetError,
 };
@@ -158,6 +157,7 @@ impl Datagram for FakeDatagram {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secret::Secret;
 
     #[tokio::test]
     async fn fake_http_records_requests_without_password() {

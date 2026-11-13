@@ -625,7 +625,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn LOWER_UP_is_not_the_UP_flag() {
+    fn lower_up_is_not_the_up_flag() {
         // ⚠️ Le piège du `contains` : « LOWER_UP » porte « UP » en sous-chaîne.
         // On compare drapeau par drapeau, jamais par inclusion de texte.
         let sans_up = "9: eth1: <BROADCAST,MULTICAST,LOWER_UP> mtu 1500 qdisc noop state DOWN mode DEFAULT";
@@ -754,7 +754,7 @@ utun3: flags=8051<UP,POINTOPOINT,MULTICAST> mtu 1380
     #[test]
     fn test_list_interfaces_returns_vec() {
         let interfaces = list_interfaces();
-        assert!(interfaces.len() >= 0);
+        assert!(interfaces.iter().all(|name| !name.is_empty()));
     }
 
     #[test]

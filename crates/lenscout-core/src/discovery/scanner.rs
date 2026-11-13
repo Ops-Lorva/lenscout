@@ -20,7 +20,7 @@ use super::arp::{ArpSource, ScanInterface};
 use super::{mdns, wsd};
 use crate::model::{Activation, Camera, Family, Sighting, Source};
 use crate::oui::camera_brand_for_mac;
-use crate::transport::{CameraHttp, Datagram};
+use crate::transport::{CameraHttp, Datagram, NetError};
 use crate::vapix;
 
 /// Instants d'envoi de la requête, depuis le début de l'écoute : un paquet
@@ -37,10 +37,24 @@ pub trait Probe: Send + Sync {
     fn group(&self) -> SocketAddrV4;
     fn build(&self) -> Vec<u8>;
     fn parse(&self, packet: &[u8], src: Ipv4Addr) -> Vec<Sighting>;
+    /// Le socket se lie-t-il au port du groupe ? Non pour un protocole dont la
+    /// réponse revient en unicast sur le port source.
+    fn bind_group_port(&self) -> bool {
+        true
+    }
 }
 
 pub struct MdnsProbe;
 pub struct WsdProbe;
+
+/// Ouvre le socket qui convient à la sonde sur l'interface choisie.
+pub fn open_probe_socket(probe: &dyn Probe, iface: &ScanInterface) -> std::io::Result<Arc<dyn Datagram>> {
+    Ok(if probe.bind_group_port() {
+        Arc::new(super::socket::open_multicast(iface, probe.group())?)
+    } else {
+        Arc::new(super::socket::open_ephemeral(iface)?)
+    })
+}
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -59,7 +73,7 @@ pub struct ScanConfig {
 /// Ce que les tâches de fond rapportent à la boucle principale.
 enum Event {
     Seen(Sighting),
-    Enriched { ip: Ipv4Addr, info: Option<vapix::DeviceInfo>, activation: Activation },
+    Enriched { idx: usize, ip: Ipv4Addr, info: Option<vapix::DeviceInfo>, activation: Activation },
 }
 
 fn source_name(s: Source) -> &'static str {
@@ -103,8 +117,14 @@ async fn send_loop(probe: Arc<dyn Probe>, dg: Arc<dyn Datagram>, start: Instant)
     }
 }
 
-/// Lit les réponses jusqu'à la première erreur (le vrai socket n'en rend
-/// qu'en cas de panne ; le faux, quand il n'a plus rien à rejouer).
+/// Erreurs de lecture consécutives après lesquelles on abandonne la sonde.
+const MAX_RECV_ERRORS: usize = 20;
+
+/// Lit les réponses. Une erreur de lecture n'arrête pas la sonde : sous
+/// Windows, un ICMP « port inaccessible » en réponse à un de nos envois
+/// remonte en `WSAECONNRESET` sur le prochain `recv`. `Timeout` (le faux n'a
+/// plus rien à rejouer ; le vrai socket n'en rend pas) et `Cancelled` y mettent
+/// fin, de même qu'une panne persistante (`MAX_RECV_ERRORS` de suite).
 async fn recv_loop(
     probe: Arc<dyn Probe>,
     dg: Arc<dyn Datagram>,
@@ -112,7 +132,23 @@ async fn recv_loop(
     capture_dir: Option<PathBuf>,
 ) {
     let mut buf = vec![0u8; RECV_BUF];
-    while let Ok((n, from)) = dg.recv_from(&mut buf).await {
+    let mut errors = 0;
+    loop {
+        let (n, from) = match dg.recv_from(&mut buf).await {
+            Ok(r) => {
+                errors = 0;
+                r
+            }
+            Err(NetError::Timeout | NetError::Cancelled) => return,
+            Err(_) => {
+                errors += 1;
+                if errors >= MAX_RECV_ERRORS {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+        };
         let IpAddr::V4(src) = from.ip() else { continue };
         let packet = &buf[..n];
         if let Some(dir) = &capture_dir {
@@ -124,6 +160,13 @@ async fn recv_loop(
             }
         }
     }
+}
+
+/// Résultat de `Scan::find`.
+enum Target {
+    Row(usize),
+    New,
+    Ignore,
 }
 
 struct Scan {
@@ -139,18 +182,32 @@ struct Scan {
 }
 
 impl Scan {
-    /// Une observation avec MAC rejoint la caméra de même MAC, ou à défaut la
-    /// caméra de même IP **qui n'a pas encore de MAC** ; une observation sans
-    /// MAC rejoint la caméra de même IP.
-    fn find(&self, s: &Sighting) -> Option<usize> {
+    /// Où va une observation. Avec MAC : la caméra de même MAC, ou à défaut la
+    /// caméra de même IP qui n'a pas encore de MAC. Sans MAC : la caméra de
+    /// même IP, à condition qu'elle soit seule — sur une IP partagée (plusieurs
+    /// Axis neuves en 192.168.0.90) on ne sait pas qui parle.
+    fn find(&self, s: &Sighting) -> Target {
         match &s.mac {
             Some(mac) => self
                 .cameras
                 .iter()
                 .position(|c| c.mac.as_ref() == Some(mac))
-                .or_else(|| self.cameras.iter().position(|c| c.ip == s.ip && c.mac.is_none())),
-            None => self.cameras.iter().position(|c| c.ip == s.ip),
+                .or_else(|| self.cameras.iter().position(|c| c.ip == s.ip && c.mac.is_none()))
+                .map_or(Target::New, Target::Row),
+            None => {
+                let mut at_ip = self.cameras.iter().enumerate().filter(|(_, c)| c.ip == s.ip);
+                match (at_ip.next(), at_ip.next()) {
+                    (None, _) => Target::New,
+                    (Some((i, _)), None) => Target::Row(i),
+                    _ => Target::Ignore,
+                }
+            }
         }
+    }
+
+    /// Plusieurs caméras de MAC différentes sur la même IP.
+    fn ip_is_shared(&self, ip: Ipv4Addr) -> bool {
+        self.cameras.iter().filter(|c| c.ip == ip && c.mac.is_some()).count() > 1
     }
 
     /// Émet la caméra `idx` ; un récepteur disparu arrête le balayage.
@@ -163,15 +220,23 @@ impl Scan {
 
     async fn on_sighting(&mut self, s: Sighting) {
         let idx = match self.find(&s) {
-            Some(i) => {
+            Target::Ignore => return,
+            Target::Row(i) => {
                 let before = self.cameras[i].clone();
                 self.cameras[i].merge(&s);
+                // Une observation avec MAC dit où est la caméra maintenant
+                // (DHCP, autre installateur) ; ce qu'on savait de l'ancienne
+                // adresse ne vaut plus.
+                if s.mac.is_some() && self.cameras[i].ip != s.ip {
+                    self.enriching.remove(&self.cameras[i].ip);
+                    self.cameras[i].ip = s.ip;
+                }
                 if self.cameras[i] == before {
                     return;
                 }
                 i
             }
-            None => {
+            Target::New => {
                 self.cameras.push(Camera::from_sighting(&s));
                 self.cameras.len() - 1
             }
@@ -180,10 +245,11 @@ impl Scan {
         self.emit(idx).await;
     }
 
-    /// Une seule fois par IP : identité et état d'activation par VAPIX.
+    /// Une seule fois par IP : identité et état d'activation par VAPIX. Jamais
+    /// sur une IP partagée : on ne saurait pas quelle caméra répond.
     fn enrich_if_axis(&mut self, idx: usize) {
         let cam = &self.cameras[idx];
-        if cam.family != Family::Axis || !self.enriching.insert(cam.ip) {
+        if cam.family != Family::Axis || self.ip_is_shared(cam.ip) || !self.enriching.insert(cam.ip) {
             return;
         }
         let (ip, base) = (cam.ip, cam.base_url());
@@ -192,13 +258,24 @@ impl Scan {
         self.tasks.spawn(async move {
             let (info, activation) =
                 tokio::join!(vapix::device_info(&*http, &base), vapix::activation_state(&*http, &base));
-            let _ = events.send(Event::Enriched { ip, info: info.ok(), activation }).await;
+            let _ = events.send(Event::Enriched { idx, ip, info: info.ok(), activation }).await;
         });
     }
 
-    async fn on_enriched(&mut self, ip: Ipv4Addr, info: Option<vapix::DeviceInfo>, activation: Activation) {
+    /// `idx` désigne la ligne (les lignes ne sont jamais retirées). La réponse
+    /// est jetée si la caméra a changé d'IP depuis, ou si l'IP est devenue
+    /// partagée : elle peut venir d'une autre caméra.
+    async fn on_enriched(
+        &mut self,
+        idx: usize,
+        ip: Ipv4Addr,
+        info: Option<vapix::DeviceInfo>,
+        activation: Activation,
+    ) {
         self.pending -= 1;
-        let Some(idx) = self.cameras.iter().position(|c| c.ip == ip) else { return };
+        if self.cameras[idx].ip != ip || self.ip_is_shared(ip) {
+            return;
+        }
         let before = self.cameras[idx].clone();
         let cam = &mut self.cameras[idx];
         if let Some(info) = info {
@@ -223,7 +300,7 @@ impl Scan {
     async fn handle(&mut self, ev: Event) {
         match ev {
             Event::Seen(s) => self.on_sighting(s).await,
-            Event::Enriched { ip, info, activation } => self.on_enriched(ip, info, activation).await,
+            Event::Enriched { idx, ip, info, activation } => self.on_enriched(idx, ip, info, activation).await,
         }
     }
 
@@ -366,6 +443,9 @@ impl Probe for WsdProbe {
     fn source(&self) -> Source { Source::Wsd }
     fn group(&self) -> SocketAddrV4 { wsd::GROUP }
     fn build(&self) -> Vec<u8> { wsd::build_probe(uuid::Uuid::new_v4()) }
+    // Les ProbeMatches reviennent en unicast sur notre port source : partir du
+    // 3702 les ferait prendre par le service WSD du système (Windows).
+    fn bind_group_port(&self) -> bool { false }
     fn parse(&self, packet: &[u8], src: Ipv4Addr) -> Vec<Sighting> {
         wsd::parse_probe_match(packet, src).into_iter().collect()
     }
@@ -384,7 +464,7 @@ mod tests {
 
     use crate::model::{Activation, Family};
     use crate::testing::{FakeDatagram, FakeHttp};
-    use crate::transport::Method;
+    use crate::transport::{Method, NetError};
 
     const INSTANCE: &str = "AXIS M3106-L Mk II - ACCC8E123456._axis-video._tcp.local.";
     const WSD_AXIS: &str = include_str!("../../tests/fixtures/wsd_axis_probematch.xml");
@@ -644,6 +724,131 @@ mod tests {
         run_scan_with_capture(vec![p], axis_http(), arp(&[]), cfg(), tx, CancellationToken::new(), Some(dir.clone())).await;
         let written = std::fs::read(dir.join("mdns-192.0.2.21-0.bin")).unwrap();
         assert_eq!(written, axis_response_packet());
+    }
+
+    fn wsd_at(ip: &str, mac: &str) -> Vec<u8> {
+        WSD_AXIS.replace("192.0.2.11", ip).replace("AC:CC:8E:12:34:56", mac).into_bytes()
+    }
+
+    /// Dernier état émis pour chaque MAC.
+    fn last_by_mac(events: &[ScanEvent]) -> HashMap<String, &Camera> {
+        let mut out = HashMap::new();
+        for c in cameras(events) {
+            if let Some(m) = &c.mac {
+                out.insert(m.clone(), c);
+            }
+        }
+        out
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn factory_ip_shared_by_two_macs_is_neither_enriched_nor_mixed() {
+        let http = axis_http();
+        let (w, _) = probe_pair(
+            Arc::new(WsdProbe),
+            vec![
+                (wsd_at("192.0.2.90", "AC:CC:8E:00:00:01"), from("192.0.2.90", 3702)),
+                (wsd_at("192.0.2.90", "AC:CC:8E:00:00:02"), from("192.0.2.90", 3702)),
+                // sans MAC, sur une IP partagée : on ne sait pas qui parle
+                (wsd_without_mac("192.0.2.90"), from("192.0.2.90", 3702)),
+            ],
+        );
+        let events = scan(vec![w], http.clone(), arp(&[])).await;
+        let rows = last_by_mac(&events);
+        assert_eq!(rows.len(), 2);
+        for cam in rows.values() {
+            assert_eq!(cam.serial, None);
+            assert_eq!(cam.firmware, None);
+            assert_eq!(cam.activation, Activation::Unknown);
+        }
+        assert!(cameras(&events).iter().all(|c| c.mac.is_some()), "aucune ligne sans MAC");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn camera_changing_ip_keeps_one_row_on_the_new_ip() {
+        let http = axis_http();
+        let moved = WSD_AXIS.replace("192.0.2.11:80", "192.0.2.22:8080").into_bytes();
+        let (w, _) = probe_pair(
+            Arc::new(WsdProbe),
+            vec![
+                (wsd_at("192.0.2.21", "AC:CC:8E:12:34:56"), from("192.0.2.21", 3702)),
+                (moved, from("192.0.2.22", 3702)),
+            ],
+        );
+        let events = scan(vec![w], http.clone(), arp(&[])).await;
+        assert!(cameras(&events).iter().all(|c| c.mac.as_deref() == Some("AC:CC:8E:12:34:56")));
+        let last = *cameras(&events).last().unwrap();
+        assert_eq!(last.ip, "192.0.2.22".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(last.http_port, 8080);
+        // l'enrichissement se refait à la nouvelle adresse
+        assert_eq!(last.serial.as_deref(), Some("ACCC8E123456"));
+        assert!(http.requests().iter().any(|r| r.url.contains("192.0.2.22:8080")));
+    }
+
+    #[test]
+    fn wsd_sends_from_an_ephemeral_port_and_mdns_from_its_own() {
+        assert!(!WsdProbe.bind_group_port());
+        assert!(MdnsProbe.bind_group_port());
+    }
+
+    /// Rejoue un scénario d'erreurs et de paquets ; `Timeout` une fois vide.
+    type Recv = Result<(Vec<u8>, SocketAddr), NetError>;
+
+    struct Scripted {
+        script: std::sync::Mutex<std::collections::VecDeque<Recv>>,
+        forever_err: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Datagram for Scripted {
+        async fn send_to(&self, _buf: &[u8], _dest: SocketAddr) -> Result<(), NetError> {
+            Ok(())
+        }
+        async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.forever_err {
+                return Err(NetError::Io("connection reset".into()));
+            }
+            match self.script.lock().unwrap().pop_front() {
+                Some(Ok((data, from))) => {
+                    buf[..data.len()].copy_from_slice(&data);
+                    Ok((data.len(), from))
+                }
+                Some(Err(e)) => Err(e),
+                None => Err(NetError::Timeout),
+            }
+        }
+    }
+
+    fn scripted(items: Vec<Recv>, forever_err: bool) -> Arc<Scripted> {
+        Arc::new(Scripted {
+            script: std::sync::Mutex::new(items.into()),
+            forever_err,
+            calls: Default::default(),
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn receive_loop_survives_transient_errors() {
+        let dg = scripted(
+            vec![
+                Err(NetError::Io("connection reset".into())),
+                Err(NetError::Io("connection reset".into())),
+                Ok((axis_response_packet(), from("192.0.2.21", 5353))),
+            ],
+            false,
+        );
+        let events = scan(vec![(Arc::new(MdnsProbe), dg as Arc<dyn Datagram>)], axis_http(), arp(&[])).await;
+        assert_eq!(cameras(&events).first().map(|c| c.ip), Some("192.0.2.21".parse().unwrap()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn receive_loop_gives_up_on_a_permanent_error() {
+        let dg = scripted(vec![], true);
+        let events = scan(vec![(Arc::new(MdnsProbe), dg.clone() as Arc<dyn Datagram>)], axis_http(), arp(&[])).await;
+        assert!(matches!(events.last(), Some(ScanEvent::Done)));
+        assert!(dg.calls.load(std::sync::atomic::Ordering::Relaxed) < 100);
     }
 
     #[test]
