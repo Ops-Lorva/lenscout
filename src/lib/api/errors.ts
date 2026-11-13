@@ -3,6 +3,7 @@ const CODES = [
   'iface_unknown',
   'iface_no_ipv4',
   'no_socket',
+  'local_network_denied',
   'bad_ip',
   'bad_port',
   'bad_action',

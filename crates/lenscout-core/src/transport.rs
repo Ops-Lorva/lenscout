@@ -79,4 +79,8 @@ pub enum NetError {
     Io(String),
     #[error("annulé")]
     Cancelled,
+    /// Envoi refusé par le système (EPERM, EHOSTUNREACH) : sur macOS, le
+    /// signe d'une permission « Réseau local » refusée à l'app.
+    #[error("accès au réseau local refusé")]
+    Denied,
 }

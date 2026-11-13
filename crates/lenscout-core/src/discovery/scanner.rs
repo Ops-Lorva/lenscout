@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -76,6 +77,14 @@ pub enum ScanEvent {
     Done,
 }
 
+/// Bilan d'un scan.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct ScanSummary {
+    /// Tous les envois de découverte ont été refusés par le système
+    /// (`NetError::Denied`) : sur macOS, permission « Réseau local » refusée.
+    pub local_network_denied: bool,
+}
+
 #[derive(Clone)]
 pub struct ScanConfig {
     pub iface: ScanInterface,
@@ -120,14 +129,33 @@ fn capture(dir: &std::path::Path, source: Source, ip: Ipv4Addr, packet: &[u8]) {
     }
 }
 
+/// Envois de toutes les sondes d'un scan : faits, et refusés par le système.
+#[derive(Default)]
+struct SendCount {
+    sent: AtomicUsize,
+    denied: AtomicUsize,
+}
+
+impl SendCount {
+    /// Au moins un envoi tenté, et tous refusés par le système.
+    fn all_denied(&self) -> bool {
+        let denied = self.denied.load(Ordering::Relaxed);
+        denied > 0 && self.sent.load(Ordering::Relaxed) == denied
+    }
+}
+
 /// Envoie la requête de la sonde aux instants `SEND_AT`.
-async fn send_loop(probe: Arc<dyn Probe>, dg: Arc<dyn Datagram>, start: Instant) {
+async fn send_loop(probe: Arc<dyn Probe>, dg: Arc<dyn Datagram>, start: Instant, count: Arc<SendCount>) {
     let query = probe.build();
     let dest = SocketAddr::V4(probe.group());
     for at in SEND_AT {
         tokio::time::sleep_until(start + at).await;
         // Un envoi perdu est repris au tour suivant.
-        let _ = dg.send_to(&query, dest).await;
+        let r = dg.send_to(&query, dest).await;
+        count.sent.fetch_add(1, Ordering::Relaxed);
+        if matches!(r, Err(NetError::Denied)) {
+            count.denied.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -438,9 +466,9 @@ pub async fn run_scan(
     cfg: ScanConfig,
     tx: mpsc::Sender<ScanEvent>,
     cancel: CancellationToken,
-) {
+) -> ScanSummary {
     let capture_dir = std::env::var_os("LENSCOUT_CAPTURE_DIR").map(PathBuf::from);
-    run_scan_with_capture(probes, http, arp, cfg, tx, cancel, capture_dir).await;
+    run_scan_with_capture(probes, http, arp, cfg, tx, cancel, capture_dir).await
 }
 
 /// `run_scan` avec le dossier de capture en paramètre (testable sans toucher
@@ -454,7 +482,7 @@ pub async fn run_scan_with_capture(
     tx: mpsc::Sender<ScanEvent>,
     cancel: CancellationToken,
     capture_dir: Option<PathBuf>,
-) {
+) -> ScanSummary {
     let (etx, mut erx) = mpsc::channel(EVENTS);
     // Jeton enfant : un récepteur disparu arrête le balayage sans annuler
     // le jeton de l'appelant.
@@ -473,9 +501,10 @@ pub async fn run_scan_with_capture(
     };
 
     let start = Instant::now();
+    let count = Arc::new(SendCount::default());
     let mut probe_tasks = JoinSet::new();
     for (probe, dg) in probes {
-        probe_tasks.spawn(send_loop(probe.clone(), dg.clone(), start));
+        probe_tasks.spawn(send_loop(probe.clone(), dg.clone(), start, count.clone()));
         probe_tasks.spawn(recv_loop(probe, dg, cfg.iface.clone(), etx.clone(), capture_dir.clone()));
     }
 
@@ -504,6 +533,7 @@ pub async fn run_scan_with_capture(
         }
     }
     let _ = tx.send(ScanEvent::Done).await;
+    ScanSummary { local_network_denied: count.all_denied() }
 }
 
 impl Probe for MdnsProbe {
@@ -927,6 +957,41 @@ mod tests {
             "{:?}",
             cams.iter().map(|c| c.ip).collect::<Vec<_>>()
         );
+    }
+
+    /// Datagramme dont chaque envoi échoue avec `err`.
+    struct SendFails(fn() -> NetError);
+
+    #[async_trait]
+    impl Datagram for SendFails {
+        async fn send_to(&self, _buf: &[u8], _dest: SocketAddr) -> Result<(), NetError> {
+            Err((self.0)())
+        }
+        async fn recv_from(&self, _buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
+            Err(NetError::Timeout)
+        }
+    }
+
+    async fn summary_of(probes: Vec<Pair>) -> ScanSummary {
+        let (tx, _rx) = mpsc::channel(256);
+        run_scan(probes, axis_http(), arp(&[]), cfg(), tx, CancellationToken::new()).await
+    }
+
+    /// macOS sans la permission « Réseau local » : chaque envoi rend EPERM ou
+    /// EHOSTUNREACH. Seul ce cas-là, sur toutes les sondes, le signale.
+    #[tokio::test(start_paused = true)]
+    async fn every_send_refused_by_the_system_reports_local_network_denied() {
+        let denied = || Arc::new(SendFails(|| NetError::Denied)) as Arc<dyn Datagram>;
+        let s = summary_of(vec![(Arc::new(MdnsProbe), denied()), (Arc::new(WsdProbe), denied())]).await;
+        assert!(s.local_network_denied);
+
+        let io = Arc::new(SendFails(|| NetError::Io("x".into()))) as Arc<dyn Datagram>;
+        assert!(!summary_of(vec![(Arc::new(MdnsProbe), io)]).await.local_network_denied);
+
+        let (ok, _) = probe_pair(Arc::new(WsdProbe), vec![]);
+        let s = summary_of(vec![(Arc::new(MdnsProbe), denied()), ok]).await;
+        assert!(!s.local_network_denied, "une sonde passe : pas de refus global");
+        assert!(!summary_of(vec![]).await.local_network_denied);
     }
 
     #[test]

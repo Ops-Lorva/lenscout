@@ -133,7 +133,7 @@ fn from_vapix(e: VapixError, ip: Ipv4Addr) -> ActionError {
         VapixError::Net(NetError::Auth | NetError::Status(401 | 403)) => ActionError::AuthFailed,
         VapixError::Net(NetError::Status(status)) => ActionError::HttpStatus { status },
         VapixError::Net(NetError::InsecureBasic) => ActionError::AuthInsecure,
-        VapixError::Net(NetError::Cancelled) => ActionError::Unreachable { ip },
+        VapixError::Net(NetError::Cancelled | NetError::Denied) => ActionError::Unreachable { ip },
         // Seul un texte de la caméra est affiché tel quel.
         VapixError::Rejected(detail) => ActionError::Rejected { detail },
         VapixError::Parse(_) => ActionError::BadReply,

@@ -28,6 +28,7 @@
     "bad_port": "Port invalide",
     "open_failed": "Ouverture impossible",
     "internal": "Erreur interne",
-    "unknown": "Erreur"
+    "unknown": "Erreur",
+    "local_network_denied": "Accès au réseau local refusé"
   }
 }

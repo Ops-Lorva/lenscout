@@ -99,7 +99,7 @@ fn net_code(e: &NetError) -> &'static str {
     match e {
         NetError::InsecureBasic => "auth_insecure",
         NetError::Auth | NetError::Status(401 | 403) => "auth_failed",
-        NetError::Timeout | NetError::Unreachable(_) => "unreachable",
+        NetError::Timeout | NetError::Unreachable(_) | NetError::Denied => "unreachable",
         NetError::Io(_) | NetError::Status(_) | NetError::Cancelled => "stream_failed",
     }
 }

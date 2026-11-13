@@ -28,7 +28,7 @@ impl Datagram for UdpDatagram {
             .send_to(buf, dest)
             .await
             .map(|_| ())
-            .map_err(|e| NetError::Io(e.to_string()))
+            .map_err(send_error)
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
@@ -36,6 +36,16 @@ impl Datagram for UdpDatagram {
             .recv_from(buf)
             .await
             .map_err(|e| NetError::Io(e.to_string()))
+    }
+}
+
+/// Erreur d'envoi → `NetError`. EPERM et EHOSTUNREACH sur un envoi
+/// multicast, c'est le système qui refuse (macOS : permission « Réseau
+/// local » refusée à l'app) : `Denied`.
+fn send_error(e: std::io::Error) -> NetError {
+    match e.kind() {
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::HostUnreachable => NetError::Denied,
+        _ => NetError::Io(e.to_string()),
     }
 }
 
@@ -80,6 +90,15 @@ fn finish(socket: Socket) -> std::io::Result<UdpDatagram> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_send_refused_by_the_system_is_denied() {
+        use std::io::{Error, ErrorKind};
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::HostUnreachable] {
+            assert!(matches!(send_error(Error::from(kind)), NetError::Denied), "{kind:?}");
+        }
+        assert!(matches!(send_error(Error::from(ErrorKind::WouldBlock)), NetError::Io(_)));
+    }
+
     use super::*;
 
     fn iface() -> ScanInterface {

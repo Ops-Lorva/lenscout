@@ -95,7 +95,9 @@ fn probes(iface: &ScanInterface) -> Vec<ProbeSocket> {
 }
 
 /// Erreurs : codes stables (`iface_unknown`, `iface_no_ipv4`, `no_socket`,
-/// `internal`), traduits par le front.
+/// `local_network_denied` — tous les envois de découverte refusés par le
+/// système, permission « Réseau local » de macOS —, `internal`), traduits par
+/// le front.
 ///
 /// Lance un scan et rend la main à sa fin. Un scan déjà en cours est annulé
 /// d'abord. L'interface vient du front : elle doit figurer parmi les liens
@@ -146,7 +148,10 @@ pub async fn cmd_scan_start(
             break;
         }
     }
-    let _ = scan.await;
+    let summary = scan.await.unwrap_or_default();
+    if summary.local_network_denied {
+        return Err("local_network_denied".to_string());
+    }
     Ok(())
 }
 
