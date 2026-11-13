@@ -1,3 +1,0 @@
-# jobs = 2 : limite la mémoire des compilations.
-[build]
-jobs = 2

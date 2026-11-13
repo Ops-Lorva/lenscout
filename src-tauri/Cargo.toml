@@ -14,7 +14,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 lenscout-core = { path = "../crates/lenscout-core" }
-tauri = { version = "2", features = ["devtools"] }
+# Sans la feature `devtools` : l'inspecteur n'existe qu'en build de debug.
+tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

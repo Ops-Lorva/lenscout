@@ -22,3 +22,6 @@ Screenshot *.png
 # Apple signing certs (never commit)
 *.p12
 Certificates.*
+
+# Réglages de compilation propres à la machine (jobs, cible).
+/.cargo/
