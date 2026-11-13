@@ -16,7 +16,8 @@ export type ActionError =
   | { code: 'rejected'; detail: string }
   | { code: 'elevation_refused'; ip: string }
   | { code: 'temp_ip_failed' }
-  | { code: 'temp_ip_left'; ip: string };
+  | { code: 'temp_ip_left'; ip: string }
+  | { code: 'temp_ip_busy' };
 
 /** Miroir de `ActionResult` ; `key` = MAC de la caméra, sinon son IP (comme `cameraKey`). */
 export interface ActionResult {
@@ -95,6 +96,8 @@ export function resultMessage(r: ActionResult): { key: string; values: Record<st
       return { key: 'elevation.failed', values: {} };
     case 'temp_ip_left':
       return { key: 'elevation.left', values: { ip: r.error.ip } };
+    case 'temp_ip_busy':
+      return { key: 'elevation.busy', values: {} };
     default:
       return { key: `configure.error.${r.error.code}`, values: {} };
   }

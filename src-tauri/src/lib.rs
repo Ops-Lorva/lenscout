@@ -11,7 +11,7 @@ use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_s
 use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
 use lenscout_core::temp_ip::{SystemElevator, cleanup_leftover};
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -52,6 +52,17 @@ pub fn run() {
             cmd_stream_stop,
             cmd_stream_ack,
         ])
-        .run(tauri::generate_context!())
-        .expect("erreur au lancement de Lenscout");
+        .build(tauri::generate_context!())
+        .expect("erreur au lancement de Lenscout")
+        .run(|app, event| {
+            // Filet de sortie : une IP temporaire encore journalisée est
+            // retirée avant de quitter. Verrou tenu (action en cours, autre
+            // instance) : rien n'est fait, le démarrage suivant s'en charge.
+            if let RunEvent::Exit = event
+                && let Some(journal) = app.try_state::<TempIpJournal>()
+                && let Err(e) = cleanup_leftover(&SystemElevator, &journal.0)
+            {
+                eprintln!("Lenscout : IP temporaire non retirée à la sortie : {e}");
+            }
+        });
 }

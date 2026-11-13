@@ -2253,6 +2253,7 @@ dependencies = [
  "futures-util",
  "hickory-proto",
  "keyring",
+ "libc",
  "quick-xml",
  "rand 0.10.3",
  "reqwest",

@@ -44,6 +44,7 @@ test('erreurs d’IP temporaire : espace elevation, adresse en paramètre', () =
     values: { ip: '169.254.10.20' },
   });
   expect(resultMessage({ key: 'k', ok: false, error: { code: 'temp_ip_failed' } })).toEqual({ key: 'elevation.failed', values: {} });
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'temp_ip_busy' } })).toEqual({ key: 'elevation.busy', values: {} });
   expect(resultMessage({ key: 'k', ok: false, error: { code: 'temp_ip_left', ip: '169.254.7.7' } })).toEqual({
     key: 'elevation.left',
     values: { ip: '169.254.7.7' },

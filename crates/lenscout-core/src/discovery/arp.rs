@@ -88,14 +88,20 @@ impl ArpSource for SystemArp {
             }
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
         }
-        let mut out = HashMap::new();
-        for (ip, mac) in read_arp_table(iface).await {
-            if let (Ok(ip), Some(mac)) = (ip.parse::<Ipv4Addr>(), normalize_mac(&mac)) {
-                out.insert(ip, mac);
-            }
-        }
-        out
+        read_neighbours(iface).await
     }
+}
+
+/// La table ARP de l'interface telle quelle, sans balayage : IP → MAC
+/// normalisée. Sert aussi à écarter les voisins du choix d'une IP temporaire.
+pub async fn read_neighbours(iface: &ScanInterface) -> HashMap<Ipv4Addr, String> {
+    let mut out = HashMap::new();
+    for (ip, mac) in read_arp_table(iface).await {
+        if let (Ok(ip), Some(mac)) = (ip.parse::<Ipv4Addr>(), normalize_mac(&mac)) {
+            out.insert(ip, mac);
+        }
+    }
+    out
 }
 
 /// Arguments de `ip neigh`, restreints à l'interface choisie.

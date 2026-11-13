@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lenscout_core::accounts::AccountBook;
-use lenscout_core::actions::{Action, ActionContext, ActionResult, apply_all};
-use lenscout_core::discovery::arp::ScanInterface;
+use lenscout_core::actions::{Action, ActionContext, ActionResult, apply_all, on_subnet};
+use lenscout_core::discovery::arp::{ScanInterface, read_neighbours};
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use lenscout_core::model::Camera;
@@ -93,22 +93,42 @@ pub async fn cmd_apply_action(
     let action = to_action(action)?;
     let creds = credentials_for(&accounts, &account_id)?;
     let service = iface.clone();
-    let scan_iface = tauri::async_runtime::spawn_blocking(move || {
-        if !list_interfaces_up().contains(&iface) {
+    let targets: Vec<Ipv4Addr> = cameras.iter().map(|c| c.ip).collect();
+    let (scan_iface, any_off_subnet, other_ifaces) = tauri::async_runtime::spawn_blocking(move || {
+        let up = list_interfaces_up();
+        if !up.contains(&iface) {
             return Err("iface_unknown".to_string());
         }
-        ScanInterface::from_details(&iface, &get_interface_details(&iface))
-            .ok_or_else(|| "iface_no_ipv4".to_string())
+        let scan_iface = ScanInterface::from_details(&iface, &get_interface_details(&iface))
+            .ok_or_else(|| "iface_no_ipv4".to_string())?;
+        // Les autres interfaces ne servent qu'au chemin hors sous-réseau :
+        // leurs détails coûtent un processus chacune, on ne les lit qu'alors.
+        let any_off_subnet = targets.iter().any(|ip| !on_subnet(&scan_iface, *ip));
+        let others = if any_off_subnet {
+            up.iter()
+                .filter(|name| **name != iface)
+                .filter_map(|name| ScanInterface::from_details(name, &get_interface_details(name)))
+                .collect()
+        } else {
+            vec![]
+        };
+        Ok((scan_iface, any_off_subnet, others))
     })
     .await
     .map_err(|_| "internal".to_string())??;
+    // Voisins ARP : jamais pris pour l'IP temporaire.
+    let in_use = if any_off_subnet { read_neighbours(&scan_iface).await.into_keys().collect() } else { vec![] };
+    let seen = scan.seen();
     let ctx = ActionContext {
         http: Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT)),
         iface: scan_iface,
         service,
         elevator: Arc::new(SystemElevator),
         journal: journal.0.clone(),
-        in_use: scan.seen(),
+        seen: seen.ips,
+        seen_iface: seen.iface,
+        in_use,
+        other_ifaces,
     };
     Ok(apply_all(&ctx, &cameras, &creds, &action).await)
 }

@@ -5,14 +5,24 @@
 //! Le mécanisme d'élévation est repris de LanProbe
 //! `crates/lanprobe-core/src/configure.rs` (2026-11-13) : macOS
 //! `networksetup` par `sudo -n` (règle sudoers) ou `osascript … with
-//! administrator privileges`, Windows `.bat` lancé par `Start-Process -Verb
-//! RunAs`, Linux `nmcli`. Les plans sont des valeurs pures, testées sans
-//! rien exécuter ; seul `SystemElevator` touche le poste.
+//! administrator privileges`, Windows PowerShell lancé par `Start-Process
+//! -Verb RunAs`, Linux `nmcli`. Les plans sont des valeurs pures, testées
+//! sans rien exécuter ; seul `SystemElevator` touche le poste.
 //!
-//! Garantie de retrait : le journal (`temp-ip.json`) est écrit AVANT l'ajout
-//! et retiré seulement après un retrait réussi. Si l'app est tuée entre les
-//! deux, `cleanup_leftover` (appelé au démarrage) retire l'adresse.
+//! Garantie de retrait, par couches :
+//! - le journal (`temp-ip.json`) est écrit AVANT l'ajout et retiré seulement
+//!   après un retrait réussi ;
+//! - retrait explicite après l'action, même sur erreur ou panique ;
+//! - garde `Drop` : un futur abandonné entre l'ajout et le retrait retire
+//!   quand même l'adresse ;
+//! - `cleanup_leftover` au démarrage et à la sortie de l'app ;
+//! - l'adresse n'est jamais enregistrée : Linux `device modify`, Windows
+//!   `store=active` / `ActiveStore` ; un redémarrage l'efface.
+//!
+//! Un verrou de fichier (`temp-ip.json.lock`) écarte une seconde instance de
+//! l'app pendant toute la durée d'une IP temporaire.
 
+use std::fs::{File, TryLockError};
 use std::future::Future;
 use std::net::Ipv4Addr;
 use std::panic::AssertUnwindSafe;
@@ -52,12 +62,12 @@ impl OsKind {
 }
 
 /// Ce qui sera exécuté avec les droits administrateur : arguments de
-/// `networksetup` (une commande par ligne), texte d'un `.bat`, arguments de
-/// `nmcli`.
+/// `networksetup` (une commande par ligne), texte d'un script PowerShell,
+/// arguments de `nmcli`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ElevatedPlan {
     Networksetup(Vec<Vec<String>>),
-    Bat(String),
+    PowerShell(String),
     Nmcli(Vec<Vec<String>>),
 }
 
@@ -72,6 +82,9 @@ pub enum TempIpError {
     Failed(String),
     #[error("aucune adresse temporaire libre")]
     NoFreeAddress,
+    /// Le verrou est tenu par une autre instance de l'app.
+    #[error("IP temporaire en cours dans une autre instance")]
+    Busy,
 }
 
 /// La caméra est-elle hors du sous-réseau de l'interface du poste ?
@@ -87,11 +100,25 @@ pub fn reachable_with_temp_ip(camera: Ipv4Addr) -> bool {
     camera.is_link_local() || camera.is_private()
 }
 
+/// Masque du réseau que l'IP temporaire ouvrira vers `camera` : /16 en lien
+/// local, /24 sinon.
+pub fn temp_mask(camera: Ipv4Addr) -> Ipv4Addr {
+    if camera.is_link_local() { Ipv4Addr::new(255, 255, 0, 0) } else { Ipv4Addr::new(255, 255, 255, 0) }
+}
+
+/// Deux réseaux se recouvrent-ils ? Comparés sur le plus court des deux masques.
+pub fn subnets_overlap(a: Ipv4Addr, a_mask: Ipv4Addr, b: Ipv4Addr, b_mask: Ipv4Addr) -> bool {
+    let m = u32::from(a_mask) & u32::from(b_mask);
+    u32::from(a) & m == u32::from(b) & m
+}
+
 const LINK_LOCAL_HOSTS: u64 = 254 * 254;
+const SLASH24_HOSTS: u64 = 51; // .200 à .250
 
 /// Adresse temporaire pour joindre `camera`, jamais celle de la caméra ni une
-/// adresse vue au dernier scan. Lien local : `169.254.a.b` (a, b ∈ 1..=254)
-/// tiré de `seed`, masque /16. Sinon le /24 de la caméra, de `.200` à `.250`.
+/// de `in_use` (adresses vues au scan, voisins ARP). Lien local :
+/// `169.254.a.b` (a, b ∈ 1..=254), masque /16 ; sinon le /24 de la caméra,
+/// de `.200` à `.250`. Le départ est tiré de `seed`, puis parcours circulaire.
 pub fn pick_temp_ip(
     iface: &str,
     camera: Ipv4Addr,
@@ -99,34 +126,35 @@ pub fn pick_temp_ip(
     seed: u64,
 ) -> Result<TempIp, TempIpError> {
     let free = |ip: &Ipv4Addr| *ip != camera && !in_use.contains(ip);
-    let (ip, mask) = if camera.is_link_local() {
+    let ip = if camera.is_link_local() {
         let start = seed % LINK_LOCAL_HOSTS;
-        let ip = (0..LINK_LOCAL_HOSTS)
+        (0..LINK_LOCAL_HOSTS)
             .map(|k| {
                 let n = (start + k) % LINK_LOCAL_HOSTS;
                 Ipv4Addr::new(169, 254, (n / 254 + 1) as u8, (n % 254 + 1) as u8)
             })
-            .find(free);
-        (ip, Ipv4Addr::new(255, 255, 0, 0))
+            .find(free)
     } else {
         let [a, b, c, _] = camera.octets();
-        let ip = (200..=250).map(|d| Ipv4Addr::new(a, b, c, d)).find(free);
-        (ip, Ipv4Addr::new(255, 255, 255, 0))
+        let start = seed % SLASH24_HOSTS;
+        (0..SLASH24_HOSTS)
+            .map(|k| Ipv4Addr::new(a, b, c, 200 + ((start + k) % SLASH24_HOSTS) as u8))
+            .find(free)
     };
     let ip = ip.ok_or(TempIpError::NoFreeAddress)?;
-    Ok(TempIp { iface: iface.to_string(), ip, mask })
+    Ok(TempIp { iface: iface.to_string(), ip, mask: temp_mask(camera) })
 }
 
 fn prefix_len(mask: Ipv4Addr) -> u32 {
     u32::from(mask).count_ones()
 }
 
-/// Repris de LanProbe `validate_interface` : le nom est interpolé dans un
-/// `.bat` lancé en administrateur, et dans une commande PowerShell de ce
-/// `.bat`. Allowlist ASCII stricte (lettres, chiffres, espace, `-`, `(`,
-/// `)`) : refuse tout guillemet, y compris typographique (PowerShell tient
-/// `‘ ’ ‚ ‛` pour des `'`), et `%`, `^`, `&`, `|`, `<`, `>`, les retours à
-/// la ligne.
+/// Repris de LanProbe `validate_interface` : le nom est interpolé dans le
+/// script PowerShell lancé en administrateur. Allowlist ASCII stricte
+/// (lettres, chiffres, espace, `-`, `(`, `)`) : refuse tout guillemet, y
+/// compris typographique (PowerShell tient `‘ ’ ‚ ‛` pour des `'`), et `%`
+/// (`--%` développe `%VAR%`), `^`, `&`, `|`, `<`, `>`, `$`, `` ` ``, les
+/// retours à la ligne.
 fn validate_interface(name: &str) -> Result<(), TempIpError> {
     let ok = !name.is_empty()
         && name.len() <= 256
@@ -146,7 +174,7 @@ fn validate_device(name: &str) -> Result<(), TempIpError> {
 /// Nom de service macOS : texte libre choisi par l'utilisateur (« USB
 /// 10/100/1000 LAN »). Il part en argument (`sudo`) ou cité pour le shell
 /// (`osascript`, voir `networksetup_shell`) ; seuls les caractères de
-/// contrôle sont refusés.
+/// contrôle et un `-` en tête sont refusés.
 fn validate_service(name: &str) -> Result<(), TempIpError> {
     let ok = !name.is_empty() && !name.starts_with('-') && !name.chars().any(char::is_control);
     if ok { Ok(()) } else { Err(TempIpError::Invalid("nom de service".into())) }
@@ -158,9 +186,9 @@ fn args(v: &[&str]) -> Vec<String> {
 
 /// Plan d'ajout. macOS : networksetup ne sait pas ajouter une 2e adresse à
 /// un service ; un service dupliqué sur la même carte est la voie
-/// documentée, couverte par la règle sudoers sur `networksetup`. Linux :
-/// `device modify` change la connexion active sans l'enregistrer (un
-/// redémarrage efface l'adresse même si tout le reste échoue).
+/// documentée. Linux : `device modify` change la connexion active sans
+/// l'enregistrer. Windows : `store=active` / `ActiveStore`, jamais
+/// enregistré non plus.
 pub fn add_plan(os: OsKind, t: &TempIp, service: &str) -> Result<ElevatedPlan, TempIpError> {
     let (ip, mask) = (t.ip.to_string(), t.mask.to_string());
     Ok(match os {
@@ -174,17 +202,17 @@ pub fn add_plan(os: OsKind, t: &TempIp, service: &str) -> Result<ElevatedPlan, T
         OsKind::Windows => {
             validate_interface(&t.iface)?;
             // netsh refuse d'ajouter une adresse à une carte en DHCP : repli
-            // New-NetIPAddress, qui l'accepte.
+            // New-NetIPAddress, qui l'accepte. `--%` passe la fin de ligne
+            // telle quelle à netsh, comme le faisait le `.bat`.
             //
-            // ⚠️ Pas de `-SkipAsSource $true` (pourtant dans le plan) : une
-            // adresse « SkipAsSource » n'est jamais choisie comme source, donc
-            // les requêtes vers la caméra partiraient de l'adresse principale
-            // et la caméra ne pourrait pas répondre.
-            ElevatedPlan::Bat(format!(
-                "@echo off\r\n\
-                 netsh interface ipv4 add address name=\"{iface}\" address={ip} mask={mask}\r\n\
-                 if errorlevel 1 powershell -NoProfile -NonInteractive -Command \"New-NetIPAddress -InterfaceAlias '{iface}' -IPAddress {ip} -PrefixLength {n}\"\r\n\
-                 if errorlevel 1 exit /b 1\r\n",
+            // ⚠️ Pas de `-SkipAsSource $true` : une adresse « SkipAsSource »
+            // n'est jamais choisie comme source, la caméra ne pourrait pas
+            // répondre.
+            ElevatedPlan::PowerShell(format!(
+                "$ErrorActionPreference = 'Stop'\n\
+                 netsh --% interface ipv4 add address name=\"{iface}\" address={ip} mask={mask} store=active\n\
+                 if ($LASTEXITCODE -ne 0) {{ New-NetIPAddress -InterfaceAlias '{iface}' -IPAddress {ip} -PrefixLength {n} -PolicyStore ActiveStore | Out-Null }}\n\
+                 exit 0\n",
                 iface = t.iface,
                 n = prefix_len(t.mask),
             ))
@@ -202,8 +230,8 @@ pub fn add_plan(os: OsKind, t: &TempIp, service: &str) -> Result<ElevatedPlan, T
     })
 }
 
-/// Plan de retrait. Sous Windows, le repli PowerShell réussit si l'adresse
-/// n'est plus là : un journal resté après un redémarrage ne bloque pas.
+/// Plan de retrait. Sous Windows, il réussit si l'adresse n'est plus là :
+/// un journal resté après un redémarrage ne bloque pas.
 pub fn remove_plan(os: OsKind, t: &TempIp, service: &str) -> Result<ElevatedPlan, TempIpError> {
     let ip = t.ip.to_string();
     Ok(match os {
@@ -214,11 +242,12 @@ pub fn remove_plan(os: OsKind, t: &TempIp, service: &str) -> Result<ElevatedPlan
         }
         OsKind::Windows => {
             validate_interface(&t.iface)?;
-            ElevatedPlan::Bat(format!(
-                "@echo off\r\n\
-                 netsh interface ipv4 delete address name=\"{iface}\" address={ip}\r\n\
-                 if errorlevel 1 powershell -NoProfile -NonInteractive -Command \"Remove-NetIPAddress -IPAddress {ip} -Confirm:$false -ErrorAction SilentlyContinue; if (Get-NetIPAddress -IPAddress {ip} -ErrorAction SilentlyContinue) {{ exit 1 }}\"\r\n\
-                 if errorlevel 1 exit /b 1\r\n",
+            ElevatedPlan::PowerShell(format!(
+                "$ErrorActionPreference = 'Stop'\n\
+                 netsh --% interface ipv4 delete address name=\"{iface}\" address={ip} store=active\n\
+                 if ($LASTEXITCODE -ne 0) {{ Remove-NetIPAddress -IPAddress {ip} -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue }}\n\
+                 if (Get-NetIPAddress -IPAddress {ip} -PolicyStore ActiveStore -ErrorAction SilentlyContinue) {{ exit 1 }}\n\
+                 exit 0\n",
                 iface = t.iface,
             ))
         }
@@ -248,6 +277,19 @@ pub(crate) fn networksetup_shell(cmds: &[Vec<String>]) -> String {
         .join(" && ")
 }
 
+/// Commande PowerShell (non élevée) qui relance PowerShell en administrateur
+/// avec `script` en `-EncodedCommand` (base64 de l'UTF-16LE) : aucun fichier
+/// temporaire, et rien du script n'est réinterprété en route.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn elevated_launcher(script: &str) -> String {
+    use base64::Engine;
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+    format!(
+        "$p = Start-Process -FilePath powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{b64}'; exit $p.ExitCode"
+    )
+}
+
 /// Exécute un plan avec les droits administrateur. Les tests passent un faux.
 pub trait Elevator: Send + Sync {
     fn run(&self, plan: &ElevatedPlan) -> Result<(), TempIpError>;
@@ -272,7 +314,7 @@ impl Elevator for SystemElevator {
 fn is_add(plan: &ElevatedPlan) -> bool {
     match plan {
         ElevatedPlan::Networksetup(c) => c.iter().any(|a| a.first().is_some_and(|x| x == "-duplicatenetworkservice")),
-        ElevatedPlan::Bat(s) => s.contains(" add address "),
+        ElevatedPlan::PowerShell(s) => s.contains(" add address "),
         ElevatedPlan::Nmcli(c) => c.iter().flatten().any(|x| x == "+ipv4.addresses"),
     }
 }
@@ -303,32 +345,36 @@ mod system {
             return Err(TempIpError::Invalid("plan d'un autre système".into()));
         };
         let removal = cmds.iter().any(|a| a.first().is_some_and(|x| x == "-removenetworkservice"));
-        // Une seule invite pour poser la règle sudoers ; refusée, rien n'est fait.
-        if !has_permissions() {
-            install_permissions()?;
+        let gone = |err: &str| removal && err.contains("not a recognized network service");
+        // Règle absente ou différente de l'attendue : une invite pour la
+        // (re)poser ; refusée, rien n'est fait.
+        // Autre échec de l'installation : le repli osascript ci-dessous.
+        if !has_permissions() && install_permissions() == Err(TempIpError::ElevationRefused) {
+            return Err(TempIpError::ElevationRefused);
         }
-        if has_permissions() {
-            let mut via_sudo = true;
-            for (i, args) in cmds.iter().enumerate() {
-                let out = sync_cmd("sudo")
-                    .args(["-n", "/usr/sbin/networksetup"])
-                    .args(args)
-                    .output()
-                    .map_err(|e| TempIpError::Failed(e.to_string()))?;
-                if let Some(err) = failed(&out) {
-                    if removal && err.contains("not a recognized network service") {
-                        return Ok(()); // déjà retiré
-                    }
-                    if i == 0 {
-                        via_sudo = false; // règle absente ou expirée : repli osascript
-                        break;
-                    }
-                    return Err(TempIpError::Failed(err));
+        let mut via_osascript = false;
+        for args in cmds {
+            let out = sync_cmd("sudo")
+                .env("LC_ALL", "C")
+                .args(["-n", "/usr/sbin/networksetup"])
+                .args(args)
+                .output()
+                .map_err(|e| TempIpError::Failed(e.to_string()))?;
+            if let Some(err) = failed(&out) {
+                if gone(&err) {
+                    return Ok(());
                 }
+                // Seul « mot de passe requis » (règle absente) justifie le
+                // repli osascript ; il survient dès la première commande.
+                if err.contains("a password is required") {
+                    via_osascript = true;
+                    break;
+                }
+                return Err(TempIpError::Failed(err));
             }
-            if via_sudo {
-                return Ok(());
-            }
+        }
+        if !via_osascript {
+            return Ok(());
         }
         let out = sync_cmd("osascript")
             .args(["-e", &applescript_shell(&networksetup_shell(cmds))])
@@ -337,7 +383,7 @@ mod system {
         match failed(&out) {
             None => Ok(()),
             Some(err) if refused(&err) => Err(TempIpError::ElevationRefused),
-            Some(err) if removal && err.contains("not a recognized network service") => Ok(()),
+            Some(err) if gone(&err) => Ok(()),
             Some(err) => Err(TempIpError::Failed(err)),
         }
     }
@@ -345,25 +391,19 @@ mod system {
 
 #[cfg(target_os = "windows")]
 mod system {
-    use super::{ElevatedPlan, TempIpError};
+    use super::{ElevatedPlan, TempIpError, elevated_launcher};
     use crate::proc::sync_cmd;
 
-    /// Repris de LanProbe `run_elevated_bat` : une invite UAC pour tout le `.bat`.
+    /// Repris de LanProbe `run_elevated_bat`, sans fichier : une invite UAC
+    /// pour tout le script.
     pub fn run(plan: &ElevatedPlan) -> Result<(), TempIpError> {
-        let ElevatedPlan::Bat(script) = plan else {
+        let ElevatedPlan::PowerShell(script) = plan else {
             return Err(TempIpError::Invalid("plan d'un autre système".into()));
         };
-        let temp = std::env::temp_dir().join(format!("lenscout-ip-{}.bat", std::process::id()));
-        std::fs::write(&temp, script).map_err(|e| TempIpError::Failed(e.to_string()))?;
-        let ps_cmd = format!(
-            "$p = Start-Process -FilePath '{}' -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode",
-            temp.to_string_lossy().replace('\'', "''")
-        );
         let out = sync_cmd("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
-            .output();
-        let _ = std::fs::remove_file(&temp);
-        let out = out.map_err(|e| TempIpError::Failed(e.to_string()))?;
+            .args(["-NoProfile", "-NonInteractive", "-Command", &elevated_launcher(script)])
+            .output()
+            .map_err(|e| TempIpError::Failed(e.to_string()))?;
         if out.status.success() {
             return Ok(());
         }
@@ -408,9 +448,32 @@ mod system {
     }
 }
 
-/// Une seule IP temporaire à la fois : un seul journal, un seul service
-/// « Lenscout » sur macOS.
+/// Une seule IP temporaire à la fois dans l'instance (un seul journal, un
+/// seul service « Lenscout » sur macOS) ; le verrou de fichier couvre les
+/// autres instances.
 static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// `temp-ip.json.lock`, à côté du journal.
+pub fn lock_path(journal: &Path) -> PathBuf {
+    let mut name = journal.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    journal.with_file_name(name)
+}
+
+/// Verrou exclusif du système sur `temp-ip.json.lock`, relâché quand le
+/// `File` est fermé (y compris si le processus meurt). Tenu ailleurs → `Busy`.
+fn lock_journal(journal: &Path) -> Result<File, TempIpError> {
+    let io = |e: std::io::Error| TempIpError::Failed(e.to_string());
+    if let Some(dir) = journal.parent() {
+        std::fs::create_dir_all(dir).map_err(io)?;
+    }
+    let file = File::options().create(true).truncate(false).write(true).open(lock_path(journal)).map_err(io)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(TempIpError::Busy),
+        Err(TryLockError::Error(e)) => Err(io(e)),
+    }
+}
 
 /// Lit le journal ; absent → `None`.
 pub fn read_journal(journal: &Path) -> Result<Option<TempIp>, TempIpError> {
@@ -423,17 +486,23 @@ pub fn read_journal(journal: &Path) -> Result<Option<TempIp>, TempIpError> {
     }
 }
 
-/// Écriture atomique (fichier temporaire puis renommage) : un journal n'est
-/// jamais à moitié écrit.
+/// Écriture atomique : fichier temporaire au nom unique, `sync_all`, puis
+/// renommage. Un journal n'est jamais à moitié écrit, même après une coupure.
 pub fn write_journal(journal: &Path, t: &TempIp) -> Result<(), TempIpError> {
+    use std::io::Write;
     let io = |e: std::io::Error| TempIpError::Failed(e.to_string());
     if let Some(dir) = journal.parent() {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
     let tmp = tmp_path(journal);
     let json = serde_json::to_vec(t).map_err(|e| TempIpError::Failed(e.to_string()))?;
-    std::fs::write(&tmp, json).map_err(io)?;
-    std::fs::rename(&tmp, journal).map_err(|e| {
+    let written = (|| {
+        let mut f = File::create_new(&tmp)?;
+        f.write_all(&json)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, journal)
+    })();
+    written.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         io(e)
     })
@@ -441,7 +510,7 @@ pub fn write_journal(journal: &Path, t: &TempIp) -> Result<(), TempIpError> {
 
 fn tmp_path(journal: &Path) -> PathBuf {
     let mut name = journal.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
+    name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
     journal.with_file_name(name)
 }
 
@@ -449,9 +518,39 @@ fn remove_journal(journal: &Path) {
     let _ = std::fs::remove_file(journal);
 }
 
-/// Ajoute `t`, exécute `f`, retire `t` dans tous les cas (erreur ou panique
-/// de `f`). Une panique de `f` est relancée après le retrait. Un retrait
-/// raté laisse le journal : `cleanup_leftover` réessaiera au démarrage.
+/// Retire l'adresse si on le lâche armé : futur abandonné entre l'ajout et
+/// le retrait (tâche annulée, app qui se ferme), ou panique.
+struct RemoveOnDrop<'a> {
+    elev: &'a dyn Elevator,
+    journal: &'a Path,
+    remove: &'a ElevatedPlan,
+    armed: bool,
+}
+
+impl RemoveOnDrop<'_> {
+    /// Le retrait normal ; la garde est désarmée quoi qu'il arrive.
+    fn remove(mut self) -> Result<(), TempIpError> {
+        self.armed = false;
+        let done = self.elev.run(self.remove);
+        if done.is_ok() {
+            remove_journal(self.journal);
+        }
+        done
+    }
+}
+
+impl Drop for RemoveOnDrop<'_> {
+    fn drop(&mut self) {
+        if self.armed && self.elev.run(self.remove).is_ok() {
+            remove_journal(self.journal);
+        }
+    }
+}
+
+/// Ajoute `t`, exécute `f`, retire `t` dans tous les cas (erreur, panique
+/// de `f`, futur abandonné). Une panique de `f` est relancée après le
+/// retrait. Un retrait raté laisse le journal : `cleanup_leftover`
+/// réessaiera. Une autre instance qui tient le verrou → `Busy`, rien n'est fait.
 ///
 /// L'élévation est synchrone (elle attend l'invite) : elle bloque le fil du
 /// runtime le temps de l'invite, comme LanProbe.
@@ -469,7 +568,9 @@ where
     let os = OsKind::current();
     let add = add_plan(os, t, service)?;
     let remove = remove_plan(os, t, service)?;
-    let _one_at_a_time = LOCK.lock().await;
+    let _one_here = LOCK.lock().await;
+    // Déclaré avant la garde : relâché après elle.
+    let _one_anywhere = lock_journal(journal)?;
 
     // Une adresse d'une session tuée d'abord : un seul journal à la fois.
     cleanup_unlocked(elev, journal)?;
@@ -491,12 +592,11 @@ where
             return Err(e);
         }
     }
+    let guard = RemoveOnDrop { elev, journal, remove: &remove, armed: true };
 
-    let outcome = AssertUnwindSafe(f()).catch_unwind().await;
-    let removed = elev.run(&remove);
-    if removed.is_ok() {
-        remove_journal(journal);
-    }
+    // `f()` lui-même dans le bloc : une panique à l'appel est rattrapée aussi.
+    let outcome = AssertUnwindSafe(async move { f().await }).catch_unwind().await;
+    let removed = guard.remove();
     let value = match outcome {
         Ok(v) => v,
         Err(panic) => std::panic::resume_unwind(panic),
@@ -506,9 +606,14 @@ where
 }
 
 /// Retire l'adresse d'un journal laissé par une session tuée. Appelé au
-/// démarrage de l'app, avant toute action (pas de verrou ici). Un journal
-/// illisible est mis de côté (`.illisible`) : on ne sait pas quoi retirer.
+/// démarrage et à la sortie de l'app. Verrou tenu par une autre instance →
+/// `Busy`, rien n'est fait. Un journal illisible est mis de côté
+/// (`.illisible`) : on ne sait pas quoi retirer.
 pub fn cleanup_leftover(elev: &dyn Elevator, journal: &Path) -> Result<Option<TempIp>, TempIpError> {
+    if !journal.exists() {
+        return Ok(None);
+    }
+    let _lock = lock_journal(journal)?;
     cleanup_unlocked(elev, journal)
 }
 
@@ -577,10 +682,14 @@ mod tests {
     #[test]
     fn old_axis_default_gets_slash24() {
         let cam = ip("192.168.0.90");
-        let t = pick_temp_ip("eth0", cam, &[], 42).unwrap();
+        let t = pick_temp_ip("eth0", cam, &[], 0).unwrap();
         assert_eq!(t, TempIp { iface: "eth0".into(), ip: ip("192.168.0.200"), mask: ip("255.255.255.0") });
-        let t = pick_temp_ip("eth0", cam, &[ip("192.168.0.200")], 42).unwrap();
+        let t = pick_temp_ip("eth0", cam, &[ip("192.168.0.200")], 0).unwrap();
         assert_eq!(t.ip, ip("192.168.0.201"));
+        // Départ tiré dans .200–.250 par la graine, puis parcours circulaire.
+        assert_eq!(pick_temp_ip("eth0", cam, &[], 5).unwrap().ip, ip("192.168.0.205"));
+        assert_eq!(pick_temp_ip("eth0", cam, &[], 51).unwrap().ip, ip("192.168.0.200"));
+        assert_eq!(pick_temp_ip("eth0", cam, &[ip("192.168.0.250")], 50).unwrap().ip, ip("192.168.0.200"));
         // Une caméra posée sur .200 ne reçoit pas son propre double.
         assert_eq!(pick_temp_ip("eth0", ip("192.168.0.200"), &[], 0).unwrap().ip, ip("192.168.0.201"));
     }
@@ -642,23 +751,47 @@ mod tests {
     }
 
     #[test]
-    fn windows_bat_exact_and_crlf() {
+    fn windows_script_exact_and_not_persistent() {
         let t = tmp("Ethernet");
-        let ElevatedPlan::Bat(add) = add_plan(OsKind::Windows, &t, "Ethernet").unwrap() else { panic!() };
-        assert!(add.contains(r#"netsh interface ipv4 add address name="Ethernet" address=169.254.7.7 mask=255.255.0.0"#), "{add}");
-        assert!(add.contains("New-NetIPAddress -InterfaceAlias 'Ethernet' -IPAddress 169.254.7.7 -PrefixLength 16"), "{add}");
-        let ElevatedPlan::Bat(rm) = remove_plan(OsKind::Windows, &t, "Ethernet").unwrap() else { panic!() };
-        assert!(rm.contains(r#"netsh interface ipv4 delete address name="Ethernet" address=169.254.7.7"#), "{rm}");
-        assert!(rm.contains("Remove-NetIPAddress -IPAddress 169.254.7.7 -Confirm:$false"), "{rm}");
-        for script in [&add, &rm] {
-            assert!(script.ends_with("\r\n"));
-            assert!(!script.replace("\r\n", "").contains('\n'), "LF seul : {script:?}");
-            assert!(script.contains("if errorlevel 1 exit /b 1\r\n"));
-        }
+        let ElevatedPlan::PowerShell(add) = add_plan(OsKind::Windows, &t, "Ethernet").unwrap() else { panic!() };
+        assert_eq!(
+            add,
+            "$ErrorActionPreference = 'Stop'\n\
+             netsh --% interface ipv4 add address name=\"Ethernet\" address=169.254.7.7 mask=255.255.0.0 store=active\n\
+             if ($LASTEXITCODE -ne 0) { New-NetIPAddress -InterfaceAlias 'Ethernet' -IPAddress 169.254.7.7 -PrefixLength 16 -PolicyStore ActiveStore | Out-Null }\n\
+             exit 0\n"
+        );
+        let ElevatedPlan::PowerShell(rm) = remove_plan(OsKind::Windows, &t, "Ethernet").unwrap() else { panic!() };
+        assert_eq!(
+            rm,
+            "$ErrorActionPreference = 'Stop'\n\
+             netsh --% interface ipv4 delete address name=\"Ethernet\" address=169.254.7.7 store=active\n\
+             if ($LASTEXITCODE -ne 0) { Remove-NetIPAddress -IPAddress 169.254.7.7 -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue }\n\
+             if (Get-NetIPAddress -IPAddress 169.254.7.7 -PolicyStore ActiveStore -ErrorAction SilentlyContinue) { exit 1 }\n\
+             exit 0\n"
+        );
         // Les noms Windows réels passent.
         for n in ["Wi-Fi 2", "Ethernet (2)", "Local Area Connection"] {
             assert!(add_plan(OsKind::Windows, &tmp(n), n).is_ok(), "{n}");
         }
+    }
+
+    #[test]
+    fn windows_launcher_carries_the_script_encoded() {
+        use base64::Engine;
+        let script = "netsh --% interface ipv4 add address name=\"Wi-Fi 2\" address=169.254.7.7\nexit 0\n";
+        let launcher = elevated_launcher(script);
+        let (head, rest) = launcher.split_once("'-EncodedCommand','").unwrap();
+        assert_eq!(
+            head,
+            "$p = Start-Process -FilePath powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive',"
+        );
+        let (b64, tail) = rest.split_once('\'').unwrap();
+        assert_eq!(tail, "; exit $p.ExitCode");
+        assert!(b64.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)));
+        let raw = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let units: Vec<u16> = raw.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), script);
     }
 
     #[test]
@@ -781,6 +914,76 @@ mod tests {
         assert!(!j.exists());
     }
 
+    /// Lâche le futur de `with_temp_ip` pendant que l'action tourne (après l'ajout).
+    async fn abandon_while_running(elev: &FakeElevator, j: &Path, t: &TempIp) {
+        let (started, running) = tokio::sync::oneshot::channel();
+        let fut = with_temp_ip(elev, j, t, "eth0", move || async move {
+            let _ = started.send(());
+            std::future::pending::<()>().await
+        });
+        tokio::select! {
+            _ = fut => unreachable!("l'action ne finit jamais"),
+            _ = running => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_the_future_after_add_still_removes() {
+        // L'action est abandonnée (tâche annulée, fenêtre fermée) entre l'ajout et le retrait.
+        let (elev, j, t) = (FakeElevator::new(), journal(), tmp("eth0"));
+        abandon_while_running(&elev, &j, &t).await;
+        assert_eq!(elev.plans(), vec![add_plan(os(), &t, "eth0").unwrap(), remove_plan(os(), &t, "eth0").unwrap()]);
+        assert!(!j.exists());
+    }
+
+    #[tokio::test]
+    async fn dropped_future_whose_removal_fails_keeps_journal() {
+        let elev = FakeElevator::replying(vec![Ok(()), Err(TempIpError::Failed("x".into()))]);
+        let (j, t) = (journal(), tmp("eth0"));
+        abandon_while_running(&elev, &j, &t).await;
+        assert_eq!(read_journal(&j).unwrap(), Some(t));
+    }
+
+    #[tokio::test]
+    async fn sync_panic_in_closure_still_removes() {
+        let (elev, j, t) = (FakeElevator::new(), journal(), tmp("eth0"));
+        let f = || -> std::future::Ready<()> { panic!("tout de suite") };
+        let caught = AssertUnwindSafe(with_temp_ip(&elev, &j, &t, "eth0", f)).catch_unwind().await;
+        assert!(caught.is_err(), "la panique remonte");
+        assert_eq!(elev.plans(), vec![add_plan(os(), &t, "eth0").unwrap(), remove_plan(os(), &t, "eth0").unwrap()]);
+        assert!(!j.exists());
+    }
+
+    /// Verrou tenu par « une autre instance ».
+    fn hold_lock(j: &Path) -> std::fs::File {
+        std::fs::create_dir_all(j.parent().unwrap()).unwrap();
+        let f = std::fs::File::create(lock_path(j)).unwrap();
+        f.lock().unwrap();
+        f
+    }
+
+    #[tokio::test]
+    async fn busy_lock_blocks_the_action() {
+        let (elev, j, t) = (FakeElevator::new(), journal(), tmp("eth0"));
+        let held = hold_lock(&j);
+        let r = with_temp_ip(&elev, &j, &t, "eth0", || async { unreachable!() }).await;
+        assert_eq!(r, Err(TempIpError::Busy));
+        assert!(elev.plans().is_empty());
+        assert!(!j.exists());
+        drop(held);
+        assert_eq!(with_temp_ip(&elev, &j, &t, "eth0", || async { 3 }).await, Ok(3));
+    }
+
+    #[test]
+    fn busy_lock_makes_cleanup_do_nothing() {
+        let (elev, j, t) = (FakeElevator::new(), journal(), tmp("eth0"));
+        write_journal(&j, &t).unwrap();
+        let _held = hold_lock(&j);
+        assert_eq!(cleanup_leftover(&elev, &j), Err(TempIpError::Busy));
+        assert!(elev.plans().is_empty());
+        assert_eq!(read_journal(&j).unwrap(), Some(t));
+    }
+
     #[test]
     fn cleanup_leftover_removes_journaled_ip() {
         let (elev, j, t) = (FakeElevator::new(), journal(), tmp("eth0"));
@@ -817,7 +1020,8 @@ mod tests {
     fn journal_write_is_atomic_and_round_trips() {
         let (j, t) = (journal(), tmp("Ethernet (2)"));
         write_journal(&j, &t).unwrap();
-        assert_eq!(read_journal(&j).unwrap(), Some(t));
+        assert_eq!(read_journal(&j).unwrap(), Some(t.clone()));
+        write_journal(&j, &t).unwrap();
         let names: Vec<_> = std::fs::read_dir(j.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, vec![std::ffi::OsString::from("temp-ip.json")], "aucun fichier temporaire laissé");
     }

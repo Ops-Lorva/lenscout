@@ -60,6 +60,12 @@ pub fn open_probe_socket(probe: &dyn Probe, iface: &ScanInterface) -> std::io::R
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ScanEvent {
     Upsert { camera: Camera },
+    /// `ip` s'est annoncée elle-même : réponse reçue de cette adresse source
+    /// et désignant cette même adresse. Seule preuve qu'une adresse hors
+    /// sous-réseau a vraiment répondu (une annonce peut désigner n'importe
+    /// quelle adresse). Interne à Rust : jamais envoyé au webview.
+    #[serde(skip)]
+    Heard { ip: Ipv4Addr },
     Done,
 }
 
@@ -72,7 +78,8 @@ pub struct ScanConfig {
 
 /// Ce que les tâches de fond rapportent à la boucle principale.
 enum Event {
-    Seen(Sighting),
+    /// Une observation et l'adresse source UDP du paquet qui l'a portée.
+    Seen(Sighting, Ipv4Addr),
     Enriched { idx: usize, ip: Ipv4Addr, info: Option<vapix::DeviceInfo>, activation: Activation },
 }
 
@@ -155,7 +162,7 @@ async fn recv_loop(
             capture(dir, probe.source(), src, packet);
         }
         for sighting in probe.parse(packet, src) {
-            if events.send(Event::Seen(sighting)).await.is_err() {
+            if events.send(Event::Seen(sighting, src)).await.is_err() {
                 return;
             }
         }
@@ -332,7 +339,12 @@ impl Scan {
 
     async fn handle(&mut self, ev: Event) {
         match ev {
-            Event::Seen(s) => self.on_sighting(s).await,
+            Event::Seen(s, src) => {
+                if s.ip == src && self.out.send(ScanEvent::Heard { ip: src }).await.is_err() {
+                    self.cancel.cancel();
+                }
+                self.on_sighting(s).await
+            }
             Event::Enriched { idx, ip, info, activation } => self.on_enriched(idx, ip, info, activation).await,
         }
     }
@@ -610,7 +622,7 @@ mod tests {
             .iter()
             .filter_map(|e| match e {
                 ScanEvent::Upsert { camera } => Some(camera),
-                ScanEvent::Done => None,
+                ScanEvent::Heard { .. } | ScanEvent::Done => None,
             })
             .collect()
     }
@@ -758,6 +770,44 @@ mod tests {
         run_scan_with_capture(vec![p], axis_http(), arp(&[]), cfg(), tx, CancellationToken::new(), Some(dir.clone())).await;
         let written = std::fs::read(dir.join("mdns-192.0.2.21-0.bin")).unwrap();
         assert_eq!(written, axis_response_packet());
+    }
+
+    fn heard(events: &[ScanEvent]) -> Vec<Ipv4Addr> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ScanEvent::Heard { ip } => Some(*ip),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_an_ip_equal_to_the_udp_source_is_heard() {
+        // Une réponse WSD de 10.0.50.9 qui annonce 10.66.66.66 : la ligne existe,
+        // mais l'adresse n'est pas « entendue » ; celle qui s'annonce elle-même l'est.
+        let (w, _) = probe_pair(
+            Arc::new(WsdProbe),
+            vec![
+                (wsd_at("10.66.66.66", "AC:CC:8E:00:00:01"), from("10.0.50.9", 3702)),
+                (wsd_at("192.0.2.31", "AC:CC:8E:00:00:02"), from("192.0.2.31", 3702)),
+            ],
+        );
+        let (m, _) = probe_pair(Arc::new(MdnsProbe), vec![(axis_response_packet(), from("192.0.2.77", 5353))]);
+        let events = scan(vec![w, m], axis_http(), arp(&[])).await;
+        let ips: Vec<Ipv4Addr> = cameras(&events).iter().map(|c| c.ip).collect();
+        assert!(ips.contains(&"10.66.66.66".parse().unwrap()));
+        let heard = heard(&events);
+        assert!(!heard.contains(&"10.66.66.66".parse().unwrap()), "{heard:?}");
+        assert!(!heard.contains(&"10.0.50.9".parse().unwrap()));
+        assert!(heard.contains(&"192.0.2.31".parse().unwrap()), "{heard:?}");
+        // L'enregistrement A de la réponse mDNS désigne une autre adresse que la source.
+        assert!(!heard.contains(&"192.0.2.77".parse().unwrap()), "{heard:?}");
+    }
+
+    #[test]
+    fn heard_is_never_sent_to_the_webview() {
+        assert!(serde_json::to_string(&ScanEvent::Heard { ip: Ipv4Addr::LOCALHOST }).is_err());
     }
 
     fn wsd_at(ip: &str, mac: &str) -> Vec<u8> {

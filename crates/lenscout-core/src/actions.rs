@@ -14,7 +14,8 @@ use serde::Serialize;
 use crate::discovery::arp::ScanInterface;
 use crate::model::{Camera, Family, normalize_mac};
 use crate::temp_ip::{
-    Elevator, TempIpError, needs_temp_ip, pick_temp_ip, reachable_with_temp_ip, read_journal, with_temp_ip,
+    Elevator, TempIpError, needs_temp_ip, pick_temp_ip, reachable_with_temp_ip, read_journal, subnets_overlap,
+    temp_mask, with_temp_ip,
 };
 use crate::transport::{CameraHttp, Credentials, NetError};
 use crate::vapix::{self, NetworkSettings, TimeSettings, VapixError};
@@ -62,6 +63,9 @@ pub enum ActionError {
     /// reste, le démarrage suivant réessaiera.
     #[error("IP temporaire restée : {ip}")]
     TempIpLeft { ip: Ipv4Addr },
+    /// Une autre instance de Lenscout tient l'IP temporaire.
+    #[error("IP temporaire déjà en cours")]
+    TempIpBusy,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -82,8 +86,16 @@ pub struct ActionContext {
     pub elevator: Arc<dyn Elevator>,
     /// `<app_data_dir>/temp-ip.json`.
     pub journal: PathBuf,
-    /// Adresses vues par le dernier scan, tenues par Rust (pas par le front).
+    /// Adresses qui se sont annoncées elles-mêmes au dernier scan (source
+    /// UDP = adresse annoncée), tenues par Rust : le front ne peut pas en
+    /// inventer.
+    pub seen: Vec<Ipv4Addr>,
+    /// Interface de ce scan (`ScanInterface::name`).
+    pub seen_iface: Option<String>,
+    /// Autres adresses à ne pas prendre pour l'IP temporaire (voisins ARP).
     pub in_use: Vec<Ipv4Addr>,
+    /// Les autres interfaces actives du poste.
+    pub other_ifaces: Vec<ScanInterface>,
 }
 
 /// Erreur d'un appel VAPIX → code affiché. `ip` n'est que celle de la caméra visée.
@@ -137,12 +149,24 @@ pub fn on_subnet(iface: &ScanInterface, ip: Ipv4Addr) -> bool {
     !needs_temp_ip(iface.ip, iface.mask, ip)
 }
 
-/// Hors sous-réseau, une IP temporaire n'est posée que si les DEUX tiennent :
-/// Rust a vu cette adresse au dernier scan (le front ne peut pas l'inventer),
-/// et c'est une adresse de réseau local (169.254/16 ou RFC 1918). Sinon
-/// `camera_off_subnet`, avant toute requête et toute invite.
+/// Hors sous-réseau, une IP temporaire n'est posée que si tout tient :
+/// - l'adresse s'est annoncée elle-même au dernier scan, fait sur CETTE
+///   interface (le front fournit la caméra, il ne peut pas inventer une cible) ;
+/// - c'est une adresse de réseau local (169.254/16 ou RFC 1918) ;
+/// - le réseau ouvert par l'IP temporaire (/16 ou /24) ne recouvre celui
+///   d'aucune autre interface du poste (sinon le trafic partirait ailleurs).
+///
+/// Sinon `camera_off_subnet`, avant toute requête et toute invite.
 fn off_subnet_allowed(ctx: &ActionContext, ip: Ipv4Addr) -> bool {
-    ctx.in_use.contains(&ip) && reachable_with_temp_ip(ip)
+    let mask = temp_mask(ip);
+    ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str())
+        && ctx.seen.contains(&ip)
+        && reachable_with_temp_ip(ip)
+        && !ctx
+            .other_ifaces
+            .iter()
+            .filter(|o| o.name != ctx.iface.name)
+            .any(|o| subnets_overlap(ip, mask, o.ip, o.mask))
 }
 
 fn result(cam: &Camera, outcome: Result<(), ActionError>) -> ActionResult {
@@ -181,7 +205,8 @@ async fn apply_checked(
     if !off_subnet_allowed(ctx, cam.ip) {
         return Err(ActionError::CameraOffSubnet);
     }
-    let temp = pick_temp_ip(&ctx.iface.name, cam.ip, &ctx.in_use, rand::random())
+    let avoid: Vec<Ipv4Addr> = ctx.seen.iter().chain(&ctx.in_use).copied().collect();
+    let temp = pick_temp_ip(&ctx.iface.name, cam.ip, &avoid, rand::random())
         .map_err(|_| ActionError::TempIpFailed)?;
     // L'IP temporaire couvre la vérification d'identité ET l'écriture.
     let done = with_temp_ip(ctx.elevator.as_ref(), &ctx.journal, &temp, &ctx.service, || {
@@ -191,6 +216,7 @@ async fn apply_checked(
     match done {
         Ok(outcome) => outcome,
         Err(TempIpError::ElevationRefused) => Err(ActionError::ElevationRefused { ip: cam.ip }),
+        Err(TempIpError::Busy) => Err(ActionError::TempIpBusy),
         // Journal encore là : une adresse est restée sur le poste.
         Err(_) => Err(match read_journal(&ctx.journal) {
             Ok(Some(left)) => ActionError::TempIpLeft { ip: left.ip },
@@ -280,7 +306,8 @@ mod tests {
         ctx_with(http, Arc::new(PanicElevator), vec![])
     }
 
-    fn ctx_with(http: Arc<dyn CameraHttp>, elevator: Arc<dyn Elevator>, in_use: Vec<Ipv4Addr>) -> ActionContext {
+    /// `seen` : adresses entendues par le dernier scan, fait sur `eth0`.
+    fn ctx_with(http: Arc<dyn CameraHttp>, elevator: Arc<dyn Elevator>, seen: Vec<Ipv4Addr>) -> ActionContext {
         ActionContext {
             http,
             iface: ScanInterface {
@@ -293,7 +320,10 @@ mod tests {
             journal: std::env::temp_dir()
                 .join(format!("lenscout-test-{}", uuid::Uuid::new_v4()))
                 .join("temp-ip.json"),
-            in_use,
+            seen,
+            seen_iface: Some("eth0".into()),
+            in_use: vec![],
+            other_ifaces: vec![],
         }
     }
 
@@ -677,23 +707,75 @@ mod tests {
         assert!(!c.journal.exists());
     }
 
-    #[tokio::test]
-    async fn temp_ip_avoids_the_camera_and_every_seen_address() {
-        let elev = Arc::new(FakeElevator::new());
-        let http = Arc::new(axis_ok());
-        let c = ctx_with(http, elev.clone(), vec!["192.168.0.90".parse().unwrap(), "192.168.0.200".parse().unwrap()]);
-        assert!(apply(&c, &cam("192.168.0.90", Family::Axis), &creds(), &time()).await.ok);
-        let expected = crate::temp_ip::add_plan(
+    fn plan_for(ip: &str, mask: &str) -> crate::temp_ip::ElevatedPlan {
+        crate::temp_ip::add_plan(
             crate::temp_ip::OsKind::current(),
-            &crate::temp_ip::TempIp {
-                iface: "eth0".into(),
-                ip: "192.168.0.201".parse().unwrap(),
-                mask: "255.255.255.0".parse().unwrap(),
-            },
+            &crate::temp_ip::TempIp { iface: "eth0".into(), ip: ip.parse().unwrap(), mask: mask.parse().unwrap() },
             "eth0",
         )
-        .unwrap();
-        assert_eq!(elev.plans()[0], expected);
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn temp_ip_avoids_the_camera_seen_addresses_and_arp_neighbours() {
+        let elev = Arc::new(FakeElevator::new());
+        let mut c = ctx_with(Arc::new(axis_ok()), elev.clone(), vec!["192.168.0.90".parse().unwrap(), "192.168.0.250".parse().unwrap()]);
+        // Voisins ARP de l'interface : .200 à .248.
+        c.in_use = (200..=248).map(|d| Ipv4Addr::new(192, 168, 0, d)).collect();
+        assert!(apply(&c, &cam("192.168.0.90", Family::Axis), &creds(), &time()).await.ok);
+        assert_eq!(elev.plans()[0], plan_for("192.168.0.249", "255.255.255.0"));
+    }
+
+    #[tokio::test]
+    async fn seen_on_another_interface_gets_no_temp_ip() {
+        let http = Arc::new(axis_ok());
+        for seen_iface in [Some("wlan0".to_string()), None] {
+            let mut c = ctx_with(http.clone(), Arc::new(PanicElevator), vec![ll_cam().ip]);
+            c.seen_iface = seen_iface;
+            let r = apply(&c, &ll_cam(), &creds(), &Action::Activate).await;
+            assert_eq!(r.error, Some(ActionError::CameraOffSubnet));
+        }
+        assert!(http.requests().is_empty());
+    }
+
+    fn other(name: &str, ip: &str, mask: &str) -> ScanInterface {
+        ScanInterface { name: name.into(), ip: ip.parse().unwrap(), mask: mask.parse().unwrap() }
+    }
+
+    #[tokio::test]
+    async fn camera_subnet_overlapping_another_interface_is_refused() {
+        let http = Arc::new(axis_ok());
+        for (camera, iface) in [
+            ("192.168.0.90", other("wlan0", "192.168.0.10", "255.255.255.0")),
+            ("192.168.0.90", other("wlan0", "192.168.0.10", "255.255.0.0")),
+            ("192.168.0.90", other("wlan0", "192.168.0.130", "255.255.255.128")),
+            ("169.254.10.20", other("eth1", "169.254.77.1", "255.255.0.0")),
+            ("169.254.10.20", other("eth1", "169.254.77.1", "255.255.255.0")),
+        ] {
+            let mut c = ctx_with(http.clone(), Arc::new(PanicElevator), vec![camera.parse().unwrap()]);
+            c.other_ifaces = vec![other("lo", "127.0.0.1", "255.0.0.0"), iface.clone()];
+            let r = apply(&c, &cam(camera, Family::Axis), &creds(), &Action::Activate).await;
+            assert_eq!(r.error, Some(ActionError::CameraOffSubnet), "{camera} / {iface:?}");
+        }
+        assert!(http.requests().is_empty());
+        // Une autre interface sans recouvrement ne gêne pas.
+        let elev = Arc::new(FakeElevator::new());
+        let mut c = ctx_with(Arc::new(axis_ok()), elev.clone(), vec!["192.168.0.90".parse().unwrap()]);
+        c.other_ifaces = vec![other("wlan0", "192.168.1.10", "255.255.255.0")];
+        assert!(apply(&c, &cam("192.168.0.90", Family::Axis), &creds(), &time()).await.ok);
+        assert_eq!(elev.plans().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn busy_temp_ip_lock_is_reported_without_request() {
+        let http = Arc::new(axis_ok());
+        let c = ctx_with(http.clone(), Arc::new(PanicElevator), vec![ll_cam().ip]);
+        std::fs::create_dir_all(c.journal.parent().unwrap()).unwrap();
+        let held = std::fs::File::create(crate::temp_ip::lock_path(&c.journal)).unwrap();
+        held.lock().unwrap();
+        let r = apply(&c, &ll_cam(), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::TempIpBusy));
+        assert!(http.requests().is_empty());
     }
 
     #[tokio::test]
@@ -732,6 +814,7 @@ mod tests {
             ActionError::ElevationRefused { ip },
             ActionError::TempIpFailed,
             ActionError::TempIpLeft { ip },
+            ActionError::TempIpBusy,
         ];
         for e in all {
             let json = serde_json::to_string(&e).unwrap();

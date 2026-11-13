@@ -25,20 +25,42 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(4);
 #[derive(Default)]
 pub struct ScanState {
     pub cancel: Mutex<Option<CancellationToken>>,
-    /// Adresses des caméras vues par le dernier scan, tenues par Rust : seule
-    /// une adresse de cette liste peut justifier une IP temporaire (le front
-    /// fournit la caméra, il ne doit pas pouvoir inventer une cible).
-    pub last_seen: Mutex<HashSet<Ipv4Addr>>,
+    /// Ce que le dernier scan a entendu, tenu par Rust : seule une adresse de
+    /// cette liste, sur cette interface, peut justifier une IP temporaire (le
+    /// front fournit la caméra, il ne doit pas pouvoir inventer une cible).
+    pub last_seen: Mutex<LastSeen>,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct LastSeen {
+    /// `ScanInterface::name` du scan.
+    pub iface: Option<String>,
+    /// Adresses qui se sont annoncées elles-mêmes (`ScanEvent::Heard`).
+    pub ips: HashSet<Ipv4Addr>,
+}
+
+/// Instantané de `LastSeen`, adresses triées.
+pub struct SeenSnapshot {
+    pub iface: Option<String>,
+    pub ips: Vec<Ipv4Addr>,
 }
 
 impl ScanState {
-    pub fn seen(&self) -> Vec<Ipv4Addr> {
-        self.last_seen.lock().unwrap().iter().copied().collect()
+    pub fn seen(&self) -> SeenSnapshot {
+        let last = self.last_seen.lock().unwrap();
+        let mut ips: Vec<Ipv4Addr> = last.ips.iter().copied().collect();
+        ips.sort();
+        SeenSnapshot { iface: last.iface.clone(), ips }
+    }
+
+    /// Un nouveau scan repart de zéro, sur son interface.
+    fn begin(&self, iface: &ScanInterface) {
+        *self.last_seen.lock().unwrap() = LastSeen { iface: Some(iface.name.clone()), ips: HashSet::new() };
     }
 
     fn record(&self, ev: &ScanEvent) {
-        if let ScanEvent::Upsert { camera } = ev {
-            self.last_seen.lock().unwrap().insert(camera.ip);
+        if let ScanEvent::Heard { ip } = ev {
+            self.last_seen.lock().unwrap().ips.insert(*ip);
         }
     }
 }
@@ -94,13 +116,17 @@ pub async fn cmd_scan_start(
         return Err("no_socket".to_string());
     }
 
-    state.last_seen.lock().unwrap().clear();
+    state.begin(&scan_iface);
     let (tx, mut rx) = mpsc::channel(256);
     let cfg = ScanConfig { iface: scan_iface, listen: LISTEN };
     let http = Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT));
     let scan = tokio::spawn(run_scan(probes, http, Arc::new(SystemArp), cfg, tx, token.clone()));
     while let Some(ev) = rx.recv().await {
         state.record(&ev);
+        // Interne : l'adresse entendue ne part pas au webview.
+        if matches!(ev, ScanEvent::Heard { .. }) {
+            continue;
+        }
         // Webview disparue : plus personne n'écoute, on arrête le scan.
         if on_event.send(ev).is_err() {
             token.cancel();
@@ -143,8 +169,12 @@ mod tests {
     use super::*;
     use lenscout_core::model::{Activation, Camera, Family};
 
+    fn eth0() -> ScanInterface {
+        ScanInterface { name: "eth0".into(), ip: "10.0.50.2".parse().unwrap(), mask: "255.255.255.0".parse().unwrap() }
+    }
+
     #[test]
-    fn seules_les_cameras_du_scan_sont_retenues() {
+    fn seules_les_adresses_entendues_sont_retenues_avec_leur_interface() {
         let state = ScanState::default();
         let cam = Camera {
             ip: "169.254.10.20".parse().unwrap(),
@@ -158,11 +188,86 @@ mod tests {
             http_port: 80,
             sources: vec![],
         };
+        state.begin(&eth0());
         state.record(&ScanEvent::Done);
-        assert!(state.seen().is_empty());
-        state.record(&ScanEvent::Upsert { camera: cam.clone() });
         state.record(&ScanEvent::Upsert { camera: cam });
-        assert_eq!(state.seen(), vec!["169.254.10.20".parse::<Ipv4Addr>().unwrap()]);
+        assert!(state.seen().ips.is_empty(), "une annonce ne suffit pas");
+        let ip: Ipv4Addr = "169.254.10.20".parse().unwrap();
+        state.record(&ScanEvent::Heard { ip });
+        state.record(&ScanEvent::Heard { ip });
+        let seen = state.seen();
+        assert_eq!(seen.ips, vec![ip]);
+        assert_eq!(seen.iface.as_deref(), Some("eth0"));
+        // Un nouveau scan repart de zéro, sur sa propre interface.
+        state.begin(&ScanInterface { name: "wlan0".into(), ..eth0() });
+        assert!(state.seen().ips.is_empty());
+        assert_eq!(state.seen().iface.as_deref(), Some("wlan0"));
+    }
+
+    use lenscout_core::discovery::arp::ArpSource;
+
+    struct NoArp;
+
+    #[async_trait::async_trait]
+    impl ArpSource for NoArp {
+        async fn sweep_and_read(&self, _: &ScanInterface) -> std::collections::HashMap<Ipv4Addr, String> {
+            Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn reponse_wsd_qui_annonce_une_autre_adresse_hors_sous_reseau_refusee_sans_elevation() {
+        use lenscout_core::actions::{Action, ActionContext, ActionError, apply};
+        use lenscout_core::discovery::scanner::{Probe, ScanConfig, WsdProbe, run_scan_with_capture};
+        use lenscout_core::secret::Secret;
+        use lenscout_core::testing::{FakeDatagram, FakeHttp, PanicElevator};
+        use lenscout_core::transport::Credentials;
+
+        let xml = include_str!("../../../crates/lenscout-core/tests/fixtures/wsd_axis_probematch.xml")
+            .replace("192.0.2.11", "10.66.66.66");
+        let dg = Arc::new(FakeDatagram::new(vec![(xml.into_bytes(), "10.0.50.9:3702".parse().unwrap())]));
+        let probes: Vec<(Arc<dyn Probe>, Arc<dyn Datagram>)> = vec![(Arc::new(WsdProbe), dg)];
+        let state = ScanState::default();
+        state.begin(&eth0());
+        let (tx, mut rx) = mpsc::channel(64);
+        let cfg = ScanConfig { iface: eth0(), listen: Duration::from_millis(200) };
+        run_scan_with_capture(probes, Arc::new(FakeHttp::new()), Arc::new(NoArp), cfg, tx, CancellationToken::new(), None).await;
+        let mut listed = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let ScanEvent::Upsert { camera } = &ev {
+                listed |= camera.ip == "10.66.66.66".parse::<Ipv4Addr>().unwrap();
+            }
+            state.record(&ev);
+        }
+        assert!(listed, "la caméra reste listée");
+
+        let seen = state.seen();
+        let ctx = ActionContext {
+            http: Arc::new(FakeHttp::new()),
+            iface: eth0(),
+            service: "eth0".into(),
+            elevator: Arc::new(PanicElevator),
+            journal: std::env::temp_dir().join("lenscout-test-jamais-cree").join("temp-ip.json"),
+            seen: seen.ips,
+            seen_iface: seen.iface,
+            in_use: vec![],
+            other_ifaces: vec![],
+        };
+        let cam = Camera {
+            ip: "10.66.66.66".parse().unwrap(),
+            mac: Some("AC:CC:8E:12:34:56".into()),
+            family: Family::Axis,
+            brand: None,
+            model: None,
+            serial: None,
+            firmware: None,
+            activation: Activation::New,
+            http_port: 80,
+            sources: vec![],
+        };
+        let creds = Credentials { login: "root".into(), password: Secret::new("x".into()) };
+        let r = apply(&ctx, &cam, &creds, &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::CameraOffSubnet));
     }
 
     #[test]
