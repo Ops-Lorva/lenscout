@@ -122,13 +122,14 @@ test('lot : un message par code, l’adresse en paramètre', () => {
 });
 
 test('lot : l’empreinte change avec un champ ou la sélection', () => {
-  const f = { start: '10.0.50.11', mask: '255.255.255.0', gateway: '', dns: '' };
+  const f = { iface: 'eth0', start: '10.0.50.11', mask: '255.255.255.0', gateway: '', dns: '' };
   const a = [cam('axis'), cam('axis', '10.0.50.12')];
   const base = batchFingerprint(a, f);
   expect(batchFingerprint(a, { ...f, start: ' 10.0.50.11 ' })).toBe(base);
   expect(batchFingerprint(a, { ...f, start: '10.0.50.20' })).not.toBe(base);
   expect(batchFingerprint(a, { ...f, gateway: '10.0.50.1' })).not.toBe(base);
   expect(batchFingerprint(a, { ...f, dns: '1.1.1.1' })).not.toBe(base);
+  expect(batchFingerprint(a, { ...f, iface: 'wlan0' })).not.toBe(base);
   expect(batchFingerprint(a.slice(0, 1), f)).not.toBe(base);
   expect(batchFingerprint([a[1], a[0]], f)).not.toBe(base);
 });

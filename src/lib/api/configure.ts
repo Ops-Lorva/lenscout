@@ -153,6 +153,8 @@ export type BatchError =
   | { code: 'range_overflow' }
   | { code: 'network_or_broadcast'; ip: string }
   | { code: 'gateway_in_range'; ip: string }
+  | { code: 'gateway_out_of_subnet'; ip: string }
+  | { code: 'too_many_dns' }
   | { code: 'ip_in_use'; ip: string; mac: string | null };
 
 /** Miroir de `Assignment`. */
@@ -186,9 +188,12 @@ export const batchPreview = (selection: Camera[], others: Camera[], req: BatchRe
 export const batchApply = (previewId: string, accountId: string, iface: string) =>
   invoke<ActionResult[]>('cmd_batch_apply', { previewId, accountId, iface });
 
-/** Les caméras de la sélection, les autres, ou un champ qui changent : l'aperçu n'est plus celui de l'écran. */
-export const batchFingerprint = (cams: Camera[], f: { start: string; mask: string; gateway: string; dns: string }): string =>
-  JSON.stringify([cams.map(cameraKey), f.start.trim(), f.mask.trim(), f.gateway.trim(), splitList(f.dns)]);
+/** La sélection (ordre compris), l'interface ou un champ qui changent : l'aperçu n'est plus celui de l'écran. */
+export const batchFingerprint = (
+  cams: Camera[],
+  f: { iface: string; start: string; mask: string; gateway: string; dns: string },
+): string =>
+  JSON.stringify([f.iface, cams.map(cameraKey), f.start.trim(), f.mask.trim(), f.gateway.trim(), splitList(f.dns)]);
 
 /**
  * Message d'une ligne pour l'erreur d'un aperçu : `BatchError` (objet à code)

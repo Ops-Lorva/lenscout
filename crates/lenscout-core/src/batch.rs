@@ -44,6 +44,10 @@ pub enum BatchError {
     RangeOverflow,
     #[error("adresse réseau ou broadcast : {ip}")]
     NetworkOrBroadcast { ip: Ipv4Addr },
+    #[error("passerelle hors du sous-réseau : {ip}")]
+    GatewayOutOfSubnet { ip: Ipv4Addr },
+    #[error("plus de 2 serveurs DNS")]
+    TooManyDns,
     #[error("passerelle dans la plage : {ip}")]
     GatewayInRange { ip: Ipv4Addr },
     #[error("adresse déjà utilisée : {ip}")]
@@ -51,11 +55,13 @@ pub enum BatchError {
 }
 
 /// `selection` : les caméras cochées, dans l'ordre affiché ; `others` : toutes
-/// les autres connues (aucune ne doit voir son adresse prise).
+/// les autres connues (aucune ne doit voir son adresse prise) ; `reserved` :
+/// adresses du poste (jamais attribuées), `IpInUse` sans MAC.
 pub fn plan_batch(
     selection: &[Camera],
     req: &BatchRequest,
     others: &[Camera],
+    reserved: &[Ipv4Addr],
 ) -> Result<Vec<Assignment>, BatchError> {
     if selection.is_empty() {
         return Err(BatchError::NoSelection);
@@ -64,6 +70,10 @@ pub fn plan_batch(
     // Contigu, ni /0 ni /31 ni /32 : même règle que `vapix::validate_static`.
     if m.leading_ones() + m.trailing_zeros() != 32 || m.leading_ones() == 0 || m.leading_ones() >= 31 {
         return Err(BatchError::InvalidMask);
+    }
+    // La caméra n'a que deux emplacements DNS.
+    if req.dns.len() > 2 {
+        return Err(BatchError::TooManyDns);
     }
     // Marque, puis MAC, avant tout calcul d'adresse.
     let mut macs = Vec::with_capacity(selection.len());
@@ -88,6 +98,13 @@ pub fn plan_batch(
     if last & m != net {
         return Err(BatchError::RangeOverflow);
     }
+    // Passerelle : dans le sous-réseau, ni adresse réseau ni broadcast.
+    if let Some(gw) = req.gateway {
+        let g = u32::from(gw);
+        if g & m != net || g == net || g == net | !m {
+            return Err(BatchError::GatewayOutOfSubnet { ip: gw });
+        }
+    }
     let mut out: Vec<Assignment> = Vec::with_capacity(selection.len());
     for (i, (cam, mac)) in selection.iter().zip(macs).enumerate() {
         let a = start + i as u32;
@@ -104,6 +121,9 @@ pub fn plan_batch(
             .map(|(_, o)| o)
             .chain(others.iter().filter(|o| o.ip == new_ip))
             .next();
+        if reserved.contains(&new_ip) {
+            return Err(BatchError::IpInUse { ip: new_ip, mac: None });
+        }
         if let Some(o) = taken {
             return Err(BatchError::IpInUse { ip: new_ip, mac: o.mac.clone() });
         }
@@ -158,7 +178,7 @@ mod tests {
     #[test]
     fn assigns_in_display_order() {
         let sel = [axis(200), axis(150), axis(180)];
-        let rows = plan_batch(&sel, &req("10.0.50.11"), &[]).unwrap();
+        let rows = plan_batch(&sel, &req("10.0.50.11"), &[], &[]).unwrap();
         let ips: Vec<_> = rows.iter().map(|r| r.new_ip).collect();
         assert_eq!(ips, [ip("10.0.50.11"), ip("10.0.50.12"), ip("10.0.50.13")]);
         assert_eq!(rows[0].current_ip, ip("10.0.50.200"));
@@ -171,19 +191,19 @@ mod tests {
         let sel = [axis(1), axis(2), axis(3)];
         // .253 .254 .255 : la dernière est le broadcast.
         assert_eq!(
-            plan_batch(&sel, &req("10.0.50.253"), &[]),
+            plan_batch(&sel, &req("10.0.50.253"), &[], &[]),
             Err(BatchError::NetworkOrBroadcast { ip: ip("10.0.50.255") })
         );
         // Une quatrième sort du /24.
         let sel = [axis(1), axis(2), axis(3), axis(4)];
-        assert_eq!(plan_batch(&sel, &req("10.0.50.253"), &[]), Err(BatchError::RangeOverflow));
+        assert_eq!(plan_batch(&sel, &req("10.0.50.253"), &[], &[]), Err(BatchError::RangeOverflow));
         // Dernière adresse de l'espace IPv4 : pas de débordement de u32, une erreur.
         let sel = [axis(1), axis(2)];
         let mut r = req("255.255.255.255");
-        assert_eq!(plan_batch(&sel, &r, &[]), Err(BatchError::RangeOverflow));
+        assert_eq!(plan_batch(&sel, &r, &[], &[]), Err(BatchError::RangeOverflow));
         r.start = ip("10.0.50.0");
         assert_eq!(
-            plan_batch(&sel, &r, &[]),
+            plan_batch(&sel, &r, &[], &[]),
             Err(BatchError::NetworkOrBroadcast { ip: ip("10.0.50.0") })
         );
     }
@@ -193,9 +213,9 @@ mod tests {
         let sel = [axis(1), axis(2), axis(3)];
         let mut r = req("10.0.50.11");
         r.gateway = Some(ip("10.0.50.12"));
-        assert_eq!(plan_batch(&sel, &r, &[]), Err(BatchError::GatewayInRange { ip: ip("10.0.50.12") }));
+        assert_eq!(plan_batch(&sel, &r, &[], &[]), Err(BatchError::GatewayInRange { ip: ip("10.0.50.12") }));
         r.gateway = Some(ip("10.0.50.1"));
-        assert!(plan_batch(&sel, &r, &[]).is_ok());
+        assert!(plan_batch(&sel, &r, &[], &[]).is_ok());
     }
 
     #[test]
@@ -203,7 +223,7 @@ mod tests {
         let sel = [axis(1), axis(2)];
         let others = [axis(12)];
         assert_eq!(
-            plan_batch(&sel, &req("10.0.50.11"), &others),
+            plan_batch(&sel, &req("10.0.50.11"), &others, &[]),
             Err(BatchError::IpInUse { ip: ip("10.0.50.12"), mac: Some("AC:CC:8E:00:00:0C".into()) })
         );
     }
@@ -213,12 +233,12 @@ mod tests {
         // A (.12) reçoit .11 que porte B (.11) : collision pendant l'application.
         let sel = [axis(12), axis(11)];
         assert_eq!(
-            plan_batch(&sel, &req("10.0.50.11"), &[]),
+            plan_batch(&sel, &req("10.0.50.11"), &[], &[]),
             Err(BatchError::IpInUse { ip: ip("10.0.50.11"), mac: Some("AC:CC:8E:00:00:0B".into()) })
         );
         // Une caméra qui garde sa propre adresse n'est pas sautée.
         let sel = [axis(11), axis(13)];
-        let rows = plan_batch(&sel, &req("10.0.50.11"), &[]).unwrap();
+        let rows = plan_batch(&sel, &req("10.0.50.11"), &[], &[]).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].new_ip, rows[0].current_ip);
         assert_eq!(rows[1].new_ip, ip("10.0.50.12"));
@@ -227,20 +247,20 @@ mod tests {
     #[test]
     fn camera_without_mac_is_error() {
         let sel = [axis(1), cam(2, None, Family::Axis)];
-        assert_eq!(plan_batch(&sel, &req("10.0.50.11"), &[]), Err(BatchError::MissingMac { ip: ip("10.0.50.2") }));
+        assert_eq!(plan_batch(&sel, &req("10.0.50.11"), &[], &[]), Err(BatchError::MissingMac { ip: ip("10.0.50.2") }));
     }
 
     #[test]
     fn other_brand_is_unsupported() {
         let sel = [axis(1), cam(2, Some("AA:BB:CC:00:00:02"), Family::Other)];
-        assert_eq!(plan_batch(&sel, &req("10.0.50.11"), &[]), Err(BatchError::Unsupported { ip: ip("10.0.50.2") }));
+        assert_eq!(plan_batch(&sel, &req("10.0.50.11"), &[], &[]), Err(BatchError::Unsupported { ip: ip("10.0.50.2") }));
     }
 
     #[test]
     fn hikvision_is_unsupported_while_sadp_cannot_configure() {
         assert!(!sadp::can_configure());
         let sel = [cam(2, Some("AA:BB:CC:00:00:02"), Family::Hikvision)];
-        assert_eq!(plan_batch(&sel, &req("10.0.50.11"), &[]), Err(BatchError::Unsupported { ip: ip("10.0.50.2") }));
+        assert_eq!(plan_batch(&sel, &req("10.0.50.11"), &[], &[]), Err(BatchError::Unsupported { ip: ip("10.0.50.2") }));
     }
 
     #[test]
@@ -248,13 +268,13 @@ mod tests {
         let mut r = req("10.0.50.11");
         for bad in ["255.0.255.0", "0.0.0.0", "255.255.255.254", "255.255.255.255"] {
             r.mask = ip(bad);
-            assert_eq!(plan_batch(&[axis(1)], &r, &[]), Err(BatchError::InvalidMask), "{bad}");
+            assert_eq!(plan_batch(&[axis(1)], &r, &[], &[]), Err(BatchError::InvalidMask), "{bad}");
         }
     }
 
     #[test]
     fn empty_selection_is_error() {
-        assert_eq!(plan_batch(&[], &req("10.0.50.11"), &[]), Err(BatchError::NoSelection));
+        assert_eq!(plan_batch(&[], &req("10.0.50.11"), &[], &[]), Err(BatchError::NoSelection));
     }
 
     #[test]
@@ -262,5 +282,73 @@ mod tests {
         let j = serde_json::to_value(BatchError::IpInUse { ip: ip("10.0.50.12"), mac: None }).unwrap();
         assert_eq!(j["code"], "ip_in_use");
         assert_eq!(serde_json::to_value(BatchError::NoSelection).unwrap()["code"], "no_selection");
+    }
+
+    #[test]
+    fn gateway_must_be_a_host_of_the_subnet() {
+        let sel = [axis(1), axis(2)];
+        let mut r = req("10.0.50.11");
+        for bad in ["10.0.51.1", "10.0.50.0", "10.0.50.255"] {
+            r.gateway = Some(ip(bad));
+            assert_eq!(plan_batch(&sel, &r, &[], &[]), Err(BatchError::GatewayOutOfSubnet { ip: ip(bad) }), "{bad}");
+        }
+        r.gateway = Some(ip("10.0.50.1"));
+        assert!(plan_batch(&sel, &r, &[], &[]).is_ok());
+    }
+
+    #[test]
+    fn more_than_two_dns_is_refused() {
+        let mut r = req("10.0.50.11");
+        r.dns = vec![ip("10.0.50.1"), ip("10.0.50.2")];
+        assert!(plan_batch(&[axis(1)], &r, &[], &[]).is_ok());
+        r.dns.push(ip("10.0.50.3"));
+        assert_eq!(plan_batch(&[axis(1)], &r, &[], &[]), Err(BatchError::TooManyDns));
+        assert_eq!(serde_json::to_value(BatchError::TooManyDns).unwrap()["code"], "too_many_dns");
+        assert_eq!(
+            serde_json::to_value(BatchError::GatewayOutOfSubnet { ip: ip("1.2.3.4") }).unwrap()["code"],
+            "gateway_out_of_subnet"
+        );
+    }
+
+    #[test]
+    fn the_pc_address_is_never_assigned() {
+        let sel = [axis(1), axis(2)];
+        assert_eq!(
+            plan_batch(&sel, &req("10.0.50.11"), &[], &[ip("10.0.50.12")]),
+            Err(BatchError::IpInUse { ip: ip("10.0.50.12"), mac: None })
+        );
+        assert!(plan_batch(&sel, &req("10.0.50.11"), &[], &[ip("10.0.50.99")]).is_ok());
+    }
+
+    #[test]
+    fn a_slash_16_is_crossed_by_octet_but_not_by_subnet() {
+        let mut r = req("10.1.255.250");
+        r.mask = ip("255.255.0.0");
+        let many: Vec<Camera> = (1..=10).map(axis).collect();
+        // 10.1.255.250 + 10 : 10.2.0.3, autre /16.
+        assert_eq!(plan_batch(&many, &r, &[], &[]), Err(BatchError::RangeOverflow));
+        // Six adresses finissent sur le broadcast 10.1.255.255.
+        assert_eq!(
+            plan_batch(&many[..6], &r, &[], &[]),
+            Err(BatchError::NetworkOrBroadcast { ip: ip("10.1.255.255") })
+        );
+        // x.y.254.255 n'est pas un broadcast en /16 : on passe de .254 à .255.
+        r.start = ip("10.1.254.255");
+        let rows = plan_batch(&many[..3], &r, &[], &[]).unwrap();
+        let ips: Vec<_> = rows.iter().map(|a| a.new_ip).collect();
+        assert_eq!(ips, [ip("10.1.254.255"), ip("10.1.255.0"), ip("10.1.255.1")]);
+    }
+
+    #[test]
+    fn a_slash_30_has_two_hosts() {
+        let mut r = req("10.0.50.5");
+        r.mask = ip("255.255.255.252");
+        let sel = [axis(1), axis(2), axis(3)];
+        assert_eq!(plan_batch(&sel[..2], &r, &[], &[]).unwrap()[1].new_ip, ip("10.0.50.6"));
+        assert_eq!(plan_batch(&sel, &r, &[], &[]), Err(BatchError::NetworkOrBroadcast { ip: ip("10.0.50.7") }));
+        r.start = ip("10.0.50.4");
+        assert_eq!(plan_batch(&sel[..1], &r, &[], &[]), Err(BatchError::NetworkOrBroadcast { ip: ip("10.0.50.4") }));
+        r.start = ip("10.0.50.6");
+        assert_eq!(plan_batch(&sel[..2], &r, &[], &[]), Err(BatchError::NetworkOrBroadcast { ip: ip("10.0.50.7") }));
     }
 }

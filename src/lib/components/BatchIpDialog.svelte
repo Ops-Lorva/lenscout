@@ -37,7 +37,7 @@
   // L'aperçu garde l'empreinte des champs et de la sélection qui l'ont produit.
   let preview = $state<{ data: BatchPreview; fingerprint: string } | null>(null);
 
-  const fingerprint = $derived(batchFingerprint(cams, { start, mask, gateway, dns }));
+  const fingerprint = $derived(batchFingerprint(cams, { iface, start, mask, gateway, dns }));
   // Un champ ou la sélection qui change retire l'aperçu : Appliquer se désactive.
   const shown = $derived(preview && preview.fingerprint === fingerprint ? preview.data : null);
   const ready = $derived(!busy && start.trim() !== '' && mask.trim() !== '');

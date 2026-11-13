@@ -322,15 +322,23 @@ pub async fn apply_all(
 /// Applique un plan d'IP en lot : `cams[i]` reçoit `rows[i].new_ip`. Chaque
 /// attribution passe par `apply` (sous-réseau, IP temporaire, identité juste
 /// avant l'écriture) ; une caméra refusée est sautée, les autres continuent.
-/// Une seule ligne de résultat par caméra, dans l'ordre du plan.
+/// Une seule ligne de résultat par caméra, dans l'ordre du plan. Un plan qui
+/// ne correspond pas aux caméras (longueurs) n'applique rien : `Err("internal")`.
+///
+/// Les nouvelles adresses du plan rejoignent `in_use` : l'IP temporaire posée
+/// pour une caméra hors sous-réseau ne doit pas heurter celle d'une caméra déjà
+/// déplacée.
 pub async fn apply_batch(
-    ctx: &ActionContext,
+    mut ctx: ActionContext,
     cams: &[Camera],
     rows: &[Assignment],
     creds: &Credentials,
     req: &BatchRequest,
-) -> Vec<ActionResult> {
-    debug_assert_eq!(cams.len(), rows.len());
+) -> Result<Vec<ActionResult>, String> {
+    if cams.len() != rows.len() {
+        return Err("internal".into());
+    }
+    ctx.in_use.extend(rows.iter().map(|r| r.new_ip));
     let mut out = Vec::with_capacity(cams.len());
     for (cam, row) in cams.iter().zip(rows) {
         let action = Action::Network(NetworkSettings::Static {
@@ -339,9 +347,9 @@ pub async fn apply_batch(
             gateway: req.gateway,
             dns: req.dns.clone(),
         });
-        out.push(apply(ctx, cam, creds, &action).await);
+        out.push(apply(&ctx, cam, creds, &action).await);
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1007,7 +1015,7 @@ mod tests {
             gateway: Some("192.0.2.1".parse().unwrap()),
             dns: vec![],
         };
-        let rows = crate::batch::plan_batch(cams, &req, &[]).unwrap();
+        let rows = crate::batch::plan_batch(cams, &req, &[], &[]).unwrap();
         (req, rows)
     }
 
@@ -1016,7 +1024,7 @@ mod tests {
         let (a, b) = (batch_cam(11, "AC:CC:8E:12:34:56"), batch_cam(12, "AC:CC:8E:12:34:57"));
         let http = Arc::new(PerHost { inner: axis_ok(), serials: vec![("192.0.2.12", "ACCC8E123457")] });
         let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
-        let out = apply_batch(&ctx(http.clone()), &[a, b], &rows, &creds(), &req).await;
+        let out = apply_batch(ctx(http.clone()), &[a, b], &rows, &creds(), &req).await.unwrap();
         assert!(out.iter().all(|r| r.ok), "{out:?}");
         let hosts: Vec<String> = http.inner.requests().into_iter().map(|r| r.url).collect();
         assert!(hosts.iter().all(|u| u.contains("192.0.2.11") || u.contains("192.0.2.12")), "{hosts:?}");
@@ -1038,7 +1046,7 @@ mod tests {
         // B répond avec la série d'une autre caméra.
         let http = Arc::new(PerHost { inner: axis_ok(), serials: vec![("192.0.2.12", "ACCC8E999999")] });
         let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
-        let out = apply_batch(&ctx(http.clone()), &[a, b], &rows, &creds(), &req).await;
+        let out = apply_batch(ctx(http.clone()), &[a, b], &rows, &creds(), &req).await.unwrap();
         assert_eq!(out.len(), 2);
         assert!(out[0].ok);
         assert_eq!(out[1].error, Some(ActionError::IdentityMismatch));
@@ -1060,9 +1068,66 @@ mod tests {
             dead: "192.0.2.11",
         });
         let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
-        let out = apply_batch(&ctx(http), &[a, b], &rows, &creds(), &req).await;
+        let out = apply_batch(ctx(http), &[a, b], &rows, &creds(), &req).await.unwrap();
         assert!(matches!(out[0].error, Some(ActionError::Unreachable { .. })));
         // B répond avec la série de la MAC de A : l'identité de B ne correspond pas, mais elle a bien été tentée.
         assert_eq!(out[1].error, Some(ActionError::IdentityMismatch));
+    }
+
+    #[tokio::test]
+    async fn batch_temp_ip_avoids_the_new_addresses_of_the_plan() {
+        // Deux caméras hors sous-réseau, même /24 ; leurs nouvelles IP sont
+        // .200 et .201. Les voisins occupent .203 à .250 : seule .202 convient.
+        let mut a = cam("192.168.0.90", Family::Axis);
+        a.mac = Some("AC:CC:8E:12:34:56".into());
+        let b = a.clone();
+        let mut b = Camera { ip: "192.168.0.91".parse().unwrap(), ..b };
+        b.mac = Some("AC:CC:8E:12:34:56".into());
+        let req = BatchRequest {
+            start: "192.168.0.200".parse().unwrap(),
+            mask: "255.255.255.0".parse().unwrap(),
+            gateway: None,
+            dns: vec![],
+        };
+        let rows = crate::batch::plan_batch(&[a.clone(), b.clone()], &req, &[], &[]).unwrap();
+        // Le tirage est aléatoire : plusieurs essais pour qu'une collision se voie.
+        for _ in 0..12 {
+            let elev = Arc::new(FakeElevator::new());
+            let mut c = ctx_with(Arc::new(axis_ok()), elev.clone(), vec![a.ip, b.ip]);
+            c.in_use = (203..=250).map(|d| Ipv4Addr::new(192, 168, 0, d)).collect();
+            let out = apply_batch(c, &[a.clone(), b.clone()], &rows, &creds(), &req).await.unwrap();
+            assert!(out.iter().all(|r| r.ok), "{out:?}");
+            let plans = elev.plans();
+            assert_eq!(plans.len(), 4);
+            assert_eq!(plans[0], plan_for("192.168.0.202", "255.255.255.0"));
+            assert_eq!(plans[2], plan_for("192.168.0.202", "255.255.255.0"));
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_length_mismatch_applies_nothing() {
+        let a = batch_cam(11, "AC:CC:8E:12:34:56");
+        let http = Arc::new(axis_ok());
+        let (req, rows) = batch_plan(std::slice::from_ref(&a));
+        let two = [a.clone(), batch_cam(12, "AC:CC:8E:12:34:57")];
+        assert!(apply_batch(ctx(http.clone()), &two, &rows, &creds(), &req).await.is_err());
+        assert!(http.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_camera_keeping_its_own_ip_is_still_written() {
+        let a = batch_cam(11, "AC:CC:8E:12:34:56");
+        let http = Arc::new(axis_ok());
+        let req = BatchRequest {
+            start: "192.0.2.11".parse().unwrap(),
+            mask: "255.255.255.0".parse().unwrap(),
+            gateway: None,
+            dns: vec![],
+        };
+        let rows = crate::batch::plan_batch(std::slice::from_ref(&a), &req, &[], &[]).unwrap();
+        let out = apply_batch(ctx(http.clone()), &[a], &rows, &creds(), &req).await.unwrap();
+        assert!(out[0].ok, "{out:?}");
+        let body = http.requests().into_iter().find(|r| r.url.ends_with("/axis-cgi/param.cgi")).unwrap();
+        assert!(String::from_utf8(body.body).unwrap().contains("Network.IPAddress=192.0.2.11"));
     }
 }

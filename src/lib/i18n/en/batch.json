@@ -16,6 +16,8 @@
     "range_overflow": "Range exceeds the subnet",
     "network_or_broadcast": "Network or broadcast address: {ip}",
     "gateway_in_range": "Gateway inside the range: {ip}",
-    "ip_in_use": "Address already in use: {ip}"
+    "ip_in_use": "Address already in use: {ip}",
+    "gateway_out_of_subnet": "Gateway outside the subnet: {ip}",
+    "too_many_dns": "More than 2 DNS servers"
   }
 }

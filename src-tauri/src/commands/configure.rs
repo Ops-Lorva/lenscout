@@ -191,6 +191,12 @@ impl PreviewStore {
         id
     }
 
+    /// Les caméras d'un aperçu, sans le consommer : le contexte d'écriture
+    /// s'en construit avant que l'identifiant ne soit pris.
+    fn cameras_of(&self, id: &str) -> Result<Vec<Camera>, String> {
+        self.0.lock().unwrap().get(id).map(|p| p.cameras.clone()).ok_or_else(|| "preview_unknown".to_string())
+    }
+
     /// Sort l'aperçu du magasin dans tous les cas : un identifiant ne sert
     /// qu'une fois, même si l'application a échoué en partie ou si l'aperçu est
     /// refusé. `scan_iface` : interface du dernier scan.
@@ -228,19 +234,46 @@ impl From<BatchRequestDto> for BatchRequest {
     }
 }
 
+/// Échec d'un aperçu : erreur de plan (objet à code) ou code de commande.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum PreviewError {
+    Plan(BatchError),
+    Code(String),
+}
+
+impl From<BatchError> for PreviewError {
+    fn from(e: BatchError) -> Self {
+        PreviewError::Plan(e)
+    }
+}
+
 /// Calcule et valide le plan, sans rien envoyer à aucune caméra, et le garde
 /// côté Rust sous un identifiant. `selection` est dans l'ordre affiché ;
-/// `others` : les autres caméras connues.
+/// `others` : les autres caméras connues. L'adresse du poste sur l'interface
+/// vient d'ici, pas du front : elle n'est jamais attribuée.
 #[tauri::command]
-pub fn cmd_batch_preview(
+pub async fn cmd_batch_preview(
     selection: Vec<Camera>,
     others: Vec<Camera>,
     req: BatchRequestDto,
     iface: String,
     store: State<'_, PreviewStore>,
-) -> Result<BatchPreview, BatchError> {
+) -> Result<BatchPreview, PreviewError> {
     let req: BatchRequest = req.into();
-    let rows = plan_batch(&selection, &req, &others)?;
+    let name = iface.clone();
+    let host = tauri::async_runtime::spawn_blocking(move || {
+        if !list_interfaces_up().contains(&name) {
+            return Err("iface_unknown".to_string());
+        }
+        ScanInterface::from_details(&name, &get_interface_details(&name))
+            .map(|i| i.ip)
+            .ok_or_else(|| "iface_no_ipv4".to_string())
+    })
+    .await
+    .map_err(|_| PreviewError::Code("internal".into()))?
+    .map_err(PreviewError::Code)?;
+    let rows = plan_batch(&selection, &req, &others, &[host])?;
     let id = store.put(StoredPreview { cameras: selection, rows: rows.clone(), req, iface, created: Instant::now() });
     Ok(BatchPreview { id, rows })
 }
@@ -249,6 +282,7 @@ pub fn cmd_batch_preview(
 /// réseau, IP temporaire et identité (MAC / série) vérifiés avant chaque
 /// écriture. Erreurs : `preview_unknown` (inconnu ou déjà appliqué),
 /// `preview_expired` (plus de 10 min, ou interface différente du scan).
+/// Compte et contexte d'abord : un échec passager ne consomme pas l'identifiant.
 #[tauri::command]
 pub async fn cmd_batch_apply(
     preview_id: String,
@@ -259,10 +293,11 @@ pub async fn cmd_batch_apply(
     journal: State<'_, TempIpJournal>,
     store: State<'_, PreviewStore>,
 ) -> Result<Vec<ActionResult>, String> {
-    let preview = store.take(&preview_id, &iface, scan.seen().iface.as_deref(), Instant::now())?;
+    let cameras = store.cameras_of(&preview_id)?;
     let creds = credentials_for(&accounts, &account_id)?;
-    let ctx = build_context(iface, &preview.cameras, &scan, &journal.0).await?;
-    Ok(apply_batch(&ctx, &preview.cameras, &preview.rows, &creds, &preview.req).await)
+    let ctx = build_context(iface.clone(), &cameras, &scan, &journal.0).await?;
+    let preview = store.take(&preview_id, &iface, scan.seen().iface.as_deref(), Instant::now())?;
+    apply_batch(ctx, &preview.cameras, &preview.rows, &creds, &preview.req).await
 }
 
 #[cfg(test)]
@@ -376,5 +411,22 @@ mod tests {
         }
         assert_eq!(store.0.lock().unwrap().len(), PREVIEW_MAX);
         assert_eq!(store.take(&first, "eth0", Some("eth0"), t0).err().as_deref(), Some("preview_unknown"));
+    }
+
+    #[test]
+    fn les_cameras_d_un_apercu_se_lisent_sans_le_consommer() {
+        let store = PreviewStore::default();
+        let id = store.put(stored("eth0", Instant::now()));
+        assert!(store.cameras_of(&id).is_ok());
+        assert!(store.cameras_of(&id).is_ok());
+        assert!(store.take(&id, "eth0", Some("eth0"), Instant::now()).is_ok());
+        assert_eq!(store.cameras_of(&id).err().as_deref(), Some("preview_unknown"));
+    }
+
+    #[test]
+    fn une_erreur_d_apercu_se_serialise_en_objet_ou_en_chaine() {
+        let plan: PreviewError = BatchError::TooManyDns.into();
+        assert_eq!(serde_json::to_string(&plan).unwrap(), r#"{"code":"too_many_dns"}"#);
+        assert_eq!(serde_json::to_string(&PreviewError::Code("iface_unknown".into())).unwrap(), r#""iface_unknown""#);
     }
 }
