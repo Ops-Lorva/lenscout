@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { writable } from 'svelte/store';
 import type { Camera, Family } from './types';
 import { cameraKey } from '$lib/stores/cameras';
+import { errorKey } from './errors';
 
 /** Miroir de `ActionError` (actions.rs). `rejected.detail` vient de la caméra. */
 export type ActionError =
@@ -139,3 +140,64 @@ export const applyAction = (cameras: Camera[], accountId: string, action: Action
   cameras.length === 0
     ? Promise.reject('no_cameras')
     : invoke<ActionResult[]>('cmd_apply_action', { cameras, accountId, action, iface });
+
+/** Le lot vise au moins deux caméras d'une marque configurable (une seule : « IP »). */
+export const canBatchIp = (cams: Camera[]): boolean => cams.length > 1 && canAct(cams);
+
+/** Miroir de `BatchError` (batch.rs). */
+export type BatchError =
+  | { code: 'no_selection' }
+  | { code: 'missing_mac'; ip: string }
+  | { code: 'unsupported'; ip: string }
+  | { code: 'invalid_mask' }
+  | { code: 'range_overflow' }
+  | { code: 'network_or_broadcast'; ip: string }
+  | { code: 'gateway_in_range'; ip: string }
+  | { code: 'ip_in_use'; ip: string; mac: string | null };
+
+/** Miroir de `Assignment`. */
+export interface Assignment {
+  mac: string;
+  serial: string | null;
+  family: Family;
+  current_ip: string;
+  new_ip: string;
+}
+
+export interface BatchPreview {
+  id: string;
+  rows: Assignment[];
+}
+
+export interface BatchRequest {
+  start: string;
+  mask: string;
+  gateway: string | null;
+  dns: string[];
+}
+
+/** Aperçu calculé et gardé par Rust ; rien n'est envoyé aux caméras. */
+export const batchPreview = (selection: Camera[], others: Camera[], req: BatchRequest, iface: string) =>
+  selection.length === 0
+    ? Promise.reject('no_cameras')
+    : invoke<BatchPreview>('cmd_batch_preview', { selection, others, req, iface });
+
+/** Applique l'aperçu gardé par Rust sous `previewId` (usage unique). */
+export const batchApply = (previewId: string, accountId: string, iface: string) =>
+  invoke<ActionResult[]>('cmd_batch_apply', { previewId, accountId, iface });
+
+/** Les caméras de la sélection, les autres, ou un champ qui changent : l'aperçu n'est plus celui de l'écran. */
+export const batchFingerprint = (cams: Camera[], f: { start: string; mask: string; gateway: string; dns: string }): string =>
+  JSON.stringify([cams.map(cameraKey), f.start.trim(), f.mask.trim(), f.gateway.trim(), splitList(f.dns)]);
+
+/**
+ * Message d'une ligne pour l'erreur d'un aperçu : `BatchError` (objet à code)
+ * ou code de commande (chaîne). Clé i18n complète et ses valeurs.
+ */
+export function batchErrorMessage(e: unknown): { key: string; values: Record<string, string> } {
+  if (e && typeof e === 'object' && 'code' in e && typeof (e as { code: unknown }).code === 'string') {
+    const b = e as { code: string; ip?: string };
+    return { key: `batch.error.${b.code}`, values: b.ip ? { ip: b.ip } : {} };
+  }
+  return { key: `configure.${errorKey(e)}`, values: {} };
+}

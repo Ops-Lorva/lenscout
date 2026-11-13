@@ -1,17 +1,18 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { applyAction, canActivate, dialogAfterSelection, canAct, canChangeIp, clearResults, setResults, type ActionDto } from '$lib/api/configure';
+  import { applyAction, canActivate, dialogAfterSelection, canAct, canChangeIp, canBatchIp, clearResults, setResults, type ActionDto, type ActionResult } from '$lib/api/configure';
   import { errorKey } from '$lib/api/errors';
-  import { selectedCameras } from '$lib/stores/cameras';
+  import { cameraKey, cameras, selectedCameras } from '$lib/stores/cameras';
+  import BatchIpDialog from './BatchIpDialog.svelte';
   import ActivateDialog from './ActivateDialog.svelte';
   import NetworkDialog from './NetworkDialog.svelte';
   import TimeDialog from './TimeDialog.svelte';
 
   // `iface` : l'interface du scan en cours. `onDone` : appelé après une action
   // qui change l'IP, pour que la page rescanne.
-  let { iface, onDone }: { iface: string; onDone: (a: ActionDto) => void } = $props();
+  let { iface, onDone }: { iface: string; onDone: () => void } = $props();
 
-  let open = $state<'activate' | 'network' | 'time' | null>(null);
+  let open = $state<'activate' | 'network' | 'batch' | 'time' | null>(null);
   let accountId = $state('');
   let busy = $state(false);
   let error = $state('');
@@ -20,11 +21,22 @@
   const allowed = $derived(canAct(cams));
   const activatable = $derived(canActivate(cams));
   const ipAllowed = $derived(canChangeIp(cams));
+  const batchAllowed = $derived(canBatchIp(cams));
+  // Les caméras non cochées (même masquées par la recherche) : leurs adresses sont à protéger.
+  const others = $derived($cameras.filter((c) => !cams.some((s) => cameraKey(s) === cameraKey(c))));
 
   // Sélection vidée (décochée, recherche, rescan) : pas de dialogue sur rien.
   $effect(() => {
     open = dialogAfterSelection(open, cams);
   });
+
+  // Résultats d'un lot : mêmes pastilles par ligne, puis rescan comme après une IP.
+  function batchDone(results: ActionResult[]) {
+    clearResults();
+    setResults(results);
+    open = null;
+    onDone();
+  }
 
   async function run(action: ActionDto) {
     // La sélection est figée au clic : ce qui part est ce que le dialogue annonçait.
@@ -36,7 +48,7 @@
     try {
       setResults(await applyAction(targets, accountId, action, iface));
       open = null;
-      if (action.kind === 'network_dhcp' || action.kind === 'network_static') onDone(action);
+      if (action.kind === 'network_dhcp' || action.kind === 'network_static') onDone();
     } catch (e) {
       open = null;
       error = $_(`configure.${errorKey(e)}`);
@@ -50,6 +62,7 @@
   <div class="actions">
     <button disabled={!activatable} onclick={() => (open = 'activate')}>{$_('configure.activate')}</button>
     <button disabled={!ipAllowed} onclick={() => (open = 'network')}>{$_('configure.ip')}</button>
+    <button disabled={!batchAllowed} onclick={() => (open = 'batch')}>{$_('batch.title')}</button>
     <button disabled={!allowed} onclick={() => (open = 'time')}>{$_('configure.time')}</button>
     <span class="count">{$_('configure.cameras', { values: { count: cams.length } })}</span>
     {#if busy}<span class="spinner"></span>{/if}
@@ -61,6 +74,8 @@
   <ActivateDialog count={cams.length} bind:accountId {busy} onSubmit={() => run({ kind: 'activate' })} onClose={() => (open = null)} />
 {:else if open === 'network'}
   <NetworkDialog bind:accountId {busy} {iface} onSubmit={run} onClose={() => (open = null)} />
+{:else if open === 'batch'}
+  <BatchIpDialog bind:accountId {iface} {cams} {others} onApplied={batchDone} onClose={() => (open = null)} />
 {:else if open === 'time'}
   <TimeDialog bind:accountId {busy} onSubmit={run} onClose={() => (open = null)} />
 {/if}

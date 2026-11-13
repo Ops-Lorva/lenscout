@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import type { Camera } from './types';
-import { applyAction, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
+import { applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
 
 const cam = (family: Camera['family'], ip = '10.0.50.11'): Camera => ({
   ip, mac: null, family, brand: null, model: null, serial: null, firmware: null,
@@ -102,4 +102,45 @@ test('le dialogue se ferme quand la sélection devient vide', () => {
   expect(dialogAfterSelection('network', [])).toBeNull();
   expect(dialogAfterSelection('network', [cam('axis')])).toBe('network');
   expect(dialogAfterSelection(null, [cam('axis')])).toBeNull();
+});
+
+test('lot : deux Axis au moins, jamais une marque sans action', () => {
+  expect(canBatchIp([cam('axis')])).toBe(false);
+  expect(canBatchIp([cam('axis'), cam('axis', '10.0.50.12')])).toBe(true);
+  expect(canBatchIp([cam('axis'), cam('hikvision', '10.0.50.12')])).toBe(false);
+  expect(canBatchIp([cam('axis'), cam('other', '10.0.50.12')])).toBe(false);
+});
+
+test('lot : un message par code, l’adresse en paramètre', () => {
+  expect(batchErrorMessage({ code: 'ip_in_use', ip: '10.0.50.12', mac: null })).toEqual({
+    key: 'batch.error.ip_in_use',
+    values: { ip: '10.0.50.12' },
+  });
+  expect(batchErrorMessage({ code: 'range_overflow' })).toEqual({ key: 'batch.error.range_overflow', values: {} });
+  expect(batchErrorMessage('preview_expired')).toEqual({ key: 'configure.error.preview_expired', values: {} });
+  expect(batchErrorMessage('???')).toEqual({ key: 'configure.error.unknown', values: {} });
+});
+
+test('lot : l’empreinte change avec un champ ou la sélection', () => {
+  const f = { start: '10.0.50.11', mask: '255.255.255.0', gateway: '', dns: '' };
+  const a = [cam('axis'), cam('axis', '10.0.50.12')];
+  const base = batchFingerprint(a, f);
+  expect(batchFingerprint(a, { ...f, start: ' 10.0.50.11 ' })).toBe(base);
+  expect(batchFingerprint(a, { ...f, start: '10.0.50.20' })).not.toBe(base);
+  expect(batchFingerprint(a, { ...f, gateway: '10.0.50.1' })).not.toBe(base);
+  expect(batchFingerprint(a, { ...f, dns: '1.1.1.1' })).not.toBe(base);
+  expect(batchFingerprint(a.slice(0, 1), f)).not.toBe(base);
+  expect(batchFingerprint([a[1], a[0]], f)).not.toBe(base);
+});
+
+test('lot : liste vide jamais envoyée, aperçu et application passent par Rust', async () => {
+  invoke.mockClear();
+  const req = { start: '10.0.50.11', mask: '255.255.255.0', gateway: null, dns: [] };
+  await expect(batchPreview([], [], req, 'eth0')).rejects.toBe('no_cameras');
+  expect(invoke).not.toHaveBeenCalled();
+  invoke.mockResolvedValue({ id: 'x', rows: [] });
+  await batchPreview([cam('axis')], [], req, 'eth0');
+  expect(invoke).toHaveBeenCalledWith('cmd_batch_preview', { selection: [cam('axis')], others: [], req, iface: 'eth0' });
+  await batchApply('x', 'acc', 'eth0');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_batch_apply', { previewId: 'x', accountId: 'acc', iface: 'eth0' });
 });

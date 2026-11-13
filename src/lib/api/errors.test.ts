@@ -10,3 +10,8 @@ test('un code inconnu ou un message brut tombe sur le libellé générique', () 
   expect(errorKey('quelque chose de brut')).toBe('error.unknown');
   expect(errorKey(new Error('x'))).toBe('error.unknown');
 });
+
+test('les codes d’aperçu ont leur libellé', () => {
+  expect(errorKey('preview_expired')).toBe('error.preview_expired');
+  expect(errorKey('preview_unknown')).toBe('error.preview_unknown');
+});

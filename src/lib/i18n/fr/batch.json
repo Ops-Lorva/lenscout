@@ -1,0 +1,21 @@
+{
+  "title": "IP en lot",
+  "start": "IP de départ",
+  "preview": "Aperçu",
+  "apply": "Appliquer",
+  "col": {
+    "mac": "MAC",
+    "serial": "N° de série",
+    "change": "IP"
+  },
+  "error": {
+    "no_selection": "Aucune caméra sélectionnée",
+    "missing_mac": "Caméra sans MAC : {ip}",
+    "unsupported": "Caméra non prise en charge : {ip}",
+    "invalid_mask": "Masque invalide",
+    "range_overflow": "La plage dépasse le sous-réseau",
+    "network_or_broadcast": "Adresse réseau ou broadcast : {ip}",
+    "gateway_in_range": "Passerelle dans la plage : {ip}",
+    "ip_in_use": "Adresse déjà utilisée : {ip}"
+  }
+}

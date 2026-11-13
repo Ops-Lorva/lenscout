@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
+use crate::batch::{Assignment, BatchRequest};
 use crate::discovery::arp::ScanInterface;
 use crate::model::{Camera, Family, Source, normalize_mac};
 use crate::temp_ip::{
@@ -314,6 +315,31 @@ pub async fn apply_all(
     let mut out = Vec::with_capacity(cams.len());
     for cam in cams {
         out.push(apply(ctx, cam, creds, action).await);
+    }
+    out
+}
+
+/// Applique un plan d'IP en lot : `cams[i]` reçoit `rows[i].new_ip`. Chaque
+/// attribution passe par `apply` (sous-réseau, IP temporaire, identité juste
+/// avant l'écriture) ; une caméra refusée est sautée, les autres continuent.
+/// Une seule ligne de résultat par caméra, dans l'ordre du plan.
+pub async fn apply_batch(
+    ctx: &ActionContext,
+    cams: &[Camera],
+    rows: &[Assignment],
+    creds: &Credentials,
+    req: &BatchRequest,
+) -> Vec<ActionResult> {
+    debug_assert_eq!(cams.len(), rows.len());
+    let mut out = Vec::with_capacity(cams.len());
+    for (cam, row) in cams.iter().zip(rows) {
+        let action = Action::Network(NetworkSettings::Static {
+            ip: row.new_ip,
+            mask: req.mask,
+            gateway: req.gateway,
+            dns: req.dns.clone(),
+        });
+        out.push(apply(ctx, cam, creds, &action).await);
     }
     out
 }
@@ -942,5 +968,101 @@ mod tests {
             serde_json::to_string(&r).unwrap(),
             r#"{"key":"AC:CC:8E:12:34:56","ok":false,"error":{"code":"auth_failed"}}"#
         );
+    }
+
+    /// Une caméra par adresse : `serials` associe l'hôte au n° de série qu'elle annonce.
+    struct PerHost {
+        inner: FakeHttp,
+        serials: Vec<(&'static str, &'static str)>,
+    }
+
+    #[async_trait]
+    impl CameraHttp for PerHost {
+        async fn send(&self, req: HttpRequest, c: Option<&Credentials>) -> Result<HttpResponse, NetError> {
+            if req.url.ends_with("/axis-cgi/basicdeviceinfo.cgi")
+                && let Some((_, serial)) = self.serials.iter().find(|(h, _)| req.url.contains(h))
+            {
+                let body = String::from_utf8_lossy(INFO).replace(SERIAL, serial);
+                // Passe par `inner` pour que la requête soit enregistrée.
+                self.inner.send(req.clone(), c).await.ok();
+                return Ok(HttpResponse { status: 200, headers: vec![], body: body.into_bytes() });
+            }
+            self.inner.send(req, c).await
+        }
+        async fn stream(&self, req: HttpRequest, c: Option<&Credentials>) -> Result<(HttpResponse, ByteStream), NetError> {
+            self.inner.stream(req, c).await
+        }
+    }
+
+    fn batch_cam(last: u8, mac: &str) -> Camera {
+        let mut c = cam(&format!("192.0.2.{last}"), Family::Axis);
+        c.mac = Some(mac.into());
+        c
+    }
+
+    fn batch_plan(cams: &[Camera]) -> (BatchRequest, Vec<Assignment>) {
+        let req = BatchRequest {
+            start: "192.0.2.101".parse().unwrap(),
+            mask: "255.255.255.0".parse().unwrap(),
+            gateway: Some("192.0.2.1".parse().unwrap()),
+            dns: vec![],
+        };
+        let rows = crate::batch::plan_batch(cams, &req, &[]).unwrap();
+        (req, rows)
+    }
+
+    #[tokio::test]
+    async fn batch_writes_each_assignment_to_its_own_camera_only() {
+        let (a, b) = (batch_cam(11, "AC:CC:8E:12:34:56"), batch_cam(12, "AC:CC:8E:12:34:57"));
+        let http = Arc::new(PerHost { inner: axis_ok(), serials: vec![("192.0.2.12", "ACCC8E123457")] });
+        let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
+        let out = apply_batch(&ctx(http.clone()), &[a, b], &rows, &creds(), &req).await;
+        assert!(out.iter().all(|r| r.ok), "{out:?}");
+        let hosts: Vec<String> = http.inner.requests().into_iter().map(|r| r.url).collect();
+        assert!(hosts.iter().all(|u| u.contains("192.0.2.11") || u.contains("192.0.2.12")), "{hosts:?}");
+        let bodies: Vec<String> = http
+            .inner
+            .requests()
+            .into_iter()
+            .filter(|r| r.url.ends_with("/axis-cgi/param.cgi"))
+            .map(|r| String::from_utf8(r.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0].contains("Network.IPAddress=192.0.2.101"), "{}", bodies[0]);
+        assert!(bodies[1].contains("Network.IPAddress=192.0.2.102"), "{}", bodies[1]);
+    }
+
+    #[tokio::test]
+    async fn batch_skips_camera_whose_identity_changed() {
+        let (a, b) = (batch_cam(11, "AC:CC:8E:12:34:56"), batch_cam(12, "AC:CC:8E:12:34:57"));
+        // B répond avec la série d'une autre caméra.
+        let http = Arc::new(PerHost { inner: axis_ok(), serials: vec![("192.0.2.12", "ACCC8E999999")] });
+        let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
+        let out = apply_batch(&ctx(http.clone()), &[a, b], &rows, &creds(), &req).await;
+        assert_eq!(out.len(), 2);
+        assert!(out[0].ok);
+        assert_eq!(out[1].error, Some(ActionError::IdentityMismatch));
+        let to_b_writes = http
+            .inner
+            .requests()
+            .into_iter()
+            .filter(|r| r.url.contains("192.0.2.12") && !r.url.ends_with("/axis-cgi/basicdeviceinfo.cgi"))
+            .count();
+        assert_eq!(to_b_writes, 0);
+    }
+
+    #[tokio::test]
+    async fn batch_first_failure_does_not_stop_the_next() {
+        // A est injoignable : B est quand même traitée.
+        let (a, b) = (batch_cam(11, "AC:CC:8E:12:34:56"), batch_cam(12, "AC:CC:8E:12:34:57"));
+        let http = Arc::new(DeadHost {
+            inner: axis_ok(),
+            dead: "192.0.2.11",
+        });
+        let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
+        let out = apply_batch(&ctx(http), &[a, b], &rows, &creds(), &req).await;
+        assert!(matches!(out[0].error, Some(ActionError::Unreachable { .. })));
+        // B répond avec la série de la MAC de A : l'identité de B ne correspond pas, mais elle a bien été tentée.
+        assert_eq!(out[1].error, Some(ActionError::IdentityMismatch));
     }
 }

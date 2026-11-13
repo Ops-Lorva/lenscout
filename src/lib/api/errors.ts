@@ -6,6 +6,8 @@ const CODES = [
   'bad_ip',
   'bad_port',
   'bad_action',
+  'preview_unknown',
+  'preview_expired',
   'no_cameras',
   'open_failed',
   'empty_field',

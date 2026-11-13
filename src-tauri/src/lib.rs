@@ -4,7 +4,7 @@ use commands::accounts::{
     StartupNotice, cmd_account_create, cmd_account_remove, cmd_account_update, cmd_accounts_list,
     cmd_accounts_startup, startup_code,
 };
-use commands::configure::{TempIpJournal, cmd_apply_action};
+use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
 use commands::stream::{StreamState, cmd_stream_ack, cmd_stream_start, cmd_stream_stop};
 use commands::app::{cmd_app_version, cmd_interface_details, cmd_list_interfaces};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_scan_start};
@@ -24,6 +24,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(ScanState::default())
         .manage(StreamState::default())
+        .manage(PreviewStore::default())
         .setup(|app| {
             // Un accounts.json illisible est mis de côté, jamais écrasé ni bloquant.
             let path = app.path().app_config_dir()?.join("accounts.json");
@@ -56,6 +57,8 @@ pub fn run() {
             cmd_account_update,
             cmd_account_remove,
             cmd_apply_action,
+            cmd_batch_preview,
+            cmd_batch_apply,
             cmd_stream_start,
             cmd_stream_stop,
             cmd_stream_ack,

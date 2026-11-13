@@ -1,0 +1,21 @@
+{
+  "title": "IP en lote",
+  "start": "IP inicial",
+  "preview": "Vista previa",
+  "apply": "Aplicar",
+  "col": {
+    "mac": "MAC",
+    "serial": "N.º de serie",
+    "change": "IP"
+  },
+  "error": {
+    "no_selection": "Ninguna cámara seleccionada",
+    "missing_mac": "Cámara sin MAC: {ip}",
+    "unsupported": "Cámara no compatible: {ip}",
+    "invalid_mask": "Máscara no válida",
+    "range_overflow": "El rango excede la subred",
+    "network_or_broadcast": "Dirección de red o broadcast: {ip}",
+    "gateway_in_range": "Puerta de enlace dentro del rango: {ip}",
+    "ip_in_use": "Dirección ya en uso: {ip}"
+  }
+}

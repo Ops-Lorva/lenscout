@@ -34,7 +34,9 @@
     "camera_not_seen": "Caméra non vue en SADP sur cette interface",
     "already_activated": "Déjà activée",
     "network_needs_one_camera": "Une seule caméra à la fois",
-    "no_cameras": "Aucune caméra"
+    "no_cameras": "Aucune caméra",
+    "preview_unknown": "Aperçu inconnu ou déjà appliqué",
+    "preview_expired": "Aperçu expiré : refaire l’aperçu"
   },
   "off_subnet": "Hors du sous-réseau de {iface}"
 }

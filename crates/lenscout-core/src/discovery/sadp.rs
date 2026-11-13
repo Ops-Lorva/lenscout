@@ -179,6 +179,12 @@ pub fn encode_password(_password: &Secret) -> Option<Secret> {
     None
 }
 
+/// Le cœur sait-il configurer une Hikvision ? Suit `encode_password` : le jour
+/// où l'encodage existe, le lot (`batch::plan_batch`) suit sans autre changement.
+pub fn can_configure() -> bool {
+    encode_password(&Secret::new(String::new())).is_some()
+}
+
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }

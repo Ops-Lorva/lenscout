@@ -1,0 +1,21 @@
+{
+  "title": "Batch IP",
+  "start": "Start IP",
+  "preview": "Preview",
+  "apply": "Apply",
+  "col": {
+    "mac": "MAC",
+    "serial": "Serial no.",
+    "change": "IP"
+  },
+  "error": {
+    "no_selection": "No camera selected",
+    "missing_mac": "Camera without MAC: {ip}",
+    "unsupported": "Unsupported camera: {ip}",
+    "invalid_mask": "Invalid mask",
+    "range_overflow": "Range exceeds the subnet",
+    "network_or_broadcast": "Network or broadcast address: {ip}",
+    "gateway_in_range": "Gateway inside the range: {ip}",
+    "ip_in_use": "Address already in use: {ip}"
+  }
+}
