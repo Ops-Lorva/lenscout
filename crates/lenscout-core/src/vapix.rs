@@ -111,12 +111,9 @@ fn form_encode(value: &str) -> String {
     out
 }
 
-/// Journal de mise au point : le statut brut seulement, jamais de corps ni de
-/// secret. Actif avec `LENSCOUT_DEBUG` dans l'environnement.
+/// Journal de mise au point (`debug_log`) : jamais de secret.
 fn debug(msg: &str) {
-    if std::env::var_os("LENSCOUT_DEBUG").is_some() {
-        eprintln!("[vapix] {msg}");
-    }
+    crate::debug_log::log(&format!("[vapix] {msg}"));
 }
 
 fn require_success(resp: &HttpResponse) -> Result<(), VapixError> {

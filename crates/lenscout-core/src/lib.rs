@@ -5,6 +5,7 @@
 pub mod accounts;
 pub mod actions;
 pub mod batch;
+pub mod debug_log;
 pub mod discovery;
 pub mod http_client;
 // Code repris tel quel d'un autre projet : le lint est toléré ici.

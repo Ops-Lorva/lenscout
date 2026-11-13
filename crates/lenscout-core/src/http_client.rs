@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue, WWW_AUTHENTICATE};
 use reqwest::{Client, Url};
 
+use crate::debug_log;
 use crate::transport::{
     ByteStream, CameraHttp, Credentials, HttpRequest, HttpResponse, Method, NetError,
 };
@@ -218,14 +219,9 @@ fn head(resp: &reqwest::Response) -> HttpResponse {
     }
 }
 
-#[async_trait]
-impl CameraHttp for ReqwestCameraHttp {
-    async fn send(
-        &self,
-        req: HttpRequest,
-        creds: Option<&Credentials>,
-    ) -> Result<HttpResponse, NetError> {
-        let mut resp = self.execute(&req, creds).await?;
+impl ReqwestCameraHttp {
+    async fn send_inner(&self, req: &HttpRequest, creds: Option<&Credentials>) -> Result<HttpResponse, NetError> {
+        let mut resp = self.execute(req, creds).await?;
         let mut out = head(&resp);
         // Lecture par morceaux : on s'arrête dès que le plafond est franchi.
         while let Some(chunk) = resp.chunk().await.map_err(map_err)? {
@@ -236,14 +232,39 @@ impl CameraHttp for ReqwestCameraHttp {
         }
         Ok(out)
     }
+}
+
+/// Chaque réponse (ou échec) passe au journal de mise au point, s'il est
+/// actif : jamais le corps de la requête ni un en-tête.
+#[async_trait]
+impl CameraHttp for ReqwestCameraHttp {
+    async fn send(
+        &self,
+        req: HttpRequest,
+        creds: Option<&Credentials>,
+    ) -> Result<HttpResponse, NetError> {
+        let r = self.send_inner(&req, creds).await;
+        match &r {
+            Ok(resp) => debug_log::response(&req, resp),
+            Err(e) => debug_log::failure(&req, e),
+        }
+        r
+    }
 
     async fn stream(
         &self,
         req: HttpRequest,
         creds: Option<&Credentials>,
     ) -> Result<(HttpResponse, ByteStream), NetError> {
-        let resp = self.execute(&req, creds).await?;
+        let resp = match self.execute(&req, creds).await {
+            Ok(r) => r,
+            Err(e) => {
+                debug_log::failure(&req, &e);
+                return Err(e);
+            }
+        };
         let out = head(&resp);
+        debug_log::response(&req, &out);
         let stream: ByteStream = Box::pin(resp.bytes_stream().map(|c| c.map_err(map_err)));
         Ok((out, stream))
     }

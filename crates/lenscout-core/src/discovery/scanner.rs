@@ -467,7 +467,10 @@ pub async fn run_scan(
     tx: mpsc::Sender<ScanEvent>,
     cancel: CancellationToken,
 ) -> ScanSummary {
-    let capture_dir = std::env::var_os("LENSCOUT_CAPTURE_DIR").map(PathBuf::from);
+    // Sans dossier explicite, le journal de mise au point actif en fournit un.
+    let capture_dir = std::env::var_os("LENSCOUT_CAPTURE_DIR")
+        .map(PathBuf::from)
+        .or_else(crate::debug_log::capture_dir);
     run_scan_with_capture(probes, http, arp, cfg, tx, cancel, capture_dir).await
 }
 

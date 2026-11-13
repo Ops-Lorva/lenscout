@@ -39,6 +39,11 @@ pub fn run() {
             // action. Un échec est journalisé et n'empêche pas le démarrage ;
             // le journal reste pour la prochaine fois.
             let data_dir = app.path().app_data_dir()?;
+            // Journal de mise au point : `LENSCOUT_DEBUG=1` ou un fichier
+            // `debug` dans ce dossier (lancement depuis le Finder).
+            if lenscout_core::debug_log::enabled(std::env::var_os("LENSCOUT_DEBUG").as_deref(), &data_dir) {
+                lenscout_core::debug_log::install(&data_dir);
+            }
             // Le marqueur de la règle sudoers macOS y vit.
             set_data_dir(&data_dir);
             let journal = data_dir.join("temp-ip.json");
