@@ -3,11 +3,31 @@
   "stop": "Arrêter",
   "search": "MAC, série, IP, modèle",
   "none": "Aucune caméra",
-  "col": { "camera": "Caméra", "ip": "IP", "mac": "MAC", "serial": "N° de série", "firmware": "Firmware", "state": "État" },
-  "state": { "new": "Neuve", "activated": "Activée", "unknown": "—" },
+  "col": {
+    "camera": "Caméra",
+    "ip": "IP",
+    "mac": "MAC",
+    "serial": "N° de série",
+    "firmware": "Firmware",
+    "state": "État"
+  },
+  "state": {
+    "new": "Neuve",
+    "activated": "Activée",
+    "unknown": "—"
+  },
   "selectAll": "Tout sélectionner",
   "select": "Sélectionner",
   "openWeb": "Ouvrir la page web",
   "frame": "Cadrer",
-  "error": { "interfaces": "Interfaces illisibles", "scan": "Scan impossible" }
+  "error": {
+    "iface_unknown": "Interface inconnue",
+    "iface_no_ipv4": "Interface sans adresse IPv4",
+    "no_socket": "Aucun socket de découverte",
+    "bad_ip": "Adresse IPv4 invalide",
+    "bad_port": "Port invalide",
+    "open_failed": "Ouverture impossible",
+    "internal": "Erreur interne",
+    "unknown": "Erreur"
+  }
 }

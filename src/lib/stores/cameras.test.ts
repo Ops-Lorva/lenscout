@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
 import type { Camera } from '$lib/api/types';
-import { cameras, clear, selectedCameras, selection, upsert } from './cameras';
+import { cameras, clear, query, selectedCameras, selection, shouldAutoScan, upsert } from './cameras';
 
 const cam = (over: Partial<Camera>): Camera => ({
   ip: '10.0.50.5',
@@ -19,6 +19,7 @@ const cam = (over: Partial<Camera>): Camera => ({
 
 beforeEach(() => {
   clear();
+  query.set('');
 });
 
 test('upsert garde une ligne par MAC et met à jour', () => {
@@ -70,4 +71,28 @@ test('clear vide la liste et la sélection', () => {
   clear();
   expect(get(cameras)).toEqual([]);
   expect(get(selection).size).toBe(0);
+});
+
+test('une caméra masquée par la recherche n’est plus sélectionnée', () => {
+  upsert(cam({ ip: '10.0.50.1', mac: 'AA:BB:CC:00:00:01' }));
+  upsert(cam({ ip: '10.0.50.2', mac: 'AA:BB:CC:00:00:02' }));
+  selection.set(new Set(['AA:BB:CC:00:00:01', 'AA:BB:CC:00:00:02']));
+  query.set('10.0.50.2');
+  expect(get(selectedCameras).map((c) => c.ip)).toEqual(['10.0.50.2']);
+  query.set('');
+  expect(get(selectedCameras)).toHaveLength(2);
+});
+
+test('la clé de sélection passe de l’IP au MAC avec la caméra', () => {
+  upsert(cam({ mac: null }));
+  selection.set(new Set(['10.0.50.5']));
+  upsert(cam({}));
+  expect([...get(selection)]).toEqual(['AA:BB:CC:00:00:01']);
+  expect(get(selectedCameras)).toHaveLength(1);
+});
+
+test('au retour sur la page, pas de scan automatique si une liste existe', () => {
+  expect(shouldAutoScan(get(cameras))).toBe(true);
+  upsert(cam({}));
+  expect(shouldAutoScan(get(cameras))).toBe(false);
 });

@@ -42,6 +42,9 @@ fn probes(iface: &ScanInterface) -> Vec<ProbeSocket> {
         .collect()
 }
 
+/// Erreurs : codes stables (`iface_unknown`, `iface_no_ipv4`, `no_socket`,
+/// `internal`), traduits par le front.
+///
 /// Lance un scan et rend la main à sa fin. Un scan déjà en cours est annulé
 /// d'abord. L'interface vient du front : elle doit figurer parmi les liens
 /// actifs.
@@ -59,19 +62,19 @@ pub async fn cmd_scan_start(
     let name = iface.clone();
     let scan_iface = tauri::async_runtime::spawn_blocking(move || {
         if !list_interfaces_up().contains(&name) {
-            return Err("interface inconnue".to_string());
+            return Err("iface_unknown".to_string());
         }
         ScanInterface::from_details(&name, &get_interface_details(&name))
-            .ok_or_else(|| "interface sans adresse IPv4".to_string())
+            .ok_or_else(|| "iface_no_ipv4".to_string())
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|_| "internal".to_string())??;
 
     // Les sockets s'ouvrent ici, dans le runtime, pas dans un thread bloquant :
     // tokio doit les enregistrer.
     let probes = probes(&scan_iface);
     if probes.is_empty() {
-        return Err("aucun socket de découverte".to_string());
+        return Err("no_socket".to_string());
     }
 
     let (tx, mut rx) = mpsc::channel(256);
@@ -99,9 +102,9 @@ pub fn cmd_scan_cancel(state: State<'_, ScanState>) {
 /// L'URL est reconstruite ici : le front ne fournit qu'une IPv4 et un port,
 /// jamais un schéma ni un hôte qui ouvrirait autre chose qu'une caméra.
 fn camera_web_url(ip: &str, port: u16) -> Result<String, String> {
-    let ip: Ipv4Addr = ip.trim().parse().map_err(|_| "adresse IPv4 invalide".to_string())?;
+    let ip: Ipv4Addr = ip.trim().parse().map_err(|_| "bad_ip".to_string())?;
     if port == 0 {
-        return Err("port invalide".to_string());
+        return Err("bad_port".to_string());
     }
     Ok(match port {
         80 => format!("http://{ip}/"),
@@ -113,7 +116,7 @@ fn camera_web_url(ip: &str, port: u16) -> Result<String, String> {
 #[tauri::command]
 pub fn cmd_open_camera_web(app: AppHandle, ip: String, port: u16) -> Result<(), String> {
     let url = camera_web_url(&ip, port)?;
-    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    app.opener().open_url(url, None::<&str>).map_err(|_| "open_failed".to_string())
 }
 
 #[cfg(test)]
@@ -132,6 +135,7 @@ mod tests {
         for bad in ["file:///etc/passwd", "cam.local", "http://10.0.0.1", "::1", "10.0.0.1/x", "", "10.0.0.1@evil.example"] {
             assert!(camera_web_url(bad, 80).is_err(), "{bad}");
         }
-        assert!(camera_web_url("10.0.50.7", 0).is_err());
+        assert_eq!(camera_web_url("nope", 80).unwrap_err(), "bad_ip");
+        assert_eq!(camera_web_url("10.0.50.7", 0).unwrap_err(), "bad_port");
     }
 }

@@ -3,11 +3,31 @@
   "stop": "Stop",
   "search": "MAC, serial, IP, model",
   "none": "No camera",
-  "col": { "camera": "Camera", "ip": "IP", "mac": "MAC", "serial": "Serial no.", "firmware": "Firmware", "state": "State" },
-  "state": { "new": "New", "activated": "Activated", "unknown": "—" },
+  "col": {
+    "camera": "Camera",
+    "ip": "IP",
+    "mac": "MAC",
+    "serial": "Serial no.",
+    "firmware": "Firmware",
+    "state": "State"
+  },
+  "state": {
+    "new": "New",
+    "activated": "Activated",
+    "unknown": "—"
+  },
   "selectAll": "Select all",
   "select": "Select",
   "openWeb": "Open web page",
   "frame": "Frame",
-  "error": { "interfaces": "Cannot read interfaces", "scan": "Scan failed" }
+  "error": {
+    "iface_unknown": "Unknown interface",
+    "iface_no_ipv4": "Interface has no IPv4 address",
+    "no_socket": "No discovery socket",
+    "bad_ip": "Invalid IPv4 address",
+    "bad_port": "Invalid port",
+    "open_failed": "Cannot open",
+    "internal": "Internal error",
+    "unknown": "Error"
+  }
 }

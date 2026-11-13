@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { _ } from 'svelte-i18n';
   import { listInterfaces } from '$lib/api/core';
   import { cancelScan, openCameraWeb, startScan } from '$lib/api/discovery';
   import type { Camera } from '$lib/api/types';
-  import { filterCameras } from '$lib/search';
-  import { cameraKey, cameras, clear, selection, upsert } from '$lib/stores/cameras';
+  import { errorKey } from '$lib/api/errors';
+  import { cameraKey, cameras, clear, query, selection, shouldAutoScan, upsert, visibleCameras } from '$lib/stores/cameras';
   import { framingTarget, page } from '$lib/stores/nav';
   import CameraRow from './CameraRow.svelte';
 
@@ -13,14 +14,13 @@
 
   let interfaces = $state<string[]>([]);
   let iface = $state('');
-  let query = $state('');
   let scanning = $state(false);
   let error = $state('');
   // Un scan annulé par le suivant peut encore livrer ses derniers événements :
   // chaque scan porte un numéro, les événements d'un ancien numéro sont ignorés.
   let run = 0;
 
-  const shown = $derived(filterCameras($cameras, query));
+  const shown = $derived($visibleCameras);
   const allSelected = $derived(shown.length > 0 && shown.every((c) => $selection.has(cameraKey(c))));
 
   async function scan() {
@@ -35,7 +35,7 @@
         if (e.kind === 'upsert') upsert(e.camera);
       });
     } catch (e) {
-      if (mine === run) error = `${$_('network.error.scan')} : ${e}`;
+      if (mine === run) error = $_(`network.${errorKey(e)}`);
     } finally {
       if (mine === run) scanning = false;
     }
@@ -74,7 +74,7 @@
     try {
       await openCameraWeb(c.ip, c.http_port);
     } catch (e) {
-      error = String(e);
+      error = $_(`network.${errorKey(e)}`);
     }
   }
 
@@ -87,13 +87,14 @@
     try {
       interfaces = await listInterfaces();
     } catch (e) {
-      error = `${$_('network.error.interfaces')} : ${e}`;
+      error = $_(`network.${errorKey(e)}`);
       return;
     }
     let saved = '';
     try { saved = localStorage.getItem(IFACE_KEY) ?? ''; } catch {}
     iface = interfaces.includes(saved) ? saved : (interfaces[0] ?? '');
-    void scan();
+    // Retour sur la page : la liste et la sélection existantes restent ; « Rescanner » relance.
+    if (shouldAutoScan(get(cameras))) void scan();
   });
 
   onDestroy(() => {
@@ -111,7 +112,7 @@
   {:else}
     <button class="primary" onclick={scan} disabled={!iface}>{$_('network.rescan')}</button>
   {/if}
-  <input type="search" bind:value={query} placeholder={$_('network.search')} />
+  <input type="search" bind:value={$query} placeholder={$_('network.search')} />
 </div>
 
 {#if error}<div class="error">{error}</div>{/if}

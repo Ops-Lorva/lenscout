@@ -19,7 +19,7 @@ pub async fn cmd_list_interfaces() -> Result<Vec<String>, String> {
 pub async fn cmd_interface_details(name: String) -> Result<InterfaceDetails, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if !list_interfaces_up().contains(&name) {
-            return Err("interface inconnue".to_string());
+            return Err("iface_unknown".to_string());
         }
         Ok(get_interface_details(&name))
     })
