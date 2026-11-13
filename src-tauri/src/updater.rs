@@ -296,7 +296,14 @@ fn write_private(asset_name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, S
 /// Appelé au démarrage ; les erreurs (installeur encore en cours, dossier
 /// d'un autre compte) sont sans importance.
 pub fn cleanup_old_updates() {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    cleanup_old_updates_in(&std::env::temp_dir());
+}
+
+/// `cleanup_old_updates` dans `dir` : un test travaille dans son propre
+/// dossier, sans effacer celui qu'un test voisin vient d'écrire dans le
+/// dossier temporaire commun.
+fn cleanup_old_updates_in(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let is_ours = e.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
         // `file_type` ne suit pas les liens symboliques.
@@ -347,15 +354,12 @@ fn launch_installer(path: &std::path::Path, name: &str) -> Result<(), String> {
     if !name.ends_with("-setup.exe") {
         return Err(format!("Unsupported Windows asset: {name}"));
     }
-    // Pas de `cmd` : le chemin est un argument, jamais interprété par un shell.
-    // `explorer.exe` plutôt que `Command::new(path)` : l'installeur NSIS est
-    // en mode perMachine et demande l'élévation (UAC), que CreateProcess
-    // refuse (erreur 740) alors que l'Explorateur la déclenche.
-    std::process::Command::new("explorer.exe")
-        .arg(path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    // ShellExecuteExW (crate `open`, feature `shellexecute-on-windows`, par
+    // `tauri-plugin-opener`) : l'installeur NSIS est en mode perMachine et
+    // demande l'élévation (UAC), que CreateProcess refuse (erreur 740) alors
+    // que ShellExecute la déclenche. Pas de `cmd` ni d'`explorer.exe` : le
+    // chemin n'est jamais interprété par un shell.
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -569,13 +573,19 @@ mod tests {
 
     #[test]
     fn startup_cleanup_removes_old_update_dirs_only() {
-        let ours = std::env::temp_dir().join(format!("{TEMP_PREFIX}test-{}", uuid::Uuid::new_v4()));
-        let other = std::env::temp_dir().join(format!("autre-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&ours).unwrap();
+        // Un dossier à soi : le dossier temporaire commun porte aussi celui que
+        // `installer_is_written_private` écrit en parallèle.
+        let base = std::env::temp_dir().join(format!("lenscout-test-cleanup-{}", uuid::Uuid::new_v4()));
+        let ours = base.join(format!("{TEMP_PREFIX}test"));
+        let other = base.join("autre");
+        let file = base.join(format!("{TEMP_PREFIX}fichier"));
+        std::fs::create_dir_all(&ours).unwrap();
         std::fs::create_dir(&other).unwrap();
-        cleanup_old_updates();
+        std::fs::write(&file, b"x").unwrap();
+        cleanup_old_updates_in(&base);
         assert!(!ours.exists());
         assert!(other.exists());
-        std::fs::remove_dir(&other).unwrap();
+        assert!(file.exists(), "seuls les dossiers sont retirés");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
