@@ -56,3 +56,8 @@ export function clear(): void {
   byKey.set(new Map());
   selection.set(new Set());
 }
+
+/** Rescan différé : les caméras sont remplacées, la sélection (clés MAC) reste ; `selectedCameras` écarte seule les clés disparues. */
+export function clearCameras(): void {
+  byKey.set(new Map());
+}

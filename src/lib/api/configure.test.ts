@@ -1,6 +1,9 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
+
+const invoke = vi.hoisted(() => vi.fn());
+vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import type { Camera } from './types';
-import { canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
+import { applyAction, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
 
 const cam = (family: Camera['family'], ip = '10.0.50.11'): Camera => ({
   ip, mac: null, family, brand: null, model: null, serial: null, firmware: null,
@@ -71,4 +74,19 @@ test('les nouveaux codes ont un message', () => {
   for (const code of ['identity_unreadable', 'camera_off_subnet', 'already_activated', 'network_needs_one_camera'] as const) {
     expect(resultMessage({ key: 'k', ok: false, error: { code } })).toEqual({ key: `error.${code}` });
   }
+});
+
+test('aucune caméra : rien n’est envoyé à Rust', async () => {
+  invoke.mockClear();
+  await expect(applyAction([], 'a', { kind: 'activate' }, 'eth0')).rejects.toBe('no_cameras');
+  expect(invoke).not.toHaveBeenCalled();
+  invoke.mockResolvedValue([]);
+  await applyAction([cam('axis')], 'a', { kind: 'activate' }, 'eth0');
+  expect(invoke).toHaveBeenCalledTimes(1);
+});
+
+test('le dialogue se ferme quand la sélection devient vide', () => {
+  expect(dialogAfterSelection('network', [])).toBeNull();
+  expect(dialogAfterSelection('network', [cam('axis')])).toBe('network');
+  expect(dialogAfterSelection(null, [cam('axis')])).toBeNull();
 });

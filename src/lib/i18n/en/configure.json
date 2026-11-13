@@ -32,7 +32,8 @@
     "identity_unreadable": "Identity unreadable",
     "camera_off_subnet": "Camera outside the subnet",
     "already_activated": "Already activated",
-    "network_needs_one_camera": "One camera at a time"
+    "network_needs_one_camera": "One camera at a time",
+    "no_cameras": "No camera"
   },
   "off_subnet": "Outside the subnet of {iface}"
 }

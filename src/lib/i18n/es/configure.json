@@ -32,7 +32,8 @@
     "identity_unreadable": "Identidad ilegible",
     "camera_off_subnet": "Cámara fuera de la subred",
     "already_activated": "Ya activada",
-    "network_needs_one_camera": "Una sola cámara a la vez"
+    "network_needs_one_camera": "Una sola cámara a la vez",
+    "no_cameras": "Ninguna cámara"
   },
   "off_subnet": "Fuera de la subred de {iface}"
 }

@@ -6,7 +6,7 @@
   import { cancelScan, openCameraWeb, startScan } from '$lib/api/discovery';
   import type { Camera } from '$lib/api/types';
   import { errorKey } from '$lib/api/errors';
-  import { cameraKey, cameras, clear, query, selection, shouldAutoScan, upsert, visibleCameras } from '$lib/stores/cameras';
+  import { cameraKey, cameras, clear, clearCameras, query, selection, shouldAutoScan, upsert, visibleCameras } from '$lib/stores/cameras';
   import { framingTarget, page } from '$lib/stores/nav';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
@@ -26,12 +26,14 @@
   const shown = $derived($visibleCameras);
   const allSelected = $derived(shown.length > 0 && shown.every((c) => $selection.has(cameraKey(c))));
 
-  async function scan() {
+  // `keepSelection` : rescan différé d'une action IP, la sélection suit les MAC.
+  async function scan(keepSelection = false) {
     if (!iface) return;
     const mine = ++run;
     error = '';
     scanning = true;
-    clear();
+    if (keepSelection) clearCameras();
+    else clear();
     try {
       await startScan(iface, (e) => {
         if (mine !== run) return;
@@ -106,7 +108,7 @@
   let rescanTimers: ReturnType<typeof setTimeout>[] = [];
   function rescanSoon() {
     rescanTimers.forEach(clearTimeout);
-    rescanTimers = RESCAN_DELAYS_MS.map((d) => setTimeout(() => void scan(), d));
+    rescanTimers = RESCAN_DELAYS_MS.map((d) => setTimeout(() => void scan(true), d));
   }
 
   onDestroy(() => {
@@ -123,7 +125,7 @@
   {#if scanning}
     <button class="primary" onclick={stop}><span class="spinner"></span>{$_('network.stop')}</button>
   {:else}
-    <button class="primary" onclick={scan} disabled={!iface}>{$_('network.rescan')}</button>
+    <button class="primary" onclick={() => scan()} disabled={!iface}>{$_('network.rescan')}</button>
   {/if}
   <input type="search" bind:value={$query} placeholder={$_('network.search')} />
 </div>

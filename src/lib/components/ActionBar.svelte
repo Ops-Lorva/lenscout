@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { applyAction, canActivate, canAct, canChangeIp, clearResults, setResults, type ActionDto } from '$lib/api/configure';
+  import { applyAction, canActivate, dialogAfterSelection, canAct, canChangeIp, clearResults, setResults, type ActionDto } from '$lib/api/configure';
   import { errorKey } from '$lib/api/errors';
   import { selectedCameras } from '$lib/stores/cameras';
   import ActivateDialog from './ActivateDialog.svelte';
@@ -21,9 +21,15 @@
   const activatable = $derived(canActivate(cams));
   const ipAllowed = $derived(canChangeIp(cams));
 
+  // Sélection vidée (décochée, recherche, rescan) : pas de dialogue sur rien.
+  $effect(() => {
+    open = dialogAfterSelection(open, cams);
+  });
+
   async function run(action: ActionDto) {
     // La sélection est figée au clic : ce qui part est ce que le dialogue annonçait.
     const targets = cams;
+    if (targets.length === 0) return;
     busy = true;
     error = '';
     clearResults();

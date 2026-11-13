@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
 import type { Camera } from '$lib/api/types';
-import { cameras, clear, query, selectedCameras, selection, shouldAutoScan, upsert } from './cameras';
+import { cameras, clear, clearCameras, query, selectedCameras, selection, shouldAutoScan, upsert } from './cameras';
 
 const cam = (over: Partial<Camera>): Camera => ({
   ip: '10.0.50.5',
@@ -95,4 +95,22 @@ test('au retour sur la page, pas de scan automatique si une liste existe', () =>
   expect(shouldAutoScan(get(cameras))).toBe(true);
   upsert(cam({}));
   expect(shouldAutoScan(get(cameras))).toBe(false);
+});
+
+test('un rescan différé remplace les caméras et garde la sélection', () => {
+  upsert(cam({ ip: '10.0.50.5' }));
+  selection.set(new Set(['AA:BB:CC:00:00:01']));
+  clearCameras();
+  expect(get(cameras)).toHaveLength(0);
+  expect(get(selection).size).toBe(1);
+  // la caméra reparaît à une autre IP : sa clé (MAC) est toujours cochée
+  upsert(cam({ ip: '10.0.50.99' }));
+  expect(get(selectedCameras).map((c) => c.ip)).toEqual(['10.0.50.99']);
+});
+
+test('une caméra qui ne reparaît pas n’est plus dans la sélection effective', () => {
+  upsert(cam({}));
+  selection.set(new Set(['AA:BB:CC:00:00:01']));
+  clearCameras();
+  expect(get(selectedCameras)).toEqual([]);
 });

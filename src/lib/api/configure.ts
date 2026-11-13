@@ -112,5 +112,12 @@ export const orNull = (s: string): string | null => (s.trim() === '' ? null : s.
 /** Lignes d'un champ libre (virgules, espaces ou retours à la ligne) → liste sans vide. */
 export const splitList = (s: string): string[] => s.split(/[\s,;]+/).filter((x) => x !== '');
 
+/** Dialogue ouvert après un changement de sélection : une sélection vide le ferme. */
+export const dialogAfterSelection = <T extends string>(open: T | null, cams: Camera[]): T | null =>
+  cams.length === 0 ? null : open;
+
+/** Une liste vide ne part jamais vers Rust. */
 export const applyAction = (cameras: Camera[], accountId: string, action: ActionDto, iface: string) =>
-  invoke<ActionResult[]>('cmd_apply_action', { cameras, accountId, action, iface });
+  cameras.length === 0
+    ? Promise.reject('no_cameras')
+    : invoke<ActionResult[]>('cmd_apply_action', { cameras, accountId, action, iface });
