@@ -5,7 +5,7 @@ use commands::accounts::{
     cmd_accounts_startup, startup_code,
 };
 use commands::configure::cmd_apply_action;
-use commands::stream::{StreamState, cmd_stream_start, cmd_stream_stop};
+use commands::stream::{StreamState, cmd_stream_ack, cmd_stream_start, cmd_stream_stop};
 use commands::app::{cmd_app_version, cmd_interface_details, cmd_list_interfaces};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_scan_start};
 use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
@@ -41,6 +41,7 @@ pub fn run() {
             cmd_apply_action,
             cmd_stream_start,
             cmd_stream_stop,
+            cmd_stream_ack,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de Lenscout");

@@ -14,6 +14,9 @@ export function startStream(camera: Camera, accountId: string, onFrame: (buf: Ar
 
 export const stopStream = () => invoke<void>('cmd_stream_stop');
 
+/** Une image a été traitée (affichée ou abandonnée) : Rust peut en envoyer une autre. */
+export const ackFrame = () => invoke<void>('cmd_stream_ack');
+
 type Schedule = (fn: () => void) => void;
 
 /**
@@ -32,11 +35,14 @@ export class FramePresenter {
     private schedule: Schedule = (fn) => requestAnimationFrame(() => fn()),
     private create: (b: Blob) => string = (b) => URL.createObjectURL(b),
     private revoke: (u: string) => void = (u) => URL.revokeObjectURL(u),
+    // Appelé une fois par image poussée, affichée ou abandonnée : sert d'acquittement.
+    private handled: () => void = () => {},
   ) {}
 
   push(buf: ArrayBuffer) {
-    if (this.disposed) return;
-    this.pending = buf; // écrase l'image non affichée : la plus ancienne est abandonnée
+    if (this.disposed) return this.handled();
+    if (this.pending) this.handled(); // écrase l'image non affichée : la plus ancienne est abandonnée
+    this.pending = buf;
     if (this.scheduled) return;
     this.scheduled = true;
     this.schedule(() => this.flush());
@@ -46,25 +52,31 @@ export class FramePresenter {
     this.scheduled = false;
     const buf = this.pending;
     this.pending = null;
-    if (!buf || this.disposed) return;
+    if (!buf) return;
     const url = this.create(new Blob([buf], { type: 'image/jpeg' }));
     const old = this.current;
     this.current = url;
     this.show(url);
     if (old) this.revoke(old);
+    this.handled();
   }
 
   /** Retire l'image affichée (arrêt) sans fermer le présentateur. */
   clear() {
-    this.pending = null;
+    this.dropPending();
     if (this.current) this.revoke(this.current);
     this.current = null;
     this.show(null);
   }
 
+  private dropPending() {
+    if (this.pending) this.handled();
+    this.pending = null;
+  }
+
   dispose() {
     this.disposed = true;
-    this.pending = null;
+    this.dropPending();
     if (this.current) this.revoke(this.current);
     this.current = null;
   }

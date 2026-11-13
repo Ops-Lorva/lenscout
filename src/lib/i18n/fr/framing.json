@@ -8,6 +8,7 @@
     "unsupported_brand": "Marque non prise en charge",
     "unreachable": "Caméra injoignable",
     "auth_failed": "Authentification refusée",
+    "auth_insecure": "Digest requis sur la caméra",
     "stream_failed": "Flux interrompu",
     "not_found": "Compte introuvable",
     "secret_missing": "Mot de passe absent du trousseau : à ressaisir",

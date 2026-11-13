@@ -8,6 +8,7 @@
     "unsupported_brand": "Unsupported brand",
     "unreachable": "Camera unreachable",
     "auth_failed": "Authentication refused",
+    "auth_insecure": "Digest required on the camera",
     "stream_failed": "Stream interrupted",
     "not_found": "Account not found",
     "secret_missing": "Password missing from the keychain: enter it again",

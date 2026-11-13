@@ -11,9 +11,11 @@ function setup() {
     (fn) => queue.push(fn),
     () => `blob:${++n}`,
     (u) => revoked.push(u),
+    () => handled++,
   );
+  let handled = 0;
   const tick = () => queue.splice(0).forEach((f) => f());
-  return { p, shown, revoked, tick };
+  return { p, shown, revoked, tick, handled: () => handled };
 }
 
 const buf = (n: number) => new Uint8Array([n]).buffer;
@@ -46,4 +48,19 @@ test('clear et dispose révoquent l’URL courante, et plus rien ne s’affiche 
   expect(revoked).toEqual(['blob:1', 'blob:2']);
   p.push(buf(3)); tick();
   expect(shown.length).toBe(3);
+});
+
+test('chaque image poussée est acquittée une fois : affichée ou abandonnée', () => {
+  const { p, tick, handled } = setup();
+  p.push(buf(1));
+  p.push(buf(2)); // abandonne la 1
+  expect(handled()).toBe(1);
+  tick(); // affiche la 2
+  expect(handled()).toBe(2);
+  p.push(buf(3));
+  p.clear(); // abandonne la 3 en attente
+  expect(handled()).toBe(3);
+  p.dispose();
+  p.push(buf(4)); // fermé : abandonnée aussitôt
+  expect(handled()).toBe(4);
 });

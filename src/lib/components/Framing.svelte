@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { _ } from 'svelte-i18n';
   import { errorKey } from '$lib/api/errors';
-  import { FramePresenter, startStream, stopStream } from '$lib/api/stream';
+  import { ackFrame, FramePresenter, startStream, stopStream } from '$lib/api/stream';
   import { framingTarget } from '$lib/stores/nav';
   import AccountPicker from './AccountPicker.svelte';
 
@@ -14,7 +14,13 @@
   // génération a le droit de toucher à l'état.
   let generation = 0;
 
-  const presenter = new FramePresenter((u) => (src = u));
+  const presenter = new FramePresenter(
+    (u) => (src = u),
+    undefined,
+    undefined,
+    undefined,
+    () => void ackFrame().catch(() => {}),
+  );
   const cam = $derived($framingTarget);
 
   async function play() {
@@ -47,6 +53,14 @@
     if (document.fullscreenElement) void document.exitFullscreen();
     else void el.requestFullscreen?.();
   }
+
+  // Changer de caméra cible coupe le flux de la précédente.
+  $effect(() => {
+    void cam;
+    untrack(() => {
+      if (playing) void stop();
+    });
+  });
 
   // Quitter l'onglet coupe le flux et libère l'image.
   onDestroy(() => {

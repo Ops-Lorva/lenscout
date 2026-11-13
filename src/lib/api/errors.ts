@@ -14,6 +14,7 @@ const CODES = [
   'unsupported_brand',
   'unreachable',
   'auth_failed',
+  'auth_insecure',
   'stream_failed',
   'not_found',
   'secret_missing',
