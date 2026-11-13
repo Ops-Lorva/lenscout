@@ -16,8 +16,11 @@
 //! - garde `Drop` : un futur abandonné entre l'ajout et le retrait retire
 //!   quand même l'adresse ;
 //! - `cleanup_leftover` au démarrage et à la sortie de l'app ;
-//! - l'adresse n'est jamais enregistrée : Linux `device modify`, Windows
-//!   `store=active` / `ActiveStore` ; un redémarrage l'efface.
+//! - Linux (`device modify`) et Windows (`store=active` / `ActiveStore`) :
+//!   l'adresse n'est jamais enregistrée, un redémarrage l'efface ;
+//! - macOS : le service « Lenscout » dupliqué par `networksetup` est, lui,
+//!   enregistré et survit à un redémarrage ; c'est `cleanup_leftover`, au
+//!   démarrage suivant de l'app, qui le retire (le journal reste jusque-là).
 //!
 //! Un verrou de fichier (`temp-ip.json.lock`) écarte une seconde instance de
 //! l'app pendant toute la durée d'une IP temporaire.
