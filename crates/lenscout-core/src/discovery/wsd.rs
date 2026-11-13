@@ -60,17 +60,20 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// `http://192.0.2.11:80/onvif/device_service` → (IP, port). `None` pour
-/// tout ce qui n'est pas une adresse IPv4 littérale (IPv6, nom d'hôte).
-fn parse_xaddr(url: &str) -> Option<(Ipv4Addr, u16)> {
+/// `http://192.0.2.11:80/onvif/device_service` → (IP, port http). `None`
+/// pour tout ce qui n'est pas une adresse IPv4 littérale (IPv6, nom d'hôte).
+/// Le port d'un XAddr https n'est pas rendu : l'app parle http clair au port
+/// de la caméra, 443 y serait faux.
+fn parse_xaddr(url: &str) -> Option<(Ipv4Addr, Option<u16>)> {
     let (scheme, rest) = url.split_once("://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
     let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let (host, port) = match authority.split_once(':') {
         Some((h, p)) => (h, p.parse::<u16>().ok()?),
-        None => (authority, if scheme.eq_ignore_ascii_case("https") { 443 } else { 80 }),
+        None => (authority, 80),
     };
-    Some((host.parse().ok()?, port))
+    let http = !scheme.eq_ignore_ascii_case("https");
+    Some((host.parse().ok()?, http.then_some(port)))
 }
 
 /// Texte des éléments `XAddrs` et `Scopes`, quel que soit le préfixe de
@@ -126,10 +129,11 @@ pub fn parse_probe_match(xml: &[u8], src: Ipv4Addr, iface: Option<&ScanInterface
         return None;
     }
     let (xaddrs, scopes) = read_fields(xml);
-    let all: Vec<(Ipv4Addr, u16)> = xaddrs.split_whitespace().filter_map(parse_xaddr).collect();
+    let all: Vec<(Ipv4Addr, Option<u16>)> = xaddrs.split_whitespace().filter_map(parse_xaddr).collect();
     let ips: Vec<Ipv4Addr> = all.iter().map(|(ip, _)| *ip).collect();
     let ip = pick_address(&ips, src, iface)?;
-    let port = all.iter().find(|(a, _)| *a == ip).map(|(_, p)| *p)?;
+    // Un XAddr http de la même adresse donne le port, même après un https.
+    let port = all.iter().filter(|(a, _)| *a == ip).find_map(|(_, p)| *p);
 
     let (mut model, mut name, mut mac) = (None, None, None);
     for scope in scopes.split_whitespace() {
@@ -170,7 +174,7 @@ pub fn parse_probe_match(xml: &[u8], src: Ipv4Addr, iface: Option<&ScanInterface
         serial: None,
         firmware: None,
         activation: Activation::Unknown,
-        http_port: Some(port),
+        http_port: port,
     })
 }
 
@@ -238,6 +242,16 @@ mod tests {
         assert_eq!(parse_probe_match(xml, other, Some(&iface)).unwrap().ip, cam);
         let s = parse_probe_match(xml, other, None).unwrap();
         assert_eq!((s.ip, s.http_port), ("169.254.77.88".parse().unwrap(), Some(80)));
+    }
+
+    /// Le port d'un XAddr https ne se parle pas en http clair : on l'ignore.
+    #[test]
+    fn wsd_https_xaddr_gives_no_http_port() {
+        for x in ["https://192.0.2.11/onvif/device_service", "https://192.0.2.11:8443/onvif/device_service"] {
+            let xml = format!("<Envelope><Body><ProbeMatch><XAddrs>{x}</XAddrs></ProbeMatch></Body></Envelope>");
+            let s = parse_probe_match(xml.as_bytes(), src(), None).unwrap();
+            assert_eq!((s.ip, s.http_port), ("192.0.2.11".parse().unwrap(), None), "{x}");
+        }
     }
 
     #[test]
