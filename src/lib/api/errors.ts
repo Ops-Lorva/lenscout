@@ -5,6 +5,7 @@ const CODES = [
   'no_socket',
   'bad_ip',
   'bad_port',
+  'bad_action',
   'open_failed',
   'empty_field',
   'duplicate_name',

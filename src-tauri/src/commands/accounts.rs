@@ -91,7 +91,6 @@ pub(crate) fn account_remove(book: &mut AccountBook, id: &str) -> Result<(), Str
 
 /// Identifiants d'un compte pour les commandes authentifiées (cadrage,
 /// configuration) : le mot de passe reste côté Rust.
-#[allow(dead_code)] // premier appelant : tâche 11
 pub(crate) fn credentials_for(state: &Mutex<AccountBook>, id: &str) -> Result<Credentials, String> {
     lock(state)?.credentials(id).map_err(code)
 }

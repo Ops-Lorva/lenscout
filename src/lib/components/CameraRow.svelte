@@ -1,21 +1,25 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
+  import { resultMessage, type ActionResult } from '$lib/api/configure';
   import type { Camera } from '$lib/api/types';
 
   let {
     camera,
+    result,
     selected,
     onToggle,
     onOpenWeb,
     onFrame,
   }: {
     camera: Camera;
+    result?: ActionResult;
     selected: boolean;
     onToggle: () => void;
     onOpenWeb: () => void;
     onFrame: () => void;
   } = $props();
 
+  const message = $derived(result ? resultMessage(result) : null);
   const label = $derived([camera.brand, camera.model].filter(Boolean).join(' ') || '—');
 </script>
 
@@ -30,6 +34,13 @@
   <td>{camera.firmware ?? '—'}</td>
   <td>
     <span class="pill {camera.activation}">{$_(`network.state.${camera.activation}`)}</span>
+  </td>
+  <td class="result">
+    {#if result?.ok}
+      <span class="pill ok">{$_('configure.ok')}</span>
+    {:else if message}
+      <span class="pill bad">{$_(`configure.${message.key}`, { values: { detail: message.detail ?? '' } })}</span>
+    {/if}
   </td>
   <td class="actions">
     <button onclick={onOpenWeb}>{$_('network.openWeb')}</button>
@@ -49,6 +60,8 @@
   }
   .pill.new { color: var(--ep-warning); border-color: var(--ep-warning); }
   .pill.activated { color: var(--ep-success); border-color: var(--ep-success); }
+  .pill.ok { color: var(--ep-success); border-color: var(--ep-success); }
+  .pill.bad { color: var(--ep-danger); border-color: var(--ep-danger); }
   .actions { text-align: right; }
   button {
     padding: 4px 10px; margin-left: 6px; font-size: 12px; cursor: pointer;

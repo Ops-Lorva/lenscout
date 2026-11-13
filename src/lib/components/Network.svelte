@@ -8,9 +8,12 @@
   import { errorKey } from '$lib/api/errors';
   import { cameraKey, cameras, clear, query, selection, shouldAutoScan, upsert, visibleCameras } from '$lib/stores/cameras';
   import { framingTarget, page } from '$lib/stores/nav';
+  import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
+  import { actionResults, resultFor } from '$lib/api/configure';
 
   const IFACE_KEY = 'lenscout.iface';
+  const RESCAN_DELAY_MS = 3000;
 
   let interfaces = $state<string[]>([]);
   let iface = $state('');
@@ -97,7 +100,16 @@
     if (shouldAutoScan(get(cameras))) void scan();
   });
 
+  // Une caméra dont l'IP vient de changer met un instant à reparaître : on
+  // rescanne après ce délai, sauf si la page a été quittée entre-temps.
+  let rescanTimer: ReturnType<typeof setTimeout> | undefined;
+  function rescanSoon() {
+    clearTimeout(rescanTimer);
+    rescanTimer = setTimeout(() => void scan(), RESCAN_DELAY_MS);
+  }
+
   onDestroy(() => {
+    clearTimeout(rescanTimer);
     if (scanning) stop();
   });
 </script>
@@ -117,6 +129,8 @@
 
 {#if error}<div class="error">{error}</div>{/if}
 
+<ActionBar {iface} onDone={rescanSoon} />
+
 <table>
   <thead>
     <tr>
@@ -128,12 +142,14 @@
       <th>{$_('network.col.firmware')}</th>
       <th>{$_('network.col.state')}</th>
       <th></th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
     {#each shown as c (cameraKey(c))}
       <CameraRow
         camera={c}
+        result={resultFor($actionResults, c)}
         selected={$selection.has(cameraKey(c))}
         onToggle={() => toggle(c)}
         onOpenWeb={() => openWeb(c)}

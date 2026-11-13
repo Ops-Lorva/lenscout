@@ -48,7 +48,7 @@ pub struct Sighting {
 }
 
 /// Une caméra, fusion de toutes ses observations.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Camera {
     pub ip: Ipv4Addr,
     pub mac: Option<String>,
