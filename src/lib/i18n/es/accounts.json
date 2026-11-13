@@ -7,8 +7,15 @@
   "cancel": "Cancelar",
   "none": "Ninguna cuenta",
   "picker": "Cuenta",
-  "col": { "name": "Nombre", "login": "Usuario" },
-  "field": { "name": "Nombre", "login": "Usuario", "password": "Contraseña" },
+  "col": {
+    "name": "Nombre",
+    "login": "Usuario"
+  },
+  "field": {
+    "name": "Nombre",
+    "login": "Usuario",
+    "password": "Contraseña"
+  },
   "error": {
     "empty_field": "Campo vacío",
     "duplicate_name": "Nombre ya usado",
@@ -18,5 +25,10 @@
     "io": "Archivo de cuentas inaccesible",
     "internal": "Error interno",
     "unknown": "Error"
-  }
+  },
+  "notice": {
+    "quarantined": "Archivo de cuentas ilegible, apartado",
+    "unwritable": "Archivo de cuentas ilegible, no se puede guardar"
+  },
+  "resecret": "Contraseña por volver a introducir"
 }

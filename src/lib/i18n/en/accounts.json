@@ -7,8 +7,15 @@
   "cancel": "Cancel",
   "none": "No account",
   "picker": "Account",
-  "col": { "name": "Name", "login": "Login" },
-  "field": { "name": "Name", "login": "Login", "password": "Password" },
+  "col": {
+    "name": "Name",
+    "login": "Login"
+  },
+  "field": {
+    "name": "Name",
+    "login": "Login",
+    "password": "Password"
+  },
   "error": {
     "empty_field": "Empty field",
     "duplicate_name": "Name already used",
@@ -18,5 +25,10 @@
     "io": "Accounts file unavailable",
     "internal": "Internal error",
     "unknown": "Error"
-  }
+  },
+  "notice": {
+    "quarantined": "Accounts file unreadable, set aside",
+    "unwritable": "Accounts file unreadable, saving unavailable"
+  },
+  "resecret": "Password to re-enter"
 }

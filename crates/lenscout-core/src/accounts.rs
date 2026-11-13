@@ -117,6 +117,46 @@ pub struct AccountBook {
     path: PathBuf,
     accounts: Vec<Account>,
     store: Arc<dyn SecretStore>,
+    // Carnet en mémoire seule : toute écriture échoue (voir `load_or_quarantine`).
+    read_only: bool,
+}
+
+/// Issue du chargement au démarrage.
+#[derive(Debug)]
+pub enum Startup {
+    Clean,
+    /// Fichier illisible renommé ; chemin du fichier mis de côté.
+    Quarantined(PathBuf),
+    /// Fichier illisible et renommage impossible : carnet vide, sans écriture.
+    Unwritable,
+}
+
+/// Un `accounts.json` illisible ne doit ni bloquer le démarrage ni être
+/// écrasé : on le renomme (jamais supprimé) et on repart d'un carnet vide.
+/// Si même le renommage échoue, le carnet reste en mémoire seule.
+pub fn load_or_quarantine(path: PathBuf, store: Arc<dyn SecretStore>) -> (AccountBook, Startup) {
+    if let Ok(book) = AccountBook::load(path.clone(), store.clone()) {
+        return (book, Startup::Clean);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".corrupt-{stamp}"));
+    let moved = path.with_file_name(name);
+    let mut book = AccountBook {
+        path: path.clone(),
+        accounts: Vec::new(),
+        store,
+        read_only: false,
+    };
+    if std::fs::rename(&path, &moved).is_ok() {
+        (book, Startup::Quarantined(moved))
+    } else {
+        book.read_only = true;
+        (book, Startup::Unwritable)
+    }
 }
 
 impl fmt::Debug for AccountBook {
@@ -139,7 +179,14 @@ impl AccountBook {
             path,
             accounts,
             store,
+            read_only: false,
         })
+    }
+
+    /// Faux seulement si le secret est absent du trousseau ; une autre erreur
+    /// (trousseau verrouillé) ne dit rien de l'état du secret.
+    pub fn has_secret(&self, id: &str) -> bool {
+        !matches!(self.store.get(id), Err(AccountError::NotFound))
     }
 
     pub fn list(&self) -> Vec<Account> {
@@ -199,6 +246,11 @@ impl AccountBook {
             name: name.to_string(),
             login: login.to_string(),
         };
+        // Compte sans secret : l'enregistrer sans mot de passe laisserait croire
+        // qu'il est réparé.
+        if password.is_none() && !self.has_secret(id) {
+            return Err(AccountError::SecretMissing);
+        }
         // Ancien secret gardé pour le rétablir si l'écriture du JSON échoue.
         let previous = match &password {
             Some(new) => {
@@ -260,6 +312,9 @@ impl AccountBook {
     /// Écriture atomique : fichier temporaire voisin puis `rename`.
     fn write(&self, accounts: &[Account]) -> Result<(), AccountError> {
         let io = |e: std::io::Error| AccountError::Io(e.to_string());
+        if self.read_only {
+            return Err(AccountError::Io("lecture seule".into()));
+        }
         let json =
             serde_json::to_vec_pretty(accounts).map_err(|e| AccountError::Io(e.to_string()))?;
         if let Some(dir) = self.path.parent() {
@@ -528,5 +583,90 @@ mod tests {
         book.update(&acc.id, "A", "root", Some(Secret::new(PWD.into())))
             .unwrap();
         assert!(book.credentials(&acc.id).is_ok());
+    }
+
+    #[test]
+    fn corrupt_file_is_quarantined_not_deleted() {
+        let fx = Fixture::new();
+        std::fs::write(fx.path(), b"{ pas du json").unwrap();
+        let (book, startup) = load_or_quarantine(fx.path(), fx.store.clone());
+        assert!(book.list().is_empty());
+        let Startup::Quarantined(moved) = startup else {
+            panic!("attendu Quarantined, reçu {startup:?}");
+        };
+        assert!(!fx.path().exists());
+        assert!(moved
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("accounts.json.corrupt-"));
+        assert_eq!(std::fs::read(&moved).unwrap(), b"{ pas du json");
+        // Le carnet vide reste utilisable.
+        let mut book = book;
+        assert!(book.create("A", "root", Secret::new(PWD.into())).is_ok());
+    }
+
+    #[test]
+    fn absent_file_is_clean_start() {
+        let fx = Fixture::new();
+        let (book, startup) = load_or_quarantine(fx.path(), fx.store.clone());
+        assert!(book.list().is_empty());
+        assert!(matches!(startup, Startup::Clean));
+        assert!(std::fs::read_dir(&fx.dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn valid_file_is_clean_start() {
+        let fx = Fixture::new();
+        fx.book()
+            .create("A", "root", Secret::new(PWD.into()))
+            .unwrap();
+        let (book, startup) = load_or_quarantine(fx.path(), fx.store.clone());
+        assert_eq!(book.list().len(), 1);
+        assert!(matches!(startup, Startup::Clean));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_rename_gives_unwritable_memory_book() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fixture::new();
+        std::fs::write(fx.path(), b"{ pas du json").unwrap();
+        // Dossier en lecture seule : le rename échoue.
+        std::fs::set_permissions(&fx.dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let (mut book, startup) = load_or_quarantine(fx.path(), fx.store.clone());
+        std::fs::set_permissions(&fx.dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(startup, Startup::Unwritable));
+        assert!(book.list().is_empty());
+        let err = book
+            .create("A", "root", Secret::new(PWD.into()))
+            .unwrap_err();
+        assert!(matches!(err, AccountError::Io(_)));
+        assert!(book.list().is_empty());
+        // Le fichier d'origine n'a pas été touché.
+        assert_eq!(std::fs::read(fx.path()).unwrap(), b"{ pas du json");
+    }
+
+    #[test]
+    fn has_secret_reflects_store() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("A", "root", Secret::new(PWD.into())).unwrap();
+        assert!(book.has_secret(&acc.id));
+        fx.store.delete(&acc.id).unwrap();
+        assert!(!book.has_secret(&acc.id));
+    }
+
+    #[test]
+    fn update_without_password_refused_when_secret_missing() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("A", "root", Secret::new(PWD.into())).unwrap();
+        fx.store.delete(&acc.id).unwrap();
+        assert!(matches!(
+            book.update(&acc.id, "A", "admin", None),
+            Err(AccountError::SecretMissing)
+        ));
+        assert_eq!(book.list()[0].login, "root");
     }
 }

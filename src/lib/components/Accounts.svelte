@@ -1,10 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
-  import { createAccount, listAccounts, removeAccount, updateAccount, type Account } from '$lib/api/accounts';
+  import {
+    accountsStartup, createAccount, listAccounts, noticeKey, passwordRequired, removeAccount, updateAccount,
+    type AccountEntry,
+  } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
 
-  let accounts = $state<Account[]>([]);
+  let accounts = $state<AccountEntry[]>([]);
   let error = $state('');
   // `null` : pas de formulaire ; `''` : création ; sinon l'id du compte modifié.
   let editing = $state<string | null>(null);
@@ -12,6 +15,7 @@
   let login = $state('');
   let password = $state('');
   let confirming = $state('');
+  let needPassword = $state(true);
 
   const fail = (e: unknown) => (error = $_(`accounts.${errorKey(e)}`));
 
@@ -23,10 +27,11 @@
     }
   }
 
-  function open(a: Account | null) {
+  function open(a: AccountEntry | null) {
     error = '';
     confirming = '';
     editing = a?.id ?? '';
+    needPassword = passwordRequired(a);
     name = a?.name ?? '';
     login = a?.login ?? '';
     password = '';
@@ -53,7 +58,7 @@
     await refresh();
   }
 
-  async function remove(a: Account) {
+  async function remove(a: AccountEntry) {
     if (confirming !== a.id) {
       confirming = a.id;
       return;
@@ -68,7 +73,13 @@
     await refresh();
   }
 
-  onMount(refresh);
+  onMount(async () => {
+    try {
+      const key = noticeKey(await accountsStartup());
+      if (key) error = $_(`accounts.${key}`);
+    } catch {}
+    await refresh();
+  });
 </script>
 
 <div class="bar">
@@ -82,7 +93,7 @@
   <form onsubmit={(e) => { e.preventDefault(); void save(); }}>
     <input bind:value={name} placeholder={$_('accounts.field.name')} aria-label={$_('accounts.field.name')} autocomplete="off" />
     <input bind:value={login} placeholder={$_('accounts.field.login')} aria-label={$_('accounts.field.login')} autocomplete="off" />
-    <input type="password" bind:value={password} placeholder={$_('accounts.field.password')} aria-label={$_('accounts.field.password')} autocomplete="new-password" />
+    <input type="password" bind:value={password} required={needPassword} placeholder={$_('accounts.field.password')} aria-label={$_('accounts.field.password')} autocomplete="new-password" />
     <button class="primary" type="submit">{$_('accounts.save')}</button>
     <button type="button" onclick={close}>{$_('accounts.cancel')}</button>
   </form>
@@ -95,7 +106,7 @@
   <tbody>
     {#each accounts as a (a.id)}
       <tr>
-        <td>{a.name}</td>
+        <td>{a.name}{#if !a.has_secret} <span class="pill">{$_('accounts.resecret')}</span>{/if}</td>
         <td class="mono">{a.login}</td>
         <td class="actions">
           <button onclick={() => open(a)}>{$_('accounts.edit')}</button>
@@ -137,6 +148,10 @@
     color: var(--ep-text-muted); border-bottom: 1px solid var(--ep-border-strong);
   }
   td { padding: 7px 10px; border-bottom: 1px solid var(--ep-border); font-size: 12.5px; }
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+    color: var(--ep-warning); border: 1px solid var(--ep-warning);
+  }
   .mono { font-family: var(--ep-font-mono, monospace); font-size: 12px; }
   .actions { text-align: right; }
   .actions button { margin-left: 6px; }

@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
+  import { errorKey } from '$lib/api/errors';
   import { ACCOUNT_KEY, listAccounts, pickAccount, type Account } from '$lib/api/accounts';
 
   let { accountId = $bindable('') }: { accountId?: string } = $props();
 
   let accounts = $state<Account[]>([]);
+  let error = $state('');
 
   function onChange(e: Event) {
     accountId = (e.currentTarget as HTMLSelectElement).value;
@@ -15,7 +17,8 @@
   onMount(async () => {
     try {
       accounts = await listAccounts();
-    } catch {
+    } catch (e) {
+      error = $_(`accounts.${errorKey(e)}`);
       return;
     }
     let saved = '';
@@ -25,6 +28,11 @@
 </script>
 
 <select value={accountId} onchange={onChange} disabled={accounts.length === 0} aria-label={$_('accounts.picker')}>
-  {#if accounts.length === 0}<option value="">{$_('accounts.none')}</option>{/if}
+  {#if accounts.length === 0 && !error}<option value="">{$_('accounts.none')}</option>{/if}
   {#each accounts as a (a.id)}<option value={a.id}>{a.name} ({a.login})</option>{/each}
 </select>
+{#if error}<span class="error">{error}</span>{/if}
+
+<style>
+  .error { color: var(--ep-danger); font-size: 12.5px; margin-left: 8px; }
+</style>

@@ -1,8 +1,9 @@
 use std::sync::Mutex;
 
-use lenscout_core::accounts::{Account, AccountBook, AccountError};
+use lenscout_core::accounts::{Account, AccountBook, AccountError, Startup};
 use lenscout_core::secret::Secret;
 use lenscout_core::transport::Credentials;
+use serde::Serialize;
 use tauri::State;
 
 /// Erreurs : codes stables (`empty_field`, `duplicate_name`, `not_found`,
@@ -27,8 +28,42 @@ fn lock(state: &Mutex<AccountBook>) -> Result<std::sync::MutexGuard<'_, AccountB
 // Les fonctions pures portent la logique ; les commandes ne font que
 // verrouiller l'état. Aucune ne renvoie de mot de passe.
 
-pub(crate) fn accounts_list(book: &AccountBook) -> Vec<Account> {
+/// Entrée de liste : le compte et un booléen disant si son mot de passe est
+/// au trousseau (jamais le mot de passe).
+#[derive(Serialize, Debug, PartialEq)]
+pub struct AccountEntry {
+    pub id: String,
+    pub name: String,
+    pub login: String,
+    pub has_secret: bool,
+}
+
+pub(crate) fn accounts_list(book: &AccountBook) -> Vec<AccountEntry> {
     book.list()
+        .into_iter()
+        .map(|a| AccountEntry {
+            has_secret: book.has_secret(&a.id),
+            id: a.id,
+            name: a.name,
+            login: a.login,
+        })
+        .collect()
+}
+
+/// Signalement unique au front d'un démarrage dégradé (`quarantined`,
+/// `unwritable`), pris par la page Comptes à son premier affichage.
+pub struct StartupNotice(pub Mutex<Option<&'static str>>);
+
+pub(crate) fn startup_code(startup: &Startup) -> Option<&'static str> {
+    match startup {
+        Startup::Clean => None,
+        Startup::Quarantined(_) => Some("quarantined"),
+        Startup::Unwritable => Some("unwritable"),
+    }
+}
+
+pub(crate) fn take_notice(notice: &StartupNotice) -> Option<String> {
+    notice.0.lock().ok()?.take().map(str::to_string)
 }
 
 pub(crate) fn account_create(
@@ -65,9 +100,14 @@ pub(crate) fn credentials_for(state: &Mutex<AccountBook>, id: &str) -> Result<Cr
 // pas geler le thread principal.
 
 #[tauri::command]
+pub fn cmd_accounts_startup(notice: State<'_, StartupNotice>) -> Option<String> {
+    take_notice(&notice)
+}
+
+#[tauri::command]
 pub async fn cmd_accounts_list(
     state: State<'_, Mutex<AccountBook>>,
-) -> Result<Vec<Account>, String> {
+) -> Result<Vec<AccountEntry>, String> {
     let book = lock(&state)?;
     Ok(accounts_list(&book))
 }
@@ -107,7 +147,7 @@ pub async fn cmd_account_remove(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lenscout_core::accounts::MemoryStore;
+    use lenscout_core::accounts::{MemoryStore, SecretStore};
     use std::sync::Arc;
 
     fn book() -> AccountBook {
@@ -141,6 +181,42 @@ mod tests {
         let json = serde_json::to_string(&accounts_list(&book)).unwrap();
         assert!(!json.contains("S3cr3t"));
         assert!(json.contains("Défaut LORVA"));
+    }
+
+    #[test]
+    fn list_flags_accounts_without_secret() {
+        let store = Arc::new(MemoryStore::default());
+        let path = std::env::temp_dir()
+            .join(format!("lenscout-cmd-accounts-{}", uuid_like()))
+            .join("accounts.json");
+        let mut book = AccountBook::load(path, store.clone()).unwrap();
+        let ok = account_create(&mut book, "A", "r", Secret::new("x".into())).unwrap();
+        let lost = account_create(&mut book, "B", "r", Secret::new("x".into())).unwrap();
+        store.delete(&lost.id).unwrap();
+        let entries = accounts_list(&book);
+        let flag = |id: &str| entries.iter().find(|e| e.id == id).unwrap().has_secret;
+        assert!(flag(&ok.id));
+        assert!(!flag(&lost.id));
+        let json = serde_json::to_string(&entries).unwrap();
+        assert!(json.contains("\"has_secret\":false"));
+    }
+
+    #[test]
+    fn startup_codes() {
+        use lenscout_core::accounts::Startup;
+        assert_eq!(startup_code(&Startup::Clean), None);
+        assert_eq!(
+            startup_code(&Startup::Quarantined("x".into())),
+            Some("quarantined")
+        );
+        assert_eq!(startup_code(&Startup::Unwritable), Some("unwritable"));
+    }
+
+    #[test]
+    fn notice_is_given_once() {
+        let notice = StartupNotice(Mutex::new(Some("quarantined")));
+        assert_eq!(take_notice(&notice), Some("quarantined".to_string()));
+        assert_eq!(take_notice(&notice), None);
     }
 
     #[test]

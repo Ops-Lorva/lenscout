@@ -7,8 +7,15 @@
   "cancel": "Annuler",
   "none": "Aucun compte",
   "picker": "Compte",
-  "col": { "name": "Nom", "login": "Identifiant" },
-  "field": { "name": "Nom", "login": "Identifiant", "password": "Mot de passe" },
+  "col": {
+    "name": "Nom",
+    "login": "Identifiant"
+  },
+  "field": {
+    "name": "Nom",
+    "login": "Identifiant",
+    "password": "Mot de passe"
+  },
   "error": {
     "empty_field": "Champ vide",
     "duplicate_name": "Nom déjà utilisé",
@@ -18,5 +25,10 @@
     "io": "Fichier des comptes inaccessible",
     "internal": "Erreur interne",
     "unknown": "Erreur"
-  }
+  },
+  "notice": {
+    "quarantined": "Fichier des comptes illisible, mis de côté",
+    "unwritable": "Fichier des comptes illisible, enregistrement impossible"
+  },
+  "resecret": "Mot de passe à ressaisir"
 }
