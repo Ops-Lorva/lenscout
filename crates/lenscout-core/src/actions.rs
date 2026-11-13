@@ -31,6 +31,17 @@ pub enum ActionError {
     Unsupported,
     #[error("ce n'est plus la même caméra")]
     IdentityMismatch,
+    /// Lecture d'identité impossible (404, 401, réponse non Axis) : l'écriture
+    /// est bloquée mais on ne prétend pas que c'est une autre caméra.
+    #[error("identité illisible")]
+    IdentityUnreadable,
+    /// Adresse hors du sous-réseau de l'interface : rien n'est envoyé.
+    #[error("caméra hors du sous-réseau")]
+    CameraOffSubnet,
+    #[error("caméra déjà activée")]
+    AlreadyActivated,
+    #[error("une seule caméra à la fois")]
+    NetworkNeedsOneCamera,
     #[error("caméra injoignable : {ip}")]
     Unreachable { ip: Ipv4Addr },
     #[error("authentification refusée")]
@@ -79,13 +90,15 @@ pub async fn verify_identity(ctx: &ActionContext, cam: &Camera) -> Result<(), Ac
     }
     let info = match vapix::device_info(ctx.http.as_ref(), &cam.base_url()).await {
         Ok(info) => info,
-        Err(VapixError::Parse(_) | VapixError::Rejected(_) | VapixError::Net(NetError::Status(_))) => {
-            return Err(ActionError::IdentityMismatch);
-        }
+        Err(
+            VapixError::Parse(_)
+            | VapixError::Rejected(_)
+            | VapixError::Net(NetError::Status(_) | NetError::Auth),
+        ) => return Err(ActionError::IdentityUnreadable),
         Err(e) => return Err(from_vapix(e, cam.ip)),
     };
     let Some(found) = info.serial.as_deref().map(str::trim) else {
-        return Err(ActionError::IdentityMismatch);
+        return Err(ActionError::IdentityUnreadable);
     };
     let same = match (cam.serial.as_deref(), cam.mac.as_deref()) {
         (Some(expected), _) => expected.trim().eq_ignore_ascii_case(found),
@@ -96,6 +109,15 @@ pub async fn verify_identity(ctx: &ActionContext, cam: &Camera) -> Result<(), Ac
         (None, None) => false,
     };
     if same { Ok(()) } else { Err(ActionError::IdentityMismatch) }
+}
+
+/// L'adresse vient du front : elle doit être dans le sous-réseau de l'interface
+/// choisie, sinon un webview compromis ferait partir un mot de passe vers un hôte
+/// quelconque. La tâche 13 (IP temporaire, caméra en 169.254.x.x) élargira cette
+/// règle au seul cas qu'elle gère.
+fn on_subnet(iface: &ScanInterface, ip: Ipv4Addr) -> bool {
+    let mask = u32::from(iface.mask);
+    u32::from(ip) & mask == u32::from(iface.ip) & mask
 }
 
 fn result(cam: &Camera, outcome: Result<(), ActionError>) -> ActionResult {
@@ -128,15 +150,22 @@ async fn apply_checked(
         Family::Axis => {}
         Family::Hikvision | Family::Other => return Err(ActionError::Unsupported),
     }
+    if !on_subnet(&ctx.iface, cam.ip) {
+        return Err(ActionError::CameraOffSubnet);
+    }
     verify_identity(ctx, cam).await?;
     let http = ctx.http.as_ref();
     let base = cam.base_url();
-    match action {
+    let done = match action {
         Action::Activate => vapix::activate(http, &base, creds).await,
         Action::Network(net) => vapix::set_network(http, &base, creds, net).await,
         Action::Time(t) => vapix::set_time(http, &base, creds, t).await,
-    }
-    .map_err(|e| from_vapix(e, cam.ip))
+    };
+    done.map_err(|e| match (action, from_vapix(e, cam.ip)) {
+        // Une caméra qui a déjà un compte refuse la création du premier (401).
+        (Action::Activate, ActionError::AuthFailed) => ActionError::AlreadyActivated,
+        (_, err) => err,
+    })
 }
 
 /// Une caméra après l'autre, dans l'ordre de la liste ; un échec n'arrête pas
@@ -149,10 +178,10 @@ pub async fn apply_all(
     action: &Action,
 ) -> Vec<ActionResult> {
     if matches!(action, Action::Network(_)) && cams.len() > 1 {
-        let refused = || ActionError::Rejected {
-            detail: "une seule caméra à la fois".into(),
-        };
-        return cams.iter().map(|c| result(c, Err(refused()))).collect();
+        return cams
+            .iter()
+            .map(|c| result(c, Err(ActionError::NetworkNeedsOneCamera)))
+            .collect();
     }
     let mut out = Vec::with_capacity(cams.len());
     for cam in cams {
@@ -327,17 +356,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_without_axis_answer_is_not_the_camera() {
-        // Un autre appareil à cette adresse (page HTML, 404) : rien n'est écrit.
+    async fn unreadable_identity_blocks_the_write_with_its_own_code() {
+        // Page HTML, 404 (firmware ancien), 401 (accès anonyme fermé) : l'identité
+        // n'est pas lisible, rien n'est écrit, et le message ne dit pas « autre caméra ».
         for reply in [
             (|_: &HttpRequest| Ok(HttpResponse { status: 200, headers: vec![], body: b"<html>".to_vec() })) as fn(&HttpRequest) -> _,
             |_| Ok(HttpResponse { status: 404, headers: vec![], body: vec![] }),
+            |_| Ok(HttpResponse { status: 401, headers: vec![], body: vec![] }),
+            |_| Err(NetError::Auth),
         ] {
             let http = Arc::new(Scripted::new(reply));
             let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
-            assert_eq!(r.error, Some(ActionError::IdentityMismatch));
+            assert_eq!(r.error, Some(ActionError::IdentityUnreadable));
             assert_eq!(http.urls.lock().unwrap().len(), 1, "seule la lecture d'identité est partie");
         }
+    }
+
+    #[tokio::test]
+    async fn camera_outside_the_interface_subnet_gets_no_request() {
+        // Le front fournit l'adresse : une IP hors du sous-réseau de l'interface
+        // ne reçoit rien, surtout pas un mot de passe.
+        let http = Arc::new(axis_ok());
+        for ip in ["198.51.100.5", "192.0.3.11", "10.0.0.1"] {
+            for action in [Action::Activate, static_net(), time()] {
+                let r = apply(&ctx(http.clone()), &cam(ip, Family::Axis), &creds(), &action).await;
+                assert_eq!(r.error, Some(ActionError::CameraOffSubnet), "{ip}");
+            }
+        }
+        assert!(http.requests().is_empty());
+        // Dans le sous-réseau : accepté.
+        assert!(apply(&ctx(http.clone()), &cam("192.0.2.200", Family::Axis), &creds(), &time()).await.ok);
+    }
+
+    #[tokio::test]
+    async fn activate_on_an_activated_camera_says_so() {
+        let http = Arc::new(Scripted::new(|req| {
+            if req.url.ends_with("basicdeviceinfo.cgi") {
+                Ok(HttpResponse { status: 200, headers: vec![], body: INFO.to_vec() })
+            } else {
+                Err(NetError::Auth)
+            }
+        }));
+        let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::AlreadyActivated));
+        // Un refus d'authentification d'une autre action reste AuthFailed.
+        let r = apply(&ctx(http), &cam("192.0.2.11", Family::Axis), &creds(), &time()).await;
+        assert_eq!(r.error, Some(ActionError::AuthFailed));
     }
 
     #[tokio::test]
@@ -409,7 +473,7 @@ mod tests {
         let cams = [cam("192.0.2.11", Family::Axis), cam("192.0.2.12", Family::Axis)];
         let out = apply_all(&ctx(http.clone()), &cams, &creds(), &static_net()).await;
         assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|r| !r.ok && matches!(r.error, Some(ActionError::Rejected { .. }))));
+        assert!(out.iter().all(|r| !r.ok && r.error == Some(ActionError::NetworkNeedsOneCamera)));
         assert!(http.requests().is_empty());
     }
 
@@ -475,6 +539,10 @@ mod tests {
         let all = [
             ActionError::Unsupported,
             ActionError::IdentityMismatch,
+            ActionError::IdentityUnreadable,
+            ActionError::CameraOffSubnet,
+            ActionError::AlreadyActivated,
+            ActionError::NetworkNeedsOneCamera,
             ActionError::Unreachable { ip },
             ActionError::AuthFailed,
             ActionError::Rejected { detail: "Error: invalid password.".into() },
