@@ -21,7 +21,6 @@
     "unreachable": "Camera unreachable",
     "auth_failed": "Authentication refused",
     "rejected": "Refused: {detail}",
-    "elevation_refused": "Permission denied",
     "bad_action": "Invalid value",
     "iface_unknown": "Unknown interface",
     "iface_no_ipv4": "Interface has no IPv4 address",
@@ -39,7 +38,8 @@
     "preview_expired": "Preview expired: preview again",
     "http_status": "HTTP status {status}",
     "auth_insecure": "Basic authentication refused over HTTP",
-    "bad_reply": "Unreadable reply"
+    "bad_reply": "Unreadable reply",
+    "keyring": "Keychain unavailable"
   },
   "off_subnet": "Outside the subnet of {iface}",
   "invalid": {

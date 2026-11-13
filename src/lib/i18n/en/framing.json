@@ -13,6 +13,7 @@
     "not_found": "Account not found",
     "secret_missing": "Password missing from the keychain: enter it again",
     "internal": "Internal error",
-    "unknown": "Unexpected error"
+    "unknown": "Unexpected error",
+    "keyring": "Keychain unavailable"
   }
 }

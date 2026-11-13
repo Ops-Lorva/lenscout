@@ -1,5 +1,5 @@
 /** Codes stables renvoyés par les commandes Rust (`Err(String)`). */
-const CODES = [
+export const CODES = [
   'iface_unknown',
   'iface_no_ipv4',
   'no_socket',

@@ -13,6 +13,7 @@
     "not_found": "Compte introuvable",
     "secret_missing": "Mot de passe absent du trousseau : à ressaisir",
     "internal": "Erreur interne",
-    "unknown": "Erreur inattendue"
+    "unknown": "Erreur inattendue",
+    "keyring": "Trousseau inaccessible"
   }
 }

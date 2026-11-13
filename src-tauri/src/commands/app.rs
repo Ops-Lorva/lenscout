@@ -10,7 +10,7 @@ pub fn cmd_app_version() -> String {
 pub async fn cmd_list_interfaces() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(list_interfaces_up)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|_| "internal".to_string())
 }
 
 /// Un nom qui ne figure pas dans `list_interfaces_up()` est refusé : il
@@ -24,5 +24,5 @@ pub async fn cmd_interface_details(name: String) -> Result<InterfaceDetails, Str
         Ok(get_interface_details(&name))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|_| "internal".to_string())?
 }

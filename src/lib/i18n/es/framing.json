@@ -13,6 +13,7 @@
     "not_found": "Cuenta no encontrada",
     "secret_missing": "Contraseña ausente del llavero: vuelva a introducirla",
     "internal": "Error interno",
-    "unknown": "Error inesperado"
+    "unknown": "Error inesperado",
+    "keyring": "Llavero inaccesible"
   }
 }

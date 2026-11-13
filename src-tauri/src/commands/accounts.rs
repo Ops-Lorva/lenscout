@@ -91,8 +91,15 @@ pub(crate) fn account_remove(book: &mut AccountBook, id: &str) -> Result<(), Str
 
 /// Identifiants d'un compte pour les commandes authentifiées (cadrage,
 /// configuration) : le mot de passe reste côté Rust.
+/// Pour une action ou un flux. Codes possibles (affichés par les pages
+/// Configuration et Cadrage) : `not_found`, `secret_missing`, `keyring`,
+/// `internal`. `AccountBook::credentials` ne rend rien d'autre.
 pub(crate) fn credentials_for(state: &Mutex<AccountBook>, id: &str) -> Result<Credentials, String> {
-    lock(state)?.credentials(id).map_err(code)
+    lock(state)?.credentials(id).map_err(|e| match e {
+        AccountError::NotFound => "not_found".to_string(),
+        AccountError::SecretMissing => "secret_missing".to_string(),
+        _ => "keyring".to_string(),
+    })
 }
 
 // `async` : le trousseau peut bloquer (D-Bus, invite de l'OS), ce qui ne doit

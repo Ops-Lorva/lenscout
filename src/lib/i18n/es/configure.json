@@ -21,7 +21,6 @@
     "unreachable": "Cámara inaccesible",
     "auth_failed": "Autenticación rechazada",
     "rejected": "Rechazado: {detail}",
-    "elevation_refused": "Permisos denegados",
     "bad_action": "Valor no válido",
     "iface_unknown": "Interfaz desconocida",
     "iface_no_ipv4": "Interfaz sin dirección IPv4",
@@ -39,7 +38,8 @@
     "preview_expired": "Vista previa caducada: repetirla",
     "http_status": "Estado HTTP {status}",
     "auth_insecure": "Autenticación Basic rechazada en HTTP",
-    "bad_reply": "Respuesta ilegible"
+    "bad_reply": "Respuesta ilegible",
+    "keyring": "Llavero inaccesible"
   },
   "off_subnet": "Fuera de la subred de {iface}",
   "invalid": {

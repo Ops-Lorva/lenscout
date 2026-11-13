@@ -21,7 +21,6 @@
     "unreachable": "Caméra injoignable",
     "auth_failed": "Authentification refusée",
     "rejected": "Refusé : {detail}",
-    "elevation_refused": "Droits refusés",
     "bad_action": "Valeur invalide",
     "iface_unknown": "Interface inconnue",
     "iface_no_ipv4": "Interface sans adresse IPv4",
@@ -39,7 +38,8 @@
     "preview_expired": "Aperçu expiré : refaire l’aperçu",
     "http_status": "Statut HTTP {status}",
     "auth_insecure": "Authentification Basic refusée en HTTP",
-    "bad_reply": "Réponse illisible"
+    "bad_reply": "Réponse illisible",
+    "keyring": "Trousseau inaccessible"
   },
   "off_subnet": "Hors du sous-réseau de {iface}",
   "invalid": {
