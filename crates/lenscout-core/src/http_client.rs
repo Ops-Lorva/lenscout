@@ -69,7 +69,9 @@ impl ReqwestCameraHttp {
         if first.status().as_u16() != 401 {
             return Ok(first);
         }
-        let Some(creds) = creds else { return Err(NetError::Auth) };
+        let Some(creds) = creds else {
+            return Err(NetError::Auth);
+        };
         let Some(auth) = answer_challenge(&first, req, creds) else {
             return Err(NetError::Auth);
         };
@@ -94,7 +96,10 @@ fn answer_challenge(
         .iter()
         .filter_map(|v| v.to_str().ok())
         .collect();
-    if let Some(digest) = challenges.iter().find(|c| c.trim_start().to_ascii_lowercase().starts_with("digest")) {
+    if let Some(digest) = challenges
+        .iter()
+        .find(|c| c.trim_start().to_ascii_lowercase().starts_with("digest"))
+    {
         let url = Url::parse(&req.url).ok()?;
         let uri = match url.query() {
             Some(q) => format!("{}?{q}", url.path()),
@@ -116,7 +121,10 @@ fn answer_challenge(
         let header = prompt.respond(&ctx).ok()?;
         return HeaderValue::from_str(&header.to_header_string()).ok();
     }
-    if challenges.iter().any(|c| c.trim_start().to_ascii_lowercase().starts_with("basic")) {
+    if challenges
+        .iter()
+        .any(|c| c.trim_start().to_ascii_lowercase().starts_with("basic"))
+    {
         use base64::Engine;
         let raw = format!("{}:{}", creds.login, creds.password.expose());
         let enc = base64::engine::general_purpose::STANDARD.encode(raw);
@@ -205,7 +213,9 @@ mod tests {
             let seen = requests.clone();
             tokio::spawn(async move {
                 loop {
-                    let Ok((mut sock, _)) = listener.accept().await else { return };
+                    let Ok((mut sock, _)) = listener.accept().await else {
+                        return;
+                    };
                     let mut raw = Vec::new();
                     let mut buf = [0u8; 2048];
                     while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -253,8 +263,12 @@ mod tests {
 
     /// Vérifie l'en-tête Digest reçu en recalculant la réponse attendue.
     fn digest_ok(raw: &str, password: &str) -> bool {
-        let Some(auth) = header_value(raw, "authorization") else { return false };
-        let Ok(got) = AuthorizationHeader::parse(&auth) else { return false };
+        let Some(auth) = header_value(raw, "authorization") else {
+            return false;
+        };
+        let Ok(got) = AuthorizationHeader::parse(&auth) else {
+            return false;
+        };
         let mut prompt = WwwAuthenticateHeader::parse(CHALLENGE).unwrap();
         let mut ctx = AuthContext::new(got.username.clone(), password, got.uri.clone());
         ctx.set_custom_cnonce(got.cnonce.clone().unwrap_or_default());
@@ -267,17 +281,29 @@ mod tests {
             if digest_ok(raw, expected_password) {
                 response("200 OK", "", "OK")
             } else {
-                response("401 Unauthorized", &format!("WWW-Authenticate: {CHALLENGE}\r\n"), "")
+                response(
+                    "401 Unauthorized",
+                    &format!("WWW-Authenticate: {CHALLENGE}\r\n"),
+                    "",
+                )
             }
         }
     }
 
     fn get(url: String) -> HttpRequest {
-        HttpRequest { method: Method::Get, url, body: None, content_type: None }
+        HttpRequest {
+            method: Method::Get,
+            url,
+            body: None,
+            content_type: None,
+        }
     }
 
     fn creds(login: &str, password: &str) -> Credentials {
-        Credentials { login: login.into(), password: Secret::new(password.into()) }
+        Credentials {
+            login: login.into(),
+            password: Secret::new(password.into()),
+        }
     }
 
     fn client() -> ReqwestCameraHttp {
@@ -288,7 +314,10 @@ mod tests {
     async fn digest_challenge_is_answered_once() {
         let server = TestServer::start(digest_server(PASSWORD)).await;
         let r = client()
-            .send(get(server.url("/axis-cgi/x.cgi?a=1")), Some(&creds("root", PASSWORD)))
+            .send(
+                get(server.url("/axis-cgi/x.cgi?a=1")),
+                Some(&creds("root", PASSWORD)),
+            )
             .await
             .unwrap();
         assert_eq!(r.status, 200);
@@ -300,7 +329,10 @@ mod tests {
     async fn wrong_password_gives_auth_error_after_one_retry() {
         let server = TestServer::start(digest_server(PASSWORD)).await;
         let err = client()
-            .send(get(server.url("/axis-cgi/x.cgi?a=1")), Some(&creds("root", "mauvais")))
+            .send(
+                get(server.url("/axis-cgi/x.cgi?a=1")),
+                Some(&creds("root", "mauvais")),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, NetError::Auth), "{err:?}");
@@ -316,7 +348,14 @@ mod tests {
             .unwrap();
         assert_eq!(r.status, 200);
         assert_eq!(server.request_count(), 1);
-        assert!(server.requests.lock().unwrap().iter().all(|q| !q.to_lowercase().contains("authorization")));
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|q| !q.to_lowercase().contains("authorization"))
+        );
     }
 
     #[tokio::test]
@@ -327,11 +366,18 @@ mod tests {
             if header_value(raw, "authorization").as_deref() == Some(expected) {
                 response("200 OK", "", "OK")
             } else {
-                response("401 Unauthorized", "WWW-Authenticate: Basic realm=\"cam\"\r\n", "")
+                response(
+                    "401 Unauthorized",
+                    "WWW-Authenticate: Basic realm=\"cam\"\r\n",
+                    "",
+                )
             }
         })
         .await;
-        let r = client().send(get(server.url("/")), Some(&creds("root", PASSWORD))).await.unwrap();
+        let r = client()
+            .send(get(server.url("/")), Some(&creds("root", PASSWORD)))
+            .await
+            .unwrap();
         assert_eq!(r.status, 200);
         assert_eq!(server.request_count(), 2);
     }
@@ -342,7 +388,11 @@ mod tests {
             if header_value(raw, "authorization").is_some() {
                 response("200 OK", "", "OK")
             } else {
-                response("401 Unauthorized", &format!("WWW-Authenticate: {CHALLENGE}\r\n"), "")
+                response(
+                    "401 Unauthorized",
+                    &format!("WWW-Authenticate: {CHALLENGE}\r\n"),
+                    "",
+                )
             }
         })
         .await;
@@ -352,7 +402,10 @@ mod tests {
             body: Some(b"pwd=1".to_vec()),
             content_type: Some("application/x-www-form-urlencoded".into()),
         };
-        let r = client().send(req, Some(&creds("root", PASSWORD))).await.unwrap();
+        let r = client()
+            .send(req, Some(&creds("root", PASSWORD)))
+            .await
+            .unwrap();
         assert_eq!(r.status, 200);
         assert_eq!(server.request_count(), 2);
     }
@@ -364,7 +417,10 @@ mod tests {
             l.local_addr().unwrap().port()
         };
         let err = client()
-            .send(get(format!("http://127.0.0.1:{port}/")), Some(&creds("root", PASSWORD)))
+            .send(
+                get(format!("http://127.0.0.1:{port}/")),
+                Some(&creds("root", PASSWORD)),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, NetError::Unreachable(_)), "{err:?}");
@@ -390,13 +446,19 @@ mod tests {
         // Auth
         let server = TestServer::start(digest_server("autre")).await;
         let c = creds("root", PASSWORD);
-        let e_auth = client().send(get(server.url("/axis-cgi/x.cgi?a=1")), Some(&c)).await.unwrap_err();
+        let e_auth = client()
+            .send(get(server.url("/axis-cgi/x.cgi?a=1")), Some(&c))
+            .await
+            .unwrap_err();
         // Unreachable
         let port = {
             let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
             l.local_addr().unwrap().port()
         };
-        let e_unreach = client().send(get(format!("http://127.0.0.1:{port}/")), Some(&c)).await.unwrap_err();
+        let e_unreach = client()
+            .send(get(format!("http://127.0.0.1:{port}/")), Some(&c))
+            .await
+            .unwrap_err();
         // Timeout
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let tport = listener.local_addr().unwrap().port();
@@ -420,19 +482,28 @@ mod tests {
     async fn stream_yields_body_chunks() {
         let server = TestServer::start(|_, raw| {
             if digest_ok(raw, PASSWORD) {
-                let mut out = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
+                let mut out =
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                        .to_vec();
                 for part in ["aaa", "bbb", "ccc"] {
                     out.extend_from_slice(format!("{:x}\r\n{part}\r\n", part.len()).as_bytes());
                 }
                 out.extend_from_slice(b"0\r\n\r\n");
                 out
             } else {
-                response("401 Unauthorized", &format!("WWW-Authenticate: {CHALLENGE}\r\n"), "")
+                response(
+                    "401 Unauthorized",
+                    &format!("WWW-Authenticate: {CHALLENGE}\r\n"),
+                    "",
+                )
             }
         })
         .await;
         let (head, mut stream) = client()
-            .stream(get(server.url("/axis-cgi/x.cgi?a=1")), Some(&creds("root", PASSWORD)))
+            .stream(
+                get(server.url("/axis-cgi/x.cgi?a=1")),
+                Some(&creds("root", PASSWORD)),
+            )
             .await
             .unwrap();
         assert_eq!(head.status, 200);
