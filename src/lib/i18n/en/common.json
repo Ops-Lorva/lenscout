@@ -1,0 +1,5 @@
+{
+  "nav": { "network": "Network", "framing": "Framing", "accounts": "Accounts" },
+  "lang": { "fr": "Français", "en": "English", "es": "Español" },
+  "interface": { "label": "Interface", "none": "No interface" }
+}

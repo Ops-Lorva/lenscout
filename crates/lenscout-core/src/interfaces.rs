@@ -1,0 +1,798 @@
+// Repris de LanProbe crates/lanprobe-core/src/interfaces.rs le 2026-11-13
+use serde::{Deserialize, Serialize};
+use super::proc::sync_cmd;
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct InterfaceDetails {
+    pub name: String,
+    pub ip: Option<String>,
+    pub subnet: Option<String>,
+    pub gateway: Option<String>,
+    pub dns: Vec<String>,
+    pub dhcp_enabled: bool,
+    /// Lien **opérationnel** : la porteuse est présente (RFC 2863).
+    ///
+    /// ⚠️ C'est la question qu'on pose vraiment — « ce câble est-il branché ? »
+    /// — et non le drapeau administratif, qui reste vrai sur un lien
+    /// débranché. Voir `admin_up`, qui porte l'autre notion : les deux mènent
+    /// à des gestes différents (rebrancher, ou activer).
+    pub is_up: bool,
+    /// Drapeau **administratif** `UP` : l'interface est activée.
+    ///
+    /// Vraie sur un lien débranché — `admin_up` sans `is_up` se lit « activée
+    /// mais sans porteuse », c'est-à-dire « vérifiez le câble ».
+    #[serde(default)]
+    pub admin_up: bool,
+    /// Nom BSD réel de l'interface (en0, en1…). Populé sur macOS, où `name`
+    /// est le service networksetup ("Wi-Fi", "Ethernet") — les CLI comme
+    /// `speedtest -I` attendent l'ifname BSD et pas le service.
+    #[serde(default)]
+    pub bsd_name: Option<String>,
+}
+
+/// Mappe un service networksetup ("Wi-Fi") vers l'ifname BSD ("en0") en
+/// parsant `networksetup -listallhardwareports`.
+#[cfg(target_os = "macos")]
+pub fn bsd_name_for_service(service: &str) -> Option<String> {
+    let text = sync_cmd("networksetup").arg("-listallhardwareports").output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let mut current_port: Option<String> = None;
+    for line in text.lines() {
+        if let Some(p) = line.strip_prefix("Hardware Port:") {
+            current_port = Some(p.trim().to_string());
+        } else if let Some(dev) = line.strip_prefix("Device:") {
+            if current_port.as_deref() == Some(service) {
+                return Some(dev.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn list_interfaces() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    { list_interfaces_windows() }
+    #[cfg(target_os = "macos")]
+    { list_interfaces_macos() }
+    #[cfg(target_os = "linux")]
+    { list_interfaces_linux() }
+}
+
+/// Interfaces dont le **lien** est actif (niveau 2), pour le choix d'interface
+/// de l'application de bureau.
+///
+/// Demande de Benjamin (12/11) : ne proposer que les interfaces « up », sans
+/// exiger d'adresse IP — juste le lien. Une carte Wi-Fi éteinte ou un port
+/// Ethernet débranché n'a rien à faire dans la liste.
+///
+/// ⚠️ La sonde sans écran (`lanprobe-server`) garde `list_interfaces()` : une
+/// interface configurée qui tombe doit y rester désignable, pas disparaître.
+///
+/// ⚠️ Si l'état des liens ne peut pas être lu (commande absente), on rend la
+/// liste complète plutôt qu'une liste vide : « aucune interface » serait une
+/// panne inventée.
+pub fn list_interfaces_up() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    { list_interfaces_up_windows() }
+    #[cfg(target_os = "macos")]
+    { list_interfaces_up_macos() }
+    #[cfg(target_os = "linux")]
+    { list_interfaces_up_linux() }
+}
+
+pub fn get_interface_details(name: &str) -> InterfaceDetails {
+    #[cfg(target_os = "windows")]
+    { get_details_windows(name) }
+    #[cfg(target_os = "macos")]
+    { get_details_macos(name) }
+    #[cfg(target_os = "linux")]
+    { get_details_linux(name) }
+}
+
+#[cfg(target_os = "windows")]
+fn list_interfaces_windows() -> Vec<String> {
+    // PowerShell Get-NetAdapter — locale-indépendant. On force UTF-8 pour
+    // éviter que PowerShell retourne du UTF-16 / code-page système (problème
+    // courant sur Windows FR qui casse les noms d'interfaces accentués).
+    // HardwareInterface=$true exclut Wintun, vEthernet, Hyper-V, loopback.
+    let ps = r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetAdapter | Where-Object { $_.HardwareInterface -eq $true } | Select-Object -ExpandProperty Name"#;
+    let out = sync_cmd("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", ps])
+        .output();
+    if let Ok(o) = out {
+        let text = String::from_utf8_lossy(&o.stdout).into_owned();
+        let list: Vec<String> = text.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if !list.is_empty() {
+            return list;
+        }
+    }
+    // Fallback minimal si PowerShell est indisponible (rare) — on accepte les
+    // interfaces IPv4 listées par `netsh interface ipv4 show interfaces` et on
+    // rejette explicitement les noms de tunnel/virtuels connus.
+    let text = sync_cmd("netsh")
+        .args(["interface", "ipv4", "show", "interfaces"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    text.lines()
+        .skip(3)
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let _idx = it.next()?;
+            let _met = it.next()?;
+            let _mtu = it.next()?;
+            let _state = it.next()?;
+            let name = it.collect::<Vec<_>>().join(" ");
+            if name.is_empty() { return None; }
+            let low = name.to_lowercase();
+            if low.contains("wintun") || low.contains("loopback") || low.contains("vethernet") || low.contains("hyper-v") || low.contains("isatap") || low.contains("teredo") { return None; }
+            Some(name)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn list_interfaces_macos() -> Vec<String> {
+    let text = sync_cmd("networksetup")
+        .arg("-listallnetworkservices")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    text.lines()
+        .skip(1)
+        .filter(|l| !l.starts_with('*') && !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn list_interfaces_up_linux() -> Vec<String> {
+    let text = sync_cmd("ip").args(["link", "show"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    if text.trim().is_empty() {
+        return list_interfaces_linux();
+    }
+    linux_links_up(&text)
+}
+
+/// Noms (hors `lo`) dont le lien est opérationnel, lus dans `ip link show`.
+/// Même lecture que `link_states` : `state UP` ou `UNKNOWN` (tun, WireGuard).
+#[cfg(any(target_os = "linux", test))]
+fn linux_links_up(ip_link_output: &str) -> Vec<String> {
+    ip_link_output
+        .lines()
+        .filter(|l| !l.starts_with(' ') && l.contains(": "))
+        .filter_map(|l| {
+            let name = l.split(':').nth(1)?.trim().split('@').next()?.to_string();
+            (name != "lo" && link_states(l).1).then_some(name)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn list_interfaces_linux() -> Vec<String> {
+    let text = sync_cmd("ip").args(["link", "show"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    text.lines()
+        .filter(|l| !l.starts_with(' ') && l.contains(": "))
+        .filter_map(|l| {
+            let name = l.split(':').nth(1)?.trim().split('@').next()?.to_string();
+            if name != "lo" { Some(name) } else { None }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn list_interfaces_up_windows() -> Vec<String> {
+    // `Status` vaut Up / Disconnected / Disabled… : valeurs d'énumération,
+    // indépendantes de la langue du système. « Up » = lien établi (câble
+    // branché, Wi-Fi associé), adresse IP ou pas.
+    let ps = r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetAdapter | Where-Object { $_.HardwareInterface -eq $true -and $_.Status -eq 'Up' } | Select-Object -ExpandProperty Name"#;
+    let out = sync_cmd("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", ps])
+        .output();
+    match out {
+        // PowerShell a répondu : sa liste fait foi, même vide (rien de branché).
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        // Sans PowerShell, l'état de `netsh` est traduit selon la langue :
+        // on ne filtre pas plutôt que de deviner.
+        _ => list_interfaces_windows(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_details_windows(name: &str) -> InterfaceDetails {
+    // On utilise PowerShell avec des APIs .NET locale-indépendantes plutôt que
+    // `netsh` dont la sortie est localisée (FR: "Adresse IP :", EN: "IP Address:").
+    // Format de sortie : "IP|PrefixLen|Gateway|DNS1,DNS2|DHCP"
+    // Les valeurs absentes sont vides (ex: "||" si pas de gateway).
+    let ps = format!(
+        r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
+$a = Get-NetIPAddress -InterfaceAlias '{name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1;
+$g = (Get-NetRoute -InterfaceAlias '{name}' -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop;
+$dns = (Get-DnsClientServerAddress -InterfaceAlias '{name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses -join ',';
+$dhcp = (Get-NetIPInterface -InterfaceAlias '{name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue).Dhcp;
+Write-Output "$($a.IPAddress)|$($a.PrefixLength)|$g|$dns|$dhcp""#,
+        name = name.replace('\'', "''")
+    );
+    // ⚠️ En dur, comme avant — voir la remarque dans `get_details_macos`.
+    let mut d = InterfaceDetails {
+        name: name.to_string(),
+        is_up: true,
+        admin_up: true,
+        ..Default::default()
+    };
+    let out = sync_cmd("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .output();
+    if let Ok(o) = out {
+        let text = String::from_utf8_lossy(&o.stdout).into_owned();
+        // Cherche la première ligne non-vide qui ressemble à notre format
+        if let Some(line) = text.lines().find(|l| l.contains('|')) {
+            let parts: Vec<&str> = line.trim().splitn(5, '|').collect();
+            // IP
+            if let Some(ip) = parts.first().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                d.ip = Some(ip.to_string());
+            }
+            // PrefixLength → mask dotted
+            if let Some(prefix) = parts.get(1).and_then(|s| s.trim().parse::<u32>().ok()) {
+                let mask = if prefix == 0 { 0u32 } else { !0u32 << (32 - prefix) };
+                d.subnet = Some(format!(
+                    "{}.{}.{}.{}",
+                    (mask >> 24) & 0xFF, (mask >> 16) & 0xFF,
+                    (mask >> 8) & 0xFF, mask & 0xFF
+                ));
+            }
+            // Gateway
+            if let Some(gw) = parts.get(2).map(|s| s.trim()).filter(|s| !s.is_empty() && *s != "0.0.0.0") {
+                d.gateway = Some(gw.to_string());
+            }
+            // DNS
+            if let Some(dns_str) = parts.get(3).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                d.dns = dns_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            }
+            // DHCP
+            if let Some(dhcp) = parts.get(4).map(|s| s.trim().to_lowercase()) {
+                d.dhcp_enabled = dhcp == "enabled";
+            }
+        }
+    }
+    d
+}
+
+#[cfg(target_os = "macos")]
+fn list_interfaces_up_macos() -> Vec<String> {
+    let services = list_interfaces_macos();
+    let ports = sync_cmd("networksetup").arg("-listallhardwareports").output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let ifconfig = sync_cmd("ifconfig").output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    if ifconfig.trim().is_empty() {
+        return services;
+    }
+    macos_services_up(&services, &ports, &ifconfig)
+}
+
+/// Services networksetup dont l'interface BSD a un lien actif.
+///
+/// Un service sans interface connue (VPN, PPPoE…) n'a pas de lien à lire : il
+/// sort de la liste, comme un port débranché.
+#[cfg(any(target_os = "macos", test))]
+fn macos_services_up(services: &[String], hardware_ports: &str, ifconfig: &str) -> Vec<String> {
+    let mut port_dev: Vec<(String, String)> = Vec::new();
+    let mut port: Option<String> = None;
+    for line in hardware_ports.lines() {
+        if let Some(p) = line.strip_prefix("Hardware Port:") {
+            port = Some(p.trim().to_string());
+        } else if let Some(dev) = line.strip_prefix("Device:") {
+            if let Some(p) = port.take() {
+                port_dev.push((p, dev.trim().to_string()));
+            }
+        }
+    }
+    let up = macos_links_up(ifconfig);
+    services
+        .iter()
+        .filter(|svc| {
+            port_dev
+                .iter()
+                .find(|(p, _)| p == *svc)
+                .is_some_and(|(_, dev)| up.iter().any(|u| u == dev))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Noms BSD dont le lien est actif, lus dans la sortie de `ifconfig`.
+///
+/// `status: active` / `status: inactive` fait foi quand il est là (Ethernet,
+/// Wi-Fi). Sans ligne `status` (ponts, certaines interfaces virtuelles), on
+/// retombe sur les drapeaux : `UP` ET `RUNNING`, comparés un à un.
+#[cfg(any(target_os = "macos", test))]
+fn macos_links_up(ifconfig: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut flush = |name: &Option<String>, status: Option<bool>, flags_up: bool| {
+        if let Some(n) = name {
+            if status.unwrap_or(flags_up) { out.push(n.clone()); }
+        }
+    };
+    let (mut name, mut status, mut flags_up): (Option<String>, Option<bool>, bool) = (None, None, false);
+    for line in ifconfig.lines() {
+        if !line.starts_with(char::is_whitespace) && line.contains(": flags=") {
+            flush(&name, status, flags_up);
+            name = line.split(':').next().map(|n| n.trim().to_string());
+            status = None;
+            flags_up = line
+                .split_once('<')
+                .and_then(|(_, r)| r.split_once('>'))
+                .is_some_and(|(f, _)| {
+                    let f: Vec<&str> = f.split(',').map(str::trim).collect();
+                    f.contains(&"UP") && f.contains(&"RUNNING")
+                });
+        } else if let Some(st) = line.trim().strip_prefix("status:") {
+            status = Some(st.trim() == "active");
+        }
+    }
+    flush(&name, status, flags_up);
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn get_details_macos(name: &str) -> InterfaceDetails {
+    let text = sync_cmd("networksetup").args(["-getinfo", name]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    // ⚠️ `is_up` et `admin_up` restent EN DUR ici, exactement comme avant :
+    // `networksetup -getinfo` n'expose pas l'état du lien, et changer le
+    // comportement de macOS sans arbitrage n'est pas au programme — la sonde
+    // de production y tourne. Seul Linux lit désormais l'état réel ; le
+    // rattrapage macOS et Windows est à traiter pour lui-même.
+    //
+    // ⚠️ `..Default::default()` et non plus une énumération exhaustive : le
+    // littéral complet faisait échouer la compilation macOS au premier champ
+    // ajouté à la structure — sur une plateforme qui ne se compile pas ici.
+    let mut d = InterfaceDetails {
+        name: name.to_string(),
+        is_up: true,
+        admin_up: true,
+        bsd_name: bsd_name_for_service(name),
+        ..Default::default()
+    };
+    for line in text.lines() {
+        if line.starts_with("IP address:") {
+            d.ip = line.splitn(2, ':').nth(1).map(|s| s.trim().to_string());
+        } else if line.starts_with("Subnet mask:") {
+            d.subnet = line.splitn(2, ':').nth(1).map(|s| s.trim().to_string());
+        } else if line.starts_with("Router:") {
+            d.gateway = line.splitn(2, ':').nth(1).map(|s| s.trim().to_string());
+        } else if line.contains("DHCP Configuration") {
+            d.dhcp_enabled = true;
+        }
+    }
+    let dns_text = sync_cmd("networksetup").args(["-getdnsservers", name]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    for line in dns_text.lines() {
+        let l = line.trim();
+        if !l.is_empty() && !l.starts_with("There") { d.dns.push(l.to_string()); }
+    }
+    // Fallback: DNS from DHCP via /etc/resolv.conf
+    if d.dns.is_empty() {
+        if let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf") {
+            for line in resolv.lines() {
+                if line.starts_with("nameserver") {
+                    if let Some(dns) = line.split_whitespace().nth(1) {
+                        d.dns.push(dns.to_string());
+                    }
+                }
+            }
+        }
+    }
+    d
+}
+
+/// État d'un lien : `(administratif, opérationnel)`.
+///
+/// 🔴 `is_up` valait `true` EN DUR : une interface débranchée se présentait
+/// comme active. Sans écran, on la choisit, et la sonde reste muette — ou
+/// écrit `alive: false` pour toutes ses cibles.
+///
+/// ⚠️ Le drapeau `UP` ne répond PAS à la question : il est administratif et
+/// reste vrai sans porteuse. Sur cette machine, `docker0` est
+/// `<NO-CARRIER,...,UP>` avec `state DOWN`. On rend donc les deux séparément
+/// plutôt que d'en fondre une en l'autre.
+///
+/// ⚠️ Lecture par MOT-CLÉ, jamais par position : le noyau intercale `qdisc`,
+/// `master`, `qlen` selon les cas, et suffixe les veth (`veth912ca4b@if2`).
+/// Les drapeaux sont comparés un à un — « LOWER_UP » porte « UP » en
+/// sous-chaîne, et un `contains` rendrait actif un lien qui ne l'est pas.
+///
+/// ⚠️ `UNKNOWN` compte comme opérationnel, et c'est une décision écrite : le
+/// noyau l'emploie pour les liens sans détection de porteuse — tun, tap,
+/// WireGuard — le plus souvent fonctionnels. Les compter éteints fabriquerait
+/// une panne, l'erreur symétrique de celle qu'on corrige.
+#[cfg(any(target_os = "linux", test))]
+fn link_states(ip_link_output: &str) -> (bool, bool) {
+    let Some(line) = ip_link_output.lines().find(|l| l.contains('<')) else {
+        // Interface inexistante : `ip` n'écrit rien. « Active » serait ici
+        // exactement le défaut d'origine.
+        return (false, false);
+    };
+    let admin = line
+        .split_once('<')
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .is_some_and(|(flags, _)| flags.split(',').any(|f| f.trim() == "UP"));
+    let operational = line
+        .split_whitespace()
+        .skip_while(|f| *f != "state")
+        .nth(1)
+        .is_some_and(|s| s == "UP" || s == "UNKNOWN");
+    (admin, operational)
+}
+
+/// Passerelle par défaut **portée par cette interface**, ou `None`.
+///
+/// 🔴 `ip route show default` décrit la route par défaut de la MACHINE, pas
+/// celle de l'interface interrogée. La recopier sur toutes attribuait
+/// `10.0.30.1` aux cinq `veth*` d'un hôte Docker — une valeur plausible sur
+/// quelque chose qui ne la porte pas.
+///
+/// ⚠️ C'est l'endroit où ça compte le plus : cette liste est le seul repère de
+/// qui choisit son interface sans écran. Une passerelle en face d'un `veth`
+/// invite à le choisir, et une sonde posée sur le mauvais lien mesure faux
+/// sans jamais le dire.
+///
+/// On lit par MOT-CLÉ (`via`, `dev`) et jamais par position : le noyau ajoute
+/// `proto`, `metric`, `onlink`… selon les cas, et une lecture positionnelle
+/// casserait au premier hôte configuré autrement. Une ligne sans `via` — une
+/// route par défaut en `scope link` — ne porte aucune passerelle : `None`, et
+/// surtout pas une valeur de remplacement qui se lirait comme une donnée.
+#[cfg(any(target_os = "linux", test))]
+fn gateway_for_device(route_output: &str, name: &str) -> Option<String> {
+    fn after<'a>(fields: &[&'a str], key: &str) -> Option<&'a str> {
+        fields.iter().position(|f| *f == key).and_then(|i| fields.get(i + 1)).copied()
+    }
+    route_output.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.first() != Some(&"default") || after(&fields, "dev") != Some(name) {
+            return None;
+        }
+        after(&fields, "via").map(String::from)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn get_details_linux(name: &str) -> InterfaceDetails {
+    let text = sync_cmd("ip").args(["addr", "show", name]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let text = text.as_str();
+    let link = sync_cmd("ip").args(["link", "show", name]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let (admin_up, is_up) = link_states(&link);
+    let mut d = InterfaceDetails {
+        name: name.to_string(),
+        is_up,
+        admin_up,
+        ..Default::default()
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("inet ") && !line.starts_with("inet6") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if let Some(cidr) = parts.get(1) {
+                let mut split = cidr.splitn(2, '/');
+                d.ip = split.next().map(String::from);
+                if let Some(prefix) = split.next() {
+                    d.subnet = prefix.parse::<u32>().ok().map(cidr_to_mask);
+                }
+            }
+        }
+    }
+    let gw_text = sync_cmd("ip").args(["route", "show", "default"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    d.gateway = gateway_for_device(&gw_text, name);
+    if let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf") {
+        for line in resolv.lines() {
+            if line.starts_with("nameserver") {
+                if let Some(dns) = line.split_whitespace().nth(1) {
+                    d.dns.push(dns.to_string());
+                }
+            }
+        }
+    }
+    // Récupère la méthode IPv4 via nmcli sur la connexion active attachée
+    // au device. "auto" = DHCP, "manual" = statique. L'ancienne heuristique
+    // `systemctl is-active NetworkManager` renvoyait toujours true et faisait
+    // croire qu'un profil statique appliqué était en DHCP.
+    let conn = sync_cmd("nmcli")
+        .args(["-t", "-g", "GENERAL.CONNECTION", "device", "show", name])
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() {
+            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+        } else { None })
+        .filter(|s| !s.is_empty() && s != "--");
+    if let Some(conn) = conn {
+        let method = sync_cmd("nmcli")
+            .args(["-t", "-g", "ipv4.method", "connection", "show", &conn])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        d.dhcp_enabled = method == "auto";
+    }
+    d
+}
+
+/// Adresse locale de l'interface au format CIDR (« 10.6.8.42/24 »).
+///
+/// C'est la forme que la sonde remonte au hub : l'adresse seule ne dit pas
+/// quel réseau elle occupe, et deux sites en 192.168.1.x ne se distinguent
+/// que par leur préfixe.
+pub fn local_cidr(details: &InterfaceDetails) -> Option<String> {
+    let ip = details.ip.as_deref()?.trim();
+    if ip.is_empty() {
+        return None;
+    }
+    match details.subnet.as_deref().and_then(mask_to_prefix) {
+        Some(prefix) => Some(format!("{ip}/{prefix}")),
+        // Sans masque exploitable on rend l'adresse nue : inventer un /32
+        // ferait croire à un réseau point à point.
+        None => Some(ip.to_string()),
+    }
+}
+
+/// Longueur de préfixe d'un masque pointé. `None` si le masque n'en est pas
+/// un — les bits à 1 doivent être contigus et en tête.
+pub fn mask_to_prefix(mask: &str) -> Option<u32> {
+    let mut value: u32 = 0;
+    let mut octets = 0;
+    for part in mask.trim().split('.') {
+        let octet: u8 = part.parse().ok()?;
+        value = (value << 8) | octet as u32;
+        octets += 1;
+    }
+    if octets != 4 {
+        return None;
+    }
+    let ones = value.leading_ones();
+    // Un masque valide n'a plus aucun bit à 1 après sa tête contiguë.
+    let expected = if ones == 0 { 0 } else { !0u32 << (32 - ones) };
+    if value != expected {
+        return None;
+    }
+    Some(ones)
+}
+
+fn cidr_to_mask(prefix: u32) -> String {
+    if prefix == 0 { return "0.0.0.0".to_string(); }
+    if prefix > 32 { return "255.255.255.255".to_string(); }
+    let mask = !0u32 << (32 - prefix);
+    format!("{}.{}.{}.{}", (mask >> 24) & 0xFF, (mask >> 16) & 0xFF, (mask >> 8) & 0xFF, mask & 0xFF)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_link_up_without_a_carrier_is_not_operational() {
+        // 🔴 `is_up` valait `true` EN DUR : une interface débranchée se
+        // présentait comme active. Sans écran, on la choisit, et la sonde
+        // reste muette — ou écrit `alive: false` pour toutes ses cibles.
+        //
+        // ⚠️ Le drapeau `UP` ne suffit pas : il est ADMINISTRATIF. `docker0`
+        // ci-dessous est `UP` et n'a aucune porteuse. Les deux notions sont
+        // distinctes, elles restent distinctes.
+        //
+        // Lignes RÉELLES de cette machine, capturées.
+        let ens18 = "2: ens18: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000";
+        let docker0 = "6: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT group default ";
+
+        assert_eq!(link_states(ens18), (true, true), "lien réellement actif");
+        assert_eq!(link_states(docker0), (true, false), "UP administratif, sans porteuse");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn LOWER_UP_is_not_the_UP_flag() {
+        // ⚠️ Le piège du `contains` : « LOWER_UP » porte « UP » en sous-chaîne.
+        // On compare drapeau par drapeau, jamais par inclusion de texte.
+        let sans_up = "9: eth1: <BROADCAST,MULTICAST,LOWER_UP> mtu 1500 qdisc noop state DOWN mode DEFAULT";
+        assert_eq!(link_states(sans_up), (false, false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_peer_suffixed_veth_is_read_like_any_other() {
+        // `veth912ca4b@if2` — le noyau suffixe le nom du pair. La lecture par
+        // mot-clé s'en moque ; une lecture positionnelle sur le nom, non.
+        let veth = "15: veth912ca4b@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master br-08f04c3fdb2e state UP mode DEFAULT group default ";
+        assert_eq!(link_states(veth), (true, true));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unknown_operational_state_counts_as_up_and_here_is_why() {
+        // ⚠️ Décision écrite, pas un oubli. Le noyau rend `UNKNOWN` pour les
+        // liens qui n'implémentent PAS la détection de porteuse — tun, tap,
+        // WireGuard — et qui sont le plus souvent parfaitement fonctionnels.
+        // Les compter comme éteints fabriquerait une panne : l'erreur
+        // symétrique de celle qu'on corrige, et sur un VPN elle serait pire.
+        let tun = "12: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000";
+        assert_eq!(link_states(tun), (true, true));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_answer_from_the_kernel_is_not_an_active_link() {
+        // Interface inexistante : `ip` n'écrit rien. Rendre « active » ici
+        // serait exactement le défaut d'origine.
+        assert_eq!(link_states(""), (false, false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_default_gateway_belongs_only_to_the_interface_that_carries_it() {
+        // 🔴 `ip route show default` décrit LA route par défaut de la machine,
+        // pas celle de l'interface qu'on interroge. Elle était recopiée sur
+        // toutes : les cinq `veth*` de cette machine s'affichaient
+        // « adresse — / passerelle 10.0.30.1 ».
+        //
+        // ⚠️ Une valeur plausible attribuée à quelque chose qui ne la porte
+        // pas. Et à l'endroit où ça compte le plus : cette liste est le SEUL
+        // repère de qui choisit son interface sans écran. Une passerelle en
+        // face d'un `veth` invite à le choisir, et une sonde posée sur le
+        // mauvais lien mesure faux sans jamais le dire.
+        //
+        // Sortie réelle de cette machine — noter l'absence de `proto`/`metric`
+        // et la présence d'`onlink` : on lit par mot-clé, jamais par position.
+        let reel = "default via 10.0.30.1 dev ens18 onlink \n";
+        assert_eq!(gateway_for_device(reel, "ens18").as_deref(), Some("10.0.30.1"));
+        assert_eq!(gateway_for_device(reel, "veth912ca4b"), None);
+        assert_eq!(gateway_for_device(reel, "docker0"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn each_link_of_a_multi_wan_keeps_its_own_gateway() {
+        // Deux sorties : chacune rend la sienne, aucune ne rend celle de
+        // l'autre. Prendre la première ligne venue attribuait la passerelle du
+        // lien principal au lien de secours.
+        let deux = "default via 10.0.30.1 dev ens18 proto static metric 100\n                    default via 192.168.8.1 dev wwan0 proto dhcp metric 700\n";
+        assert_eq!(gateway_for_device(deux, "ens18").as_deref(), Some("10.0.30.1"));
+        assert_eq!(gateway_for_device(deux, "wwan0").as_deref(), Some("192.168.8.1"));
+        assert_eq!(gateway_for_device(deux, "eth9"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_default_route_means_no_gateway_not_a_placeholder() {
+        // ⚠️ Rien, et surtout pas une valeur « neutre » : une absence doit se
+        // lire comme une absence, pas comme une donnée.
+        assert_eq!(gateway_for_device("", "ens18"), None);
+        assert_eq!(gateway_for_device("default dev tun0 scope link\n", "tun0"), None);
+        assert_eq!(gateway_for_device("10.0.0.0/8 via 10.0.30.1 dev ens18\n", "ens18"), None);
+    }
+
+    #[test]
+    fn only_linux_links_with_a_carrier_are_offered() {
+        // Lignes réelles de HOU-DEV : ens18 branché, docker0 UP sans porteuse,
+        // un veth suffixé, wg0 en UNKNOWN (pas de détection de porteuse).
+        let ip = "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+2: ens18: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+    link/ether bc:24:11:00:00:01 brd ff:ff:ff:ff:ff:ff
+3: ens19: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+6: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT group default
+8: veth912ca4b@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default
+9: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+";
+        assert_eq!(linux_links_up(ip), vec!["ens18", "veth912ca4b", "wg0"]);
+    }
+
+    #[test]
+    fn a_mac_offers_only_services_whose_link_is_active() {
+        // Pas d'IP exigée : en7 a un lien actif sans adresse, il reste.
+        let services: Vec<String> = ["Wi-Fi", "Ethernet", "USB 10/100/1000 LAN", "Thunderbolt Bridge", "Mon VPN"]
+            .iter().map(|s| s.to_string()).collect();
+        let ports = "\nHardware Port: Ethernet\nDevice: en0\nEthernet Address: aa\n\nHardware Port: Wi-Fi\nDevice: en1\nEthernet Address: bb\n\nHardware Port: USB 10/100/1000 LAN\nDevice: en7\nEthernet Address: cc\n\nHardware Port: Thunderbolt Bridge\nDevice: bridge0\nEthernet Address: dd\n";
+        let ifconfig = "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+\tinet 127.0.0.1 netmask 0xff000000
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tether aa:aa:aa:aa:aa:aa
+\tmedia: autoselect (none)
+\tstatus: inactive
+en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tinet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255
+\tstatus: active
+en7: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tmedia: autoselect (1000baseT <full-duplex>)
+\tstatus: active
+bridge0: flags=8822<BROADCAST,SMART,SIMPLEX,MULTICAST> mtu 1500
+\tmember: en2 flags=3<LEARNING,DISCOVER>
+";
+        assert_eq!(
+            macos_services_up(&services, ports, ifconfig),
+            vec!["Wi-Fi", "USB 10/100/1000 LAN"],
+            "Ethernet débranché, pont inactif et VPN sans interface sortent"
+        );
+    }
+
+    #[test]
+    fn without_a_status_line_a_mac_link_is_read_from_its_flags() {
+        let ifconfig = "bridge0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tid 0:0:0:0:0:0 priority 0 hellotime 0
+utun3: flags=8051<UP,POINTOPOINT,MULTICAST> mtu 1380
+";
+        assert_eq!(macos_links_up(ifconfig), vec!["bridge0"]);
+    }
+
+    #[test]
+    fn test_list_interfaces_returns_vec() {
+        let interfaces = list_interfaces();
+        assert!(interfaces.len() >= 0);
+    }
+
+    #[test]
+    fn test_cidr_to_mask_24() {
+        assert_eq!(cidr_to_mask(24), "255.255.255.0");
+    }
+
+    #[test]
+    fn test_cidr_to_mask_16() {
+        assert_eq!(cidr_to_mask(16), "255.255.0.0");
+    }
+
+    #[test]
+    fn local_cidr_combines_the_address_and_its_mask() {
+        let d = InterfaceDetails {
+            ip: Some("10.6.8.42".into()),
+            subnet: Some("255.255.255.0".into()),
+            ..Default::default()
+        };
+        assert_eq!(local_cidr(&d).as_deref(), Some("10.6.8.42/24"));
+    }
+
+    #[test]
+    fn local_cidr_without_a_usable_mask_gives_the_bare_address() {
+        // Mieux vaut une adresse sans préfixe qu'un /32 inventé : le
+        // masque manquant est une information, pas un défaut à combler.
+        let d = InterfaceDetails {
+            ip: Some("10.6.8.42".into()),
+            subnet: Some("pas un masque".into()),
+            ..Default::default()
+        };
+        assert_eq!(local_cidr(&d).as_deref(), Some("10.6.8.42"));
+    }
+
+    #[test]
+    fn local_cidr_of_an_interface_without_address_is_nothing() {
+        assert_eq!(local_cidr(&InterfaceDetails::default()), None);
+    }
+
+    #[test]
+    fn mask_to_prefix_rejects_a_non_contiguous_mask() {
+        // 255.0.255.0 n'est pas un masque : le laisser passer produirait un
+        // préfixe faux, plus difficile à repérer qu'une absence.
+        assert_eq!(mask_to_prefix("255.0.255.0"), None);
+        assert_eq!(mask_to_prefix("255.255.255.0"), Some(24));
+        assert_eq!(mask_to_prefix("0.0.0.0"), Some(0));
+    }
+}

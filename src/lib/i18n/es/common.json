@@ -1,0 +1,5 @@
+{
+  "nav": { "network": "Red", "framing": "Encuadre", "accounts": "Cuentas" },
+  "lang": { "fr": "Français", "en": "English", "es": "Español" },
+  "interface": { "label": "Interfaz", "none": "Ninguna interfaz" }
+}

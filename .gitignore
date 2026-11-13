@@ -1,0 +1,25 @@
+# ⚠️ Sans barre oblique : `node_modules/` ne couvre pas un LIEN SYMBOLIQUE
+# nommé `node_modules`, et les worktrees en créent un pour pouvoir lancer les
+# tests. Un agent l'a commité par mégarde le 02/09.
+node_modules
+node_modules/
+node_modules.old*/
+target/
+.claude/
+dist/
+build/
+.svelte-kit/
+.superpowers/
+src-tauri/gen/
+*.log
+.DS_Store
+Thumbs.db
+.env
+macos_error.txt
+@eaDir/
+.worktrees/
+Screenshot *.png
+
+# Apple signing certs (never commit)
+*.p12
+Certificates.*

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Sans ces deux clés, macOS 15 bloque silencieusement le multicast. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Lenscout cherche les caméras IP de votre réseau local.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_axis-video._tcp</string>
+    </array>
+</dict>
+</plist>
