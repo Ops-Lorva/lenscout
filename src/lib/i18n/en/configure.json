@@ -36,7 +36,21 @@
     "network_needs_one_camera": "One camera at a time",
     "no_cameras": "No camera",
     "preview_unknown": "Preview unknown or already applied",
-    "preview_expired": "Preview expired: preview again"
+    "preview_expired": "Preview expired: preview again",
+    "http_status": "HTTP status {status}",
+    "auth_insecure": "Basic authentication refused over HTTP",
+    "bad_reply": "Unreadable reply"
   },
-  "off_subnet": "Outside the subnet of {iface}"
+  "off_subnet": "Outside the subnet of {iface}",
+  "invalid": {
+    "invalid_mask": "Invalid mask",
+    "mask_prefix": "/0, /31 or /32 mask refused",
+    "ip_unusable": "Unusable IP address",
+    "network_or_broadcast": "Network or broadcast address refused",
+    "gateway_is_ip": "Gateway equals the IP",
+    "gateway_out_of_subnet": "Gateway outside the subnet",
+    "too_many_dns": "2 DNS servers at most",
+    "bad_login": "Invalid username (1 to 14 letters or digits)",
+    "bad_password": "Invalid password (1 to 64 characters)"
+  }
 }

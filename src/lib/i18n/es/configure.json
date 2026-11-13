@@ -36,7 +36,21 @@
     "network_needs_one_camera": "Una sola cámara a la vez",
     "no_cameras": "Ninguna cámara",
     "preview_unknown": "Vista previa desconocida o ya aplicada",
-    "preview_expired": "Vista previa caducada: repetirla"
+    "preview_expired": "Vista previa caducada: repetirla",
+    "http_status": "Estado HTTP {status}",
+    "auth_insecure": "Autenticación Basic rechazada en HTTP",
+    "bad_reply": "Respuesta ilegible"
   },
-  "off_subnet": "Fuera de la subred de {iface}"
+  "off_subnet": "Fuera de la subred de {iface}",
+  "invalid": {
+    "invalid_mask": "Máscara no válida",
+    "mask_prefix": "Máscara /0, /31 o /32 rechazada",
+    "ip_unusable": "Dirección IP no utilizable",
+    "network_or_broadcast": "Dirección de red o de difusión rechazada",
+    "gateway_is_ip": "Puerta de enlace igual a la IP",
+    "gateway_out_of_subnet": "Puerta de enlace fuera de la subred",
+    "too_many_dns": "2 DNS como máximo",
+    "bad_login": "Usuario no válido (1 a 14 letras o cifras)",
+    "bad_password": "Contraseña no válida (1 a 64 caracteres)"
+  }
 }

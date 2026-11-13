@@ -72,6 +72,10 @@ pub enum VapixError {
     Rejected(String),
     #[error("réponse illisible : {0}")]
     Parse(String),
+    /// Refus local, avant tout envoi : code stable (`invalid_mask`, …) que le
+    /// front traduit ; jamais de texte affiché tel quel.
+    #[error("valeur refusée : {0}")]
+    Invalid(&'static str),
 }
 
 /// `base` est `http://hôte[:port]`, avec ou sans barre finale.
@@ -158,13 +162,18 @@ fn parse_json_reply(resp: &HttpResponse) -> Result<Value, VapixError> {
     let v: Value =
         serde_json::from_slice(&resp.body).map_err(|e| VapixError::Parse(e.to_string()))?;
     if let Some(err) = v.get("error") {
-        let msg = err
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("erreur inconnue");
-        return Err(VapixError::Rejected(short(msg)));
+        return Err(VapixError::Rejected(camera_error_text(err)));
     }
     Ok(v)
+}
+
+/// Texte d'un objet `error` VAPIX : son message, sinon son code, tels que la
+/// caméra les donne (jamais un texte de l'app).
+fn camera_error_text(err: &Value) -> String {
+    match err.get("message").and_then(Value::as_str) {
+        Some(m) => short(m),
+        None => short(&err.get("code").map(Value::to_string).unwrap_or_default()),
+    }
 }
 
 fn text(props: &Value, key: &str) -> Option<String> {
@@ -179,11 +188,7 @@ fn text(props: &Value, key: &str) -> Option<String> {
 pub fn parse_basic_device_info(json: &[u8]) -> Result<DeviceInfo, VapixError> {
     let v: Value = serde_json::from_slice(json).map_err(|e| VapixError::Parse(e.to_string()))?;
     if let Some(err) = v.get("error") {
-        let msg = err
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("erreur inconnue");
-        return Err(VapixError::Rejected(short(msg)));
+        return Err(VapixError::Rejected(camera_error_text(err)));
     }
     let props = v
         .pointer("/data/propertyList")
@@ -315,15 +320,13 @@ pub async fn activate(
 ) -> Result<(), VapixError> {
     let login = &account.login;
     if login.is_empty() || login.len() > 14 || !login.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return Err(VapixError::Rejected(
-            "identifiant invalide (1 à 14 lettres ou chiffres)".into(),
-        ));
+        // 1 à 14 lettres ou chiffres.
+        return Err(VapixError::Invalid("bad_login"));
     }
     let pwd = account.password.expose();
     if pwd.is_empty() || pwd.len() > 64 {
-        return Err(VapixError::Rejected(
-            "mot de passe invalide (1 à 64 caractères)".into(),
-        ));
+        // 1 à 64 caractères.
+        return Err(VapixError::Invalid("bad_password"));
     }
     // Les `:` de `sgrp` restent littéraux, comme dans les exemples de la doc.
     let body = format!(
@@ -367,13 +370,14 @@ fn validate_static(
     gateway: Option<Ipv4Addr>,
     dns: &[Ipv4Addr],
 ) -> Result<(), VapixError> {
-    let reject = |m: &str| Err(VapixError::Rejected(m.to_string()));
+    let reject = |code: &'static str| Err(VapixError::Invalid(code));
     let m = u32::from(mask);
     if m.leading_ones() + m.trailing_zeros() != 32 {
-        return reject("masque invalide");
+        return reject("invalid_mask");
     }
     if m.leading_ones() == 0 || m.leading_ones() >= 31 {
-        return reject("masque /0, /31 ou /32 refusé");
+        // /0, /31 ou /32.
+        return reject("mask_prefix");
     }
     let a = u32::from(ip);
     if ip.is_unspecified()
@@ -382,21 +386,21 @@ fn validate_static(
         || ip.is_link_local()
         || ip.is_broadcast()
     {
-        return reject("adresse IP non utilisable");
+        return reject("ip_unusable");
     }
     if a & m == a || a | !m == a {
-        return reject("adresse réseau ou broadcast refusée");
+        return reject("network_or_broadcast");
     }
     if let Some(gw) = gateway {
         if gw == ip {
-            return reject("passerelle identique à l'IP");
+            return reject("gateway_is_ip");
         }
         if u32::from(gw) & m != a & m {
-            return reject("passerelle hors du sous-réseau");
+            return reject("gateway_out_of_subnet");
         }
     }
     if dns.len() > 2 {
-        return reject("2 DNS au plus");
+        return reject("too_many_dns");
     }
     Ok(())
 }
@@ -751,7 +755,7 @@ mod tests {
             let err = activate(&http, BASE, &creds(login, "S3cr3t"))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, VapixError::Rejected(_)), "{login}: {err:?}");
+            assert!(matches!(err, VapixError::Invalid("bad_login")), "{login}: {err:?}");
         }
         assert!(http.requests().is_empty());
     }
@@ -892,52 +896,52 @@ mod tests {
     async fn invalid_static_settings_are_rejected_without_sending() {
         let cases = [
             (
-                "masque non contigu",
+                "invalid_mask",
                 static_net("10.0.50.11", "255.0.255.0", None, &[]),
             ),
-            ("masque /0", static_net("10.0.50.11", "0.0.0.0", None, &[])),
+            ("mask_prefix", static_net("10.0.50.11", "0.0.0.0", None, &[])),
             (
-                "masque /31",
+                "mask_prefix",
                 static_net("10.0.50.11", "255.255.255.254", None, &[]),
             ),
             (
-                "masque /32",
+                "mask_prefix",
                 static_net("10.0.50.11", "255.255.255.255", None, &[]),
             ),
             (
-                "IP 0.0.0.0",
+                "ip_unusable",
                 static_net("0.0.0.0", "255.255.255.0", None, &[]),
             ),
             (
-                "IP loopback",
+                "ip_unusable",
                 static_net("127.0.0.1", "255.255.255.0", None, &[]),
             ),
             (
-                "IP multicast",
+                "ip_unusable",
                 static_net("224.0.0.5", "255.255.255.0", None, &[]),
             ),
             (
-                "IP link-local",
+                "ip_unusable",
                 static_net("169.254.10.5", "255.255.0.0", None, &[]),
             ),
             (
-                "adresse réseau",
+                "network_or_broadcast",
                 static_net("10.0.50.0", "255.255.255.0", None, &[]),
             ),
             (
-                "broadcast",
+                "network_or_broadcast",
                 static_net("10.0.50.255", "255.255.255.0", None, &[]),
             ),
             (
-                "passerelle hors sous-réseau",
+                "gateway_out_of_subnet",
                 static_net("10.0.50.11", "255.255.255.0", Some("10.0.51.1"), &[]),
             ),
             (
-                "passerelle = IP",
+                "gateway_is_ip",
                 static_net("10.0.50.11", "255.255.255.0", Some("10.0.50.11"), &[]),
             ),
             (
-                "3 DNS",
+                "too_many_dns",
                 static_net(
                     "10.0.50.11",
                     "255.255.255.0",
@@ -947,14 +951,11 @@ mod tests {
             ),
         ];
         let http = FakeHttp::new().on(Method::Post, "/axis-cgi/param.cgi", 200, "OK");
-        for (name, net) in cases {
+        for (code, net) in cases {
             let err = set_network(&http, BASE, &creds("root", "x"), &net)
                 .await
                 .unwrap_err();
-            assert!(
-                matches!(&err, VapixError::Rejected(m) if !m.contains('\n')),
-                "{name}: {err:?}"
-            );
+            assert!(matches!(&err, VapixError::Invalid(c) if *c == code), "{code}: {err:?}");
         }
         assert!(http.requests().is_empty());
     }

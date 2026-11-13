@@ -36,7 +36,21 @@
     "network_needs_one_camera": "Une seule caméra à la fois",
     "no_cameras": "Aucune caméra",
     "preview_unknown": "Aperçu inconnu ou déjà appliqué",
-    "preview_expired": "Aperçu expiré : refaire l’aperçu"
+    "preview_expired": "Aperçu expiré : refaire l’aperçu",
+    "http_status": "Statut HTTP {status}",
+    "auth_insecure": "Authentification Basic refusée en HTTP",
+    "bad_reply": "Réponse illisible"
   },
-  "off_subnet": "Hors du sous-réseau de {iface}"
+  "off_subnet": "Hors du sous-réseau de {iface}",
+  "invalid": {
+    "invalid_mask": "Masque invalide",
+    "mask_prefix": "Masque /0, /31 ou /32 refusé",
+    "ip_unusable": "Adresse IP non utilisable",
+    "network_or_broadcast": "Adresse réseau ou broadcast refusée",
+    "gateway_is_ip": "Passerelle identique à l’IP",
+    "gateway_out_of_subnet": "Passerelle hors du sous-réseau",
+    "too_many_dns": "2 DNS au plus",
+    "bad_login": "Identifiant invalide (1 à 14 lettres ou chiffres)",
+    "bad_password": "Mot de passe invalide (1 à 64 caractères)"
+  }
 }

@@ -4,7 +4,7 @@ import type { Camera, Family } from './types';
 import { cameraKey } from '$lib/stores/cameras';
 import { errorKey } from './errors';
 
-/** Miroir de `ActionError` (actions.rs). `rejected.detail` vient de la caméra. */
+/** Miroir de `ActionError` (actions.rs). `rejected.detail` vient de la caméra ; `invalid.reason` est un code. */
 export type ActionError =
   | { code: 'unsupported' }
   | { code: 'identity_mismatch' }
@@ -16,6 +16,10 @@ export type ActionError =
   | { code: 'unreachable'; ip: string }
   | { code: 'auth_failed' }
   | { code: 'rejected'; detail: string }
+  | { code: 'invalid'; reason: string }
+  | { code: 'http_status'; status: number }
+  | { code: 'auth_insecure' }
+  | { code: 'bad_reply' }
   | { code: 'elevation_refused'; ip: string }
   | { code: 'temp_ip_failed' }
   | { code: 'temp_ip_left'; ip: string }
@@ -94,6 +98,10 @@ export function resultMessage(r: ActionResult): { key: string; values: Record<st
   switch (r.error.code) {
     case 'rejected':
       return { key: 'configure.error.rejected', values: { detail: r.error.detail } };
+    case 'invalid':
+      return { key: `configure.invalid.${r.error.reason}`, values: {} };
+    case 'http_status':
+      return { key: 'configure.error.http_status', values: { status: String(r.error.status) } };
     case 'elevation_refused':
       return { key: 'elevation.refused', values: { ip: r.error.ip } };
     case 'temp_ip_failed':

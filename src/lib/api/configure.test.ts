@@ -36,6 +36,8 @@ test('un message par code d’erreur, le texte brut seulement pour un refus', ()
   expect(resultMessage({ key: 'k', ok: false, error: { code: 'identity_mismatch' } })).toEqual({ key: 'configure.error.identity_mismatch', values: {} });
   expect(resultMessage({ key: 'k', ok: false, error: { code: 'unreachable', ip: '10.0.50.11' } })).toEqual({ key: 'configure.error.unreachable', values: {} });
   expect(resultMessage({ key: 'k', ok: false, error: { code: 'rejected', detail: 'Error: x' } })).toEqual({ key: 'configure.error.rejected', values: { detail: 'Error: x' } });
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'invalid', reason: 'gateway_is_ip' } })).toEqual({ key: 'configure.invalid.gateway_is_ip', values: {} });
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'http_status', status: 500 } })).toEqual({ key: 'configure.error.http_status', values: { status: '500' } });
 });
 
 test('erreurs d’IP temporaire : espace elevation, adresse en paramètre', () => {

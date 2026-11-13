@@ -54,8 +54,22 @@ pub enum ActionError {
     Unreachable { ip: Ipv4Addr },
     #[error("authentification refusée")]
     AuthFailed,
+    /// Texte de la caméra elle-même (`# Error: …`), jamais un texte de l'app.
     #[error("refusé : {detail}")]
     Rejected { detail: String },
+    /// Valeur refusée avant l'envoi : `reason` est un code stable
+    /// (`invalid_mask`, `gateway_out_of_subnet`, `bad_login`…).
+    #[error("valeur refusée : {reason}")]
+    Invalid { reason: String },
+    /// Statut HTTP inattendu de la caméra.
+    #[error("statut HTTP {status}")]
+    HttpStatus { status: u16 },
+    /// La caméra n'offre que Basic en http : le mot de passe n'est pas envoyé.
+    #[error("authentification Basic refusée en HTTP")]
+    AuthInsecure,
+    /// Réponse que l'app ne sait pas lire (pas du JSON VAPIX, champ absent).
+    #[error("réponse illisible")]
+    BadReply,
     /// Invite d'élévation refusée : `ip` est celle de la caméra hors sous-réseau.
     #[error("droits refusés : {ip}")]
     ElevationRefused { ip: Ipv4Addr },
@@ -117,8 +131,13 @@ fn from_vapix(e: VapixError, ip: Ipv4Addr) -> ActionError {
             ActionError::Unreachable { ip }
         }
         VapixError::Net(NetError::Auth | NetError::Status(401 | 403)) => ActionError::AuthFailed,
-        VapixError::Net(e) => ActionError::Rejected { detail: e.to_string() },
-        VapixError::Rejected(detail) | VapixError::Parse(detail) => ActionError::Rejected { detail },
+        VapixError::Net(NetError::Status(status)) => ActionError::HttpStatus { status },
+        VapixError::Net(NetError::InsecureBasic) => ActionError::AuthInsecure,
+        VapixError::Net(NetError::Cancelled) => ActionError::Unreachable { ip },
+        // Seul un texte de la caméra est affiché tel quel.
+        VapixError::Rejected(detail) => ActionError::Rejected { detail },
+        VapixError::Parse(_) => ActionError::BadReply,
+        VapixError::Invalid(reason) => ActionError::Invalid { reason: reason.into() },
     }
 }
 
@@ -135,9 +154,10 @@ pub async fn verify_identity(ctx: &ActionContext, cam: &Camera, creds: &Credenti
         return Err(ActionError::Unsupported);
     }
     let unreadable = |e: VapixError| match e {
-        VapixError::Parse(_) | VapixError::Rejected(_) | VapixError::Net(NetError::Status(_) | NetError::Auth) => {
-            ActionError::IdentityUnreadable
-        }
+        VapixError::Parse(_)
+        | VapixError::Rejected(_)
+        | VapixError::Invalid(_)
+        | VapixError::Net(NetError::Status(_) | NetError::Auth) => ActionError::IdentityUnreadable,
         e => from_vapix(e, cam.ip),
     };
     let http = ctx.http.as_ref();
@@ -673,6 +693,29 @@ mod tests {
         }
     }
 
+    /// Seul un texte venu de la caméra part en `detail` : le reste est un code
+    /// que le front traduit (aucun texte français affiché en en/es).
+    #[test]
+    fn local_and_transport_errors_become_codes() {
+        let ip: Ipv4Addr = "192.0.2.11".parse().unwrap();
+        assert_eq!(
+            from_vapix(VapixError::Invalid("gateway_is_ip"), ip),
+            ActionError::Invalid { reason: "gateway_is_ip".into() }
+        );
+        assert_eq!(from_vapix(VapixError::Net(NetError::Status(500)), ip), ActionError::HttpStatus { status: 500 });
+        assert_eq!(from_vapix(VapixError::Net(NetError::InsecureBasic), ip), ActionError::AuthInsecure);
+        assert_eq!(from_vapix(VapixError::Parse("expected value".into()), ip), ActionError::BadReply);
+        assert_eq!(from_vapix(VapixError::Net(NetError::Cancelled), ip), ActionError::Unreachable { ip });
+        assert_eq!(
+            from_vapix(VapixError::Rejected("# Error: x".into()), ip),
+            ActionError::Rejected { detail: "# Error: x".into() }
+        );
+        assert_eq!(
+            serde_json::to_string(&ActionError::Invalid { reason: "too_many_dns".into() }).unwrap(),
+            r#"{"code":"invalid","reason":"too_many_dns"}"#
+        );
+    }
+
     #[tokio::test]
     async fn camera_outside_the_interface_subnet_gets_no_request() {
         // Le front fournit l'adresse : une IP hors du sous-réseau de l'interface
@@ -868,7 +911,7 @@ mod tests {
             dns: vec![],
         });
         let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &bad).await;
-        assert!(matches!(r.error, Some(ActionError::Rejected { .. })));
+        assert_eq!(r.error, Some(ActionError::Invalid { reason: "ip_unusable".into() }));
         assert!(writes(&http).is_empty());
     }
 
