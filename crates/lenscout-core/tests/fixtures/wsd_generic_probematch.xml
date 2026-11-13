@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:dn="http://www.onvif.org/ver10/network/wsdl">
+  <s:Header>
+    <a:MessageID>urn:uuid:c0ffee00-1111-4222-8333-444455556666</a:MessageID>
+    <a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches</a:Action>
+  </s:Header>
+  <s:Body>
+    <d:ProbeMatches>
+      <d:ProbeMatch>
+        <a:EndpointReference>
+          <a:Address>urn:uuid:12345678-1234-4234-8234-123456789abc</a:Address>
+        </a:EndpointReference>
+        <d:Types>dn:NetworkVideoTransmitter</d:Types>
+        <d:Scopes>onvif://www.onvif.org/type/Network_Video_Transmitter onvif://www.onvif.org/name/Example%20Cam onvif://www.onvif.org/hardware/EX-100</d:Scopes>
+        <d:XAddrs>http://[2001:db8::10]/onvif/device_service http://192.0.2.13:8000/onvif/device_service</d:XAddrs>
+        <d:MetadataVersion>1</d:MetadataVersion>
+      </d:ProbeMatch>
+    </d:ProbeMatches>
+  </s:Body>
+</s:Envelope>

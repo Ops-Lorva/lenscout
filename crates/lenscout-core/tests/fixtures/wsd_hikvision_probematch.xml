@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope" xmlns:wsadis="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:wsdd="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:tdn="http://www.onvif.org/ver10/network/wsdl">
+  <env:Header>
+    <wsadis:MessageID>urn:uuid:a1b2c3d4-0000-4000-8000-0123456789ab</wsadis:MessageID>
+    <wsadis:RelatesTo>urn:uuid:7b2d9c10-1a2b-4c3d-9e8f-001122334455</wsadis:RelatesTo>
+    <wsadis:To>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsadis:To>
+    <wsadis:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches</wsadis:Action>
+  </env:Header>
+  <env:Body>
+    <wsdd:ProbeMatches>
+      <wsdd:ProbeMatch>
+        <wsadis:EndpointReference>
+          <wsadis:Address>uuid:00112233-4455-6677-8899-a4146b0a1b2c</wsadis:Address>
+        </wsadis:EndpointReference>
+        <wsdd:Types>tdn:NetworkVideoTransmitter</wsdd:Types>
+        <wsdd:Scopes>onvif://www.onvif.org/type/video_encoder onvif://www.onvif.org/Profile/Streaming onvif://www.onvif.org/MAC/a4:14:6b:0a:1b:2c onvif://www.onvif.org/hardware/DS-2CD2043G2-I onvif://www.onvif.org/name/Hikvision onvif://www.onvif.org/location/city/unknown</wsdd:Scopes>
+        <wsdd:XAddrs>http://192.0.2.12:8080/onvif/device_service</wsdd:XAddrs>
+        <wsdd:MetadataVersion>10</wsdd:MetadataVersion>
+      </wsdd:ProbeMatch>
+    </wsdd:ProbeMatches>
+  </env:Body>
+</env:Envelope>
