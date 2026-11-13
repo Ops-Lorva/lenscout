@@ -6,10 +6,16 @@ const CODES = [
   'bad_ip',
   'bad_port',
   'open_failed',
+  'empty_field',
+  'duplicate_name',
+  'not_found',
+  'secret_missing',
+  'keyring',
+  'io',
   'internal',
 ] as const;
 
-/** Clé i18n (sous `network.`) d'une erreur de commande ; un code inconnu reçoit le libellé générique. */
+/** Clé i18n (sous l'espace de la page appelante) d'une erreur de commande ; un code inconnu reçoit le libellé générique. */
 export function errorKey(e: unknown): string {
   return typeof e === 'string' && (CODES as readonly string[]).includes(e) ? `error.${e}` : 'error.unknown';
 }

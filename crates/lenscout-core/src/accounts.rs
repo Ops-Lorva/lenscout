@@ -21,6 +21,9 @@ pub struct Account {
 pub enum AccountError {
     #[error("compte introuvable")]
     NotFound,
+    // Le compte existe mais son mot de passe n'est pas au trousseau : à ressaisir.
+    #[error("mot de passe absent du trousseau")]
+    SecretMissing,
     #[error("nom déjà utilisé")]
     DuplicateName,
     #[error("champ vide")]
@@ -223,18 +226,20 @@ impl AccountBook {
         next.remove(index);
         self.write(&next)?;
         self.accounts = next;
-        // Un secret déjà absent du trousseau n'est pas une erreur.
-        match self.store.delete(id) {
-            Ok(()) | Err(AccountError::NotFound) => Ok(()),
-            Err(e) => Err(e),
-        }
+        // Le compte a disparu du JSON : un secret qu'on ne peut pas supprimer
+        // (absent, trousseau verrouillé) ne change pas le résultat.
+        let _ = self.store.delete(id);
+        Ok(())
     }
 
     pub fn credentials(&self, id: &str) -> Result<Credentials, AccountError> {
         let index = self.index_of(id)?;
         Ok(Credentials {
             login: self.accounts[index].login.clone(),
-            password: self.store.get(id)?,
+            password: self.store.get(id).map_err(|e| match e {
+                AccountError::NotFound => AccountError::SecretMissing,
+                other => other,
+            })?,
         })
     }
 
@@ -477,5 +482,51 @@ mod tests {
         assert!(matches!(err, AccountError::Io(_)));
         assert!(book.list().is_empty());
         assert!(fx.store.secrets.lock().unwrap().is_empty());
+    }
+
+    // Le compte a disparu du JSON : un trousseau qui refuse de supprimer
+    // n'est plus une erreur pour l'appelant.
+    struct StuckDeleteStore(MemoryStore);
+    impl SecretStore for StuckDeleteStore {
+        fn set(&self, id: &str, p: &Secret) -> Result<(), AccountError> {
+            self.0.set(id, p)
+        }
+        fn get(&self, id: &str) -> Result<Secret, AccountError> {
+            self.0.get(id)
+        }
+        fn delete(&self, _: &str) -> Result<(), AccountError> {
+            Err(AccountError::Keyring("verrouillé".into()))
+        }
+    }
+
+    #[test]
+    fn remove_succeeds_when_keyring_delete_fails() {
+        let fx = Fixture::new();
+        let mut book =
+            AccountBook::load(fx.path(), Arc::new(StuckDeleteStore(MemoryStore::default())))
+                .unwrap();
+        let acc = book.create("A", "root", Secret::new(PWD.into())).unwrap();
+        assert!(book.remove(&acc.id).is_ok());
+        assert!(book.list().is_empty());
+        assert!(fx.book().list().is_empty());
+    }
+
+    #[test]
+    fn credentials_without_secret_is_secret_missing() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("A", "root", Secret::new(PWD.into())).unwrap();
+        // Trousseau vidé, ou accounts.json copié sur un autre poste.
+        fx.store.delete(&acc.id).unwrap();
+        assert!(matches!(
+            book.credentials(&acc.id),
+            Err(AccountError::SecretMissing)
+        ));
+        // Un compte inconnu reste « introuvable ».
+        assert!(matches!(book.credentials("x"), Err(AccountError::NotFound)));
+        // Ressaisir le mot de passe répare le compte.
+        book.update(&acc.id, "A", "root", Some(Secret::new(PWD.into())))
+            .unwrap();
+        assert!(book.credentials(&acc.id).is_ok());
     }
 }

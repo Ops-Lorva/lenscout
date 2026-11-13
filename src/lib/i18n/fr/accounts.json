@@ -1,0 +1,22 @@
+{
+  "add": "Ajouter",
+  "edit": "Modifier",
+  "remove": "Supprimer",
+  "confirmRemove": "Confirmer",
+  "save": "Enregistrer",
+  "cancel": "Annuler",
+  "none": "Aucun compte",
+  "picker": "Compte",
+  "col": { "name": "Nom", "login": "Identifiant" },
+  "field": { "name": "Nom", "login": "Identifiant", "password": "Mot de passe" },
+  "error": {
+    "empty_field": "Champ vide",
+    "duplicate_name": "Nom déjà utilisé",
+    "not_found": "Compte introuvable",
+    "secret_missing": "Mot de passe absent du trousseau : à ressaisir",
+    "keyring": "Trousseau inaccessible",
+    "io": "Fichier des comptes inaccessible",
+    "internal": "Erreur interne",
+    "unknown": "Erreur"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "add": "Añadir",
+  "edit": "Editar",
+  "remove": "Eliminar",
+  "confirmRemove": "Confirmar",
+  "save": "Guardar",
+  "cancel": "Cancelar",
+  "none": "Ninguna cuenta",
+  "picker": "Cuenta",
+  "col": { "name": "Nombre", "login": "Usuario" },
+  "field": { "name": "Nombre", "login": "Usuario", "password": "Contraseña" },
+  "error": {
+    "empty_field": "Campo vacío",
+    "duplicate_name": "Nombre ya usado",
+    "not_found": "Cuenta no encontrada",
+    "secret_missing": "Contraseña ausente del llavero: vuelva a introducirla",
+    "keyring": "Llavero inaccesible",
+    "io": "Archivo de cuentas inaccesible",
+    "internal": "Error interno",
+    "unknown": "Error"
+  }
+}

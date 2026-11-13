@@ -1,0 +1,22 @@
+{
+  "add": "Add",
+  "edit": "Edit",
+  "remove": "Delete",
+  "confirmRemove": "Confirm",
+  "save": "Save",
+  "cancel": "Cancel",
+  "none": "No account",
+  "picker": "Account",
+  "col": { "name": "Name", "login": "Login" },
+  "field": { "name": "Name", "login": "Login", "password": "Password" },
+  "error": {
+    "empty_field": "Empty field",
+    "duplicate_name": "Name already used",
+    "not_found": "Account not found",
+    "secret_missing": "Password missing from keychain: enter it again",
+    "keyring": "Keychain unavailable",
+    "io": "Accounts file unavailable",
+    "internal": "Internal error",
+    "unknown": "Error"
+  }
+}
