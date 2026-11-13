@@ -4,7 +4,6 @@
   "time": "Hora",
   "apply": "Aplicar",
   "cancel": "Cancelar",
-  "close": "Cerrar",
   "cameras": "{count} cámara(s)",
   "mode": "Modo",
   "dhcp": "DHCP",
@@ -15,7 +14,6 @@
   "dns": "DNS",
   "ntp": "Servidores NTP",
   "timezone": "Zona horaria",
-  "running": "En curso…",
   "ok": "OK",
   "error": {
     "unsupported": "Acción no admitida",
@@ -27,10 +25,14 @@
     "bad_action": "Valor no válido",
     "iface_unknown": "Interfaz desconocida",
     "iface_no_ipv4": "Interfaz sin dirección IPv4",
-    "no_account": "Sin cuenta",
     "not_found": "Cuenta no encontrada",
     "secret_missing": "Contraseña ausente del llavero: volver a introducirla",
     "internal": "Error interno",
-    "unknown": "Error"
-  }
+    "unknown": "Error",
+    "identity_unreadable": "Identidad ilegible",
+    "camera_off_subnet": "Cámara fuera de la subred",
+    "already_activated": "Ya activada",
+    "network_needs_one_camera": "Una sola cámara a la vez"
+  },
+  "off_subnet": "Fuera de la subred de {iface}"
 }

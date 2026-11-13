@@ -4,7 +4,6 @@
   "time": "Time",
   "apply": "Apply",
   "cancel": "Cancel",
-  "close": "Close",
   "cameras": "{count} camera(s)",
   "mode": "Mode",
   "dhcp": "DHCP",
@@ -15,7 +14,6 @@
   "dns": "DNS",
   "ntp": "NTP servers",
   "timezone": "Time zone",
-  "running": "Running…",
   "ok": "OK",
   "error": {
     "unsupported": "Action not supported",
@@ -27,10 +25,14 @@
     "bad_action": "Invalid value",
     "iface_unknown": "Unknown interface",
     "iface_no_ipv4": "Interface has no IPv4 address",
-    "no_account": "No account",
     "not_found": "Account not found",
     "secret_missing": "Password missing from keychain: re-enter it",
     "internal": "Internal error",
-    "unknown": "Error"
-  }
+    "unknown": "Error",
+    "identity_unreadable": "Identity unreadable",
+    "camera_off_subnet": "Camera outside the subnet",
+    "already_activated": "Already activated",
+    "network_needs_one_camera": "One camera at a time"
+  },
+  "off_subnet": "Outside the subnet of {iface}"
 }

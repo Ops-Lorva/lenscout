@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { applyAction, canAct, canChangeIp, clearResults, setResults, type ActionDto } from '$lib/api/configure';
+  import { applyAction, canActivate, canAct, canChangeIp, clearResults, setResults, type ActionDto } from '$lib/api/configure';
   import { errorKey } from '$lib/api/errors';
   import { selectedCameras } from '$lib/stores/cameras';
   import ActivateDialog from './ActivateDialog.svelte';
@@ -18,6 +18,7 @@
 
   const cams = $derived($selectedCameras);
   const allowed = $derived(canAct(cams));
+  const activatable = $derived(canActivate(cams));
   const ipAllowed = $derived(canChangeIp(cams));
 
   async function run(action: ActionDto) {
@@ -41,7 +42,7 @@
 
 {#if cams.length > 0}
   <div class="actions">
-    <button disabled={!allowed} onclick={() => (open = 'activate')}>{$_('configure.activate')}</button>
+    <button disabled={!activatable} onclick={() => (open = 'activate')}>{$_('configure.activate')}</button>
     <button disabled={!ipAllowed} onclick={() => (open = 'network')}>{$_('configure.ip')}</button>
     <button disabled={!allowed} onclick={() => (open = 'time')}>{$_('configure.time')}</button>
     <span class="count">{$_('configure.cameras', { values: { count: cams.length } })}</span>
@@ -53,7 +54,7 @@
 {#if open === 'activate'}
   <ActivateDialog count={cams.length} bind:accountId {busy} onSubmit={() => run({ kind: 'activate' })} onClose={() => (open = null)} />
 {:else if open === 'network'}
-  <NetworkDialog bind:accountId {busy} onSubmit={run} onClose={() => (open = null)} />
+  <NetworkDialog bind:accountId {busy} {iface} onSubmit={run} onClose={() => (open = null)} />
 {:else if open === 'time'}
   <TimeDialog bind:accountId {busy} onSubmit={run} onClose={() => (open = null)} />
 {/if}

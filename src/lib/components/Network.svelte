@@ -13,7 +13,7 @@
   import { actionResults, resultFor } from '$lib/api/configure';
 
   const IFACE_KEY = 'lenscout.iface';
-  const RESCAN_DELAY_MS = 3000;
+  const RESCAN_DELAYS_MS = [3000, 15000];
 
   let interfaces = $state<string[]>([]);
   let iface = $state('');
@@ -102,14 +102,15 @@
 
   // Une caméra dont l'IP vient de changer met un instant à reparaître : on
   // rescanne après ce délai, sauf si la page a été quittée entre-temps.
-  let rescanTimer: ReturnType<typeof setTimeout> | undefined;
+  // Un second passage rattrape un bail DHCP lent.
+  let rescanTimers: ReturnType<typeof setTimeout>[] = [];
   function rescanSoon() {
-    clearTimeout(rescanTimer);
-    rescanTimer = setTimeout(() => void scan(), RESCAN_DELAY_MS);
+    rescanTimers.forEach(clearTimeout);
+    rescanTimers = RESCAN_DELAYS_MS.map((d) => setTimeout(() => void scan(), d));
   }
 
   onDestroy(() => {
-    clearTimeout(rescanTimer);
+    rescanTimers.forEach(clearTimeout);
     if (scanning) stop();
   });
 </script>

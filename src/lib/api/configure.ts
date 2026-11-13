@@ -7,6 +7,10 @@ import { cameraKey } from '$lib/stores/cameras';
 export type ActionError =
   | { code: 'unsupported' }
   | { code: 'identity_mismatch' }
+  | { code: 'identity_unreadable' }
+  | { code: 'camera_off_subnet' }
+  | { code: 'already_activated' }
+  | { code: 'network_needs_one_camera' }
   | { code: 'unreachable'; ip: string }
   | { code: 'auth_failed' }
   | { code: 'rejected'; detail: string }
@@ -35,6 +39,29 @@ const ACTIONABLE: readonly Family[] = ['axis'];
 /** Boutons actifs : une sélection non vide, sans aucune caméra d'une marque sans action. */
 export const canAct = (cams: Camera[]): boolean =>
   cams.length > 0 && cams.every((c) => ACTIONABLE.includes(c.family));
+
+/** Activer ne sert à rien si toutes les caméras visées le sont déjà. */
+export const canActivate = (cams: Camera[]): boolean =>
+  canAct(cams) && !cams.every((c) => c.activation === 'activated');
+
+const ipNum = (ip: string): number | null => {
+  const p = ip.trim().split('.');
+  if (p.length !== 4 || p.some((x) => !/^\d{1,3}$/.test(x) || Number(x) > 255)) return null;
+  return p.reduce((acc, x) => acc * 256 + Number(x), 0);
+};
+
+/**
+ * `ip` hors du sous-réseau du poste (adresse + masque de l'interface) ? Un
+ * champ incomplet ou des détails absents ne déclenchent rien : c'est un
+ * avertissement, Rust fait foi.
+ */
+export function outsideSubnet(ip: string, ifaceIp: string | null, mask: string | null): boolean {
+  const a = ipNum(ip);
+  const b = ifaceIp ? ipNum(ifaceIp) : null;
+  const m = mask ? ipNum(mask) : null;
+  if (a === null || b === null || m === null) return false;
+  return ((a & m) >>> 0) !== ((b & m) >>> 0);
+}
 
 /** Le changement d'IP vise une seule caméra (le lot a son plan d'adresses). */
 export const canChangeIp = (cams: Camera[]): boolean => cams.length === 1 && canAct(cams);

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import type { Camera } from './types';
-import { canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
+import { canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
 
 const cam = (family: Camera['family'], ip = '10.0.50.11'): Camera => ({
   ip, mac: null, family, brand: null, model: null, serial: null, firmware: null,
@@ -47,4 +47,28 @@ test('fuseaux : jamais vide, fuseau du poste s’il est listé', () => {
   expect(zones.length).toBeGreaterThan(0);
   expect(defaultTimeZone(['A/B'])).toBe('A/B');
   expect(defaultTimeZone([])).toBe('UTC');
+});
+
+test('« Activer » grisé quand toutes les caméras sont déjà activées', () => {
+  const done = (ip: string): Camera => ({ ...cam('axis', ip), activation: 'activated' });
+  expect(canActivate([done('10.0.50.11'), done('10.0.50.12')])).toBe(false);
+  expect(canActivate([done('10.0.50.11'), cam('axis', '10.0.50.12')])).toBe(true);
+  expect(canActivate([{ ...cam('axis'), activation: 'unknown' }])).toBe(true);
+  expect(canActivate([])).toBe(false);
+  expect(canActivate([cam('other')])).toBe(false);
+});
+
+test('hors du sous-réseau du poste : masque appliqué aux deux adresses', () => {
+  expect(outsideSubnet('10.0.50.20', '10.0.50.2', '255.255.255.0')).toBe(false);
+  expect(outsideSubnet('10.0.51.20', '10.0.50.2', '255.255.255.0')).toBe(true);
+  expect(outsideSubnet('10.0.51.20', '10.0.50.2', '255.255.254.0')).toBe(false);
+  // champ en cours de saisie, ou détails absents : pas d'avertissement
+  expect(outsideSubnet('10.0.5', '10.0.50.2', '255.255.255.0')).toBe(false);
+  expect(outsideSubnet('10.0.50.20', null, null)).toBe(false);
+});
+
+test('les nouveaux codes ont un message', () => {
+  for (const code of ['identity_unreadable', 'camera_off_subnet', 'already_activated', 'network_needs_one_camera'] as const) {
+    expect(resultMessage({ key: 'k', ok: false, error: { code } })).toEqual({ key: `error.${code}` });
+  }
 });
