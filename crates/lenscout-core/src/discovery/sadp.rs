@@ -15,6 +15,10 @@
 // d'une Hikvision par SADP rend `unsupported`. Le jour où une source publique
 // décrit l'encodage, seule cette fonction change.
 //
+// GARDE-FOU : `encode_password` ne doit JAMAIS devenir la fonction identité
+// (ni un simple base64) : le mot de passe partirait alors en clair dans un
+// message multicast. Tant qu'il rend `None`, aucun message n'est construit.
+//
 // Aucun réseau ici : les sockets sont dans `socket.rs`.
 
 use std::collections::HashMap;
@@ -116,6 +120,8 @@ fn read_fields(xml: &[u8]) -> Option<Fields> {
                     map.entry(name).or_insert_with(|| std::mem::take(&mut text));
                 }
             }
+            // Une entité (ou une DTD qui en déclarerait) n'a rien à faire dans SADP.
+            Ok(Event::GeneralRef(_) | Event::DocType(_)) => return None,
             Ok(Event::Eof) | Err(_) => break,
             Ok(_) => {}
         }
@@ -187,7 +193,7 @@ fn uuid_text(uuid: Uuid) -> String {
 }
 
 /// Message `activate` avec un mot de passe DÉJÀ encodé.
-pub fn build_activate_with(uuid: Uuid, mac: &str, encoded: &Secret) -> Option<Vec<u8>> {
+pub(crate) fn build_activate_with(uuid: Uuid, mac: &str, encoded: &Secret) -> Option<Vec<u8>> {
     Some(
         format!(
             r#"<?xml version="1.0" encoding="utf-8"?><Probe><Uuid>{}</Uuid><MAC>{}</MAC><Types>activate</Types><Password>{}</Password></Probe>"#,
@@ -200,7 +206,7 @@ pub fn build_activate_with(uuid: Uuid, mac: &str, encoded: &Secret) -> Option<Ve
 }
 
 /// Message `update` (adresse) avec un mot de passe DÉJÀ encodé.
-pub fn build_update_with(uuid: Uuid, mac: &str, encoded: &Secret, net: &NetworkSettings) -> Option<Vec<u8>> {
+pub(crate) fn build_update_with(uuid: Uuid, mac: &str, encoded: &Secret, net: &NetworkSettings) -> Option<Vec<u8>> {
     let addressing = match net {
         NetworkSettings::Dhcp => "<DHCP>true</DHCP>".to_string(),
         NetworkSettings::Static { ip, mask, gateway, .. } => format!(
@@ -241,8 +247,8 @@ pub fn parse_result(xml: &[u8]) -> Result<(), String> {
 }
 
 /// Envoie `msg` au groupe SADP et attend la réponse de la caméra de MAC `mac`
-/// (toutes répondent en multicast ; les autres MAC et notre propre écho sont
-/// ignorés). `ip` n'est que celle annoncée dans l'erreur d'injoignabilité.
+/// (toutes répondent en multicast ; les autres MAC, les autres UUID et notre
+/// propre écho sont ignorés). `ip` n'est que celle annoncée dans l'erreur d'injoignabilité.
 pub async fn send_and_wait(
     sock: &dyn Datagram,
     msg: &[u8],
@@ -251,6 +257,10 @@ pub async fn send_and_wait(
     timeout: Duration,
 ) -> Result<(), ActionError> {
     let want = normalize_mac(mac).ok_or(ActionError::IdentityUnreadable)?;
+    // Seule une réponse qui reprend l'UUID du message envoyé est la nôtre.
+    let sent_uuid = read_fields(msg)
+        .and_then(|f| f.get("Uuid").map(str::to_ascii_uppercase))
+        .ok_or(ActionError::IdentityUnreadable)?;
     sock.send_to(msg, SocketAddr::V4(GROUP)).await.map_err(|_| ActionError::Unreachable { ip })?;
     let wait = async {
         let mut buf = vec![0u8; RECV_BUF];
@@ -263,7 +273,8 @@ pub async fn send_and_wait(
             };
             let packet = &buf[..n];
             let Some(f) = read_fields(packet) else { continue };
-            if f.get("Result").is_none() || f.get("MAC").and_then(normalize_mac) != Some(want.clone()) {
+            let same_uuid = f.get("Uuid").map(str::to_ascii_uppercase).as_deref() == Some(sent_uuid.as_str());
+            if !same_uuid || f.get("Result").is_none() || f.get("MAC").and_then(normalize_mac) != Some(want.clone()) {
                 continue;
             }
             return parse_result(packet).map_err(|detail| ActionError::Rejected { detail });
@@ -382,9 +393,15 @@ mod tests {
         assert!(build_update(uuid(), MAC, &pw, &NetworkSettings::Dhcp).is_none());
     }
 
+    const SENT: &[u8] = b"<Probe><Uuid>AAAA-1</Uuid><MAC>c0-56-e3-5a-7d-01</MAC></Probe>";
+
     fn reply(mac: &str, result: &str) -> (Vec<u8>, SocketAddr) {
+        reply_uuid("AAAA-1", mac, result)
+    }
+
+    fn reply_uuid(uuid: &str, mac: &str, result: &str) -> (Vec<u8>, SocketAddr) {
         (
-            format!("<ProbeMatch><Uuid>x</Uuid><MAC>{mac}</MAC><Types>activate</Types><Result>{result}</Result></ProbeMatch>")
+            format!("<ProbeMatch><Uuid>{uuid}</Uuid><MAC>{mac}</MAC><Types>activate</Types><Result>{result}</Result></ProbeMatch>")
                 .into_bytes(),
             "192.0.2.31:37020".parse().unwrap(),
         )
@@ -398,21 +415,40 @@ mod tests {
     async fn send_and_wait_ignores_other_macs() {
         let echo = (b"<Probe><MAC>c0-56-e3-5a-7d-01</MAC></Probe>".to_vec(), "192.0.2.2:37020".parse().unwrap());
         let dg = FakeDatagram::new(vec![echo, reply("c0-56-e3-5a-7d-99", "failed"), reply("c0-56-e3-5a-7d-01", "success")]);
-        send_and_wait(&dg, b"msg", MAC, ip(), Duration::from_secs(1)).await.unwrap();
+        send_and_wait(&dg, SENT, MAC, ip(), Duration::from_secs(1)).await.unwrap();
         assert_eq!(dg.sent()[0].1, SocketAddr::V4(GROUP));
+    }
+
+    #[tokio::test]
+    async fn send_and_wait_ignores_other_uuids() {
+        let dg = FakeDatagram::new(vec![reply_uuid("BBBB-2", "c0-56-e3-5a-7d-01", "failed"), reply_uuid("aaaa-1", "c0-56-e3-5a-7d-01", "success")]);
+        send_and_wait(&dg, SENT, MAC, ip(), Duration::from_secs(1)).await.unwrap();
+        // Seule une réponse d'un autre UUID : on attend en vain.
+        let dg = FakeDatagram::new(vec![reply_uuid("BBBB-2", "c0-56-e3-5a-7d-01", "success")]);
+        let e = send_and_wait(&dg, SENT, MAC, ip(), Duration::from_millis(50)).await.unwrap_err();
+        assert_eq!(e, ActionError::Unreachable { ip: ip() });
+    }
+
+    #[test]
+    fn entity_references_and_doctype_are_rejected() {
+        let xml = b"<ProbeMatch><MAC>c0-56-e3-5a-7d-01</MAC><DeviceSN>a&amp;b</DeviceSN></ProbeMatch>";
+        assert!(parse_inquiry_response(xml, src()).is_none());
+        let dtd = b"<!DOCTYPE x [<!ENTITY e \"v\">]><ProbeMatch><MAC>c0-56-e3-5a-7d-01</MAC></ProbeMatch>";
+        assert!(parse_inquiry_response(dtd, src()).is_none());
+        assert!(parse_result(b"<ProbeMatch><Result>a&lt;b</Result></ProbeMatch>").is_err());
     }
 
     #[tokio::test]
     async fn send_and_wait_reports_the_camera_refusal() {
         let dg = FakeDatagram::new(vec![reply("c0-56-e3-5a-7d-01", "denied")]);
-        let e = send_and_wait(&dg, b"msg", MAC, ip(), Duration::from_secs(1)).await.unwrap_err();
+        let e = send_and_wait(&dg, SENT, MAC, ip(), Duration::from_secs(1)).await.unwrap_err();
         assert_eq!(e, ActionError::Rejected { detail: "denied".into() });
     }
 
     #[tokio::test]
     async fn send_and_wait_timeout_is_unreachable() {
         let dg = FakeDatagram::new(vec![reply("c0-56-e3-5a-7d-99", "success")]);
-        let e = send_and_wait(&dg, b"msg", MAC, ip(), Duration::from_millis(50)).await.unwrap_err();
+        let e = send_and_wait(&dg, SENT, MAC, ip(), Duration::from_millis(50)).await.unwrap_err();
         assert_eq!(e, ActionError::Unreachable { ip: ip() });
     }
 }

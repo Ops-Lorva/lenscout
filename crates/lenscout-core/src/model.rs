@@ -79,8 +79,8 @@ impl Camera {
     }
 
     /// Un champ `None` est rempli ; un champ connu n'est écrasé que par un
-    /// `Some`. `Unknown` ne remplace jamais `New`/`Activated`, `Other` ne
-    /// remplace jamais `Axis`/`Hikvision`.
+    /// `Some`. `Unknown` ne remplace jamais `New`/`Activated`, la marque connue (`Axis`/`Hikvision`)
+    /// ne change plus.
     pub fn merge(&mut self, s: &Sighting) {
         fn fill<T: Clone>(slot: &mut Option<T>, new: &Option<T>) {
             if let Some(v) = new {
@@ -92,8 +92,10 @@ impl Camera {
         fill(&mut self.model, &s.model);
         fill(&mut self.serial, &s.serial);
         fill(&mut self.firmware, &s.firmware);
+        // La première marque connue reste : une autre marque sur la même MAC
+        // ne fait pas passer une Axis en Hikvision (ni l'inverse).
         if let Some(f) = s.family
-            && (f != Family::Other || self.family == Family::Other)
+            && self.family == Family::Other
         {
             self.family = f;
         }
@@ -223,6 +225,22 @@ mod tests {
         d.family = Some(Family::Other);
         cam.merge(&d);
         assert_eq!(cam.family, Family::Axis);
+    }
+
+    #[test]
+    fn a_known_family_never_switches_between_axis_and_hikvision() {
+        let mut a = sighting(Source::Mdns);
+        a.mac = Some("AC:CC:8E:12:34:56".into());
+        a.family = Some(Family::Axis);
+        let mut cam = Camera::from_sighting(&a);
+        let mut h = sighting(Source::Sadp);
+        h.mac = a.mac.clone();
+        h.family = Some(Family::Hikvision);
+        cam.merge(&h);
+        assert_eq!(cam.family, Family::Axis);
+        let mut cam = Camera::from_sighting(&h);
+        cam.merge(&a);
+        assert_eq!(cam.family, Family::Hikvision);
     }
 
     #[test]

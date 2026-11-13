@@ -12,7 +12,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::discovery::arp::ScanInterface;
-use crate::model::{Camera, Family, normalize_mac};
+use crate::model::{Camera, Family, Source, normalize_mac};
 use crate::temp_ip::{
     Elevator, TempIpError, needs_temp_ip, pick_temp_ip, reachable_with_temp_ip, read_journal, subnets_overlap,
     temp_mask, with_temp_ip,
@@ -258,7 +258,9 @@ async fn apply_sadp(
     let (Some(sock), Some(mac)) = (ctx.sadp.as_deref(), cam.mac.as_deref().and_then(normalize_mac)) else {
         return Err(ActionError::Unsupported);
     };
-    let heard = ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str()) && ctx.seen_sadp.contains(&mac);
+    // Une ligne qui n'a jamais été vue en SADP n'est pas une cible SADP.
+    let heard = cam.sources.contains(&Source::Sadp)
+        && ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str()) && ctx.seen_sadp.contains(&mac);
     if !heard {
         return Err(ActionError::CameraNotSeen);
     }
@@ -601,7 +603,9 @@ mod tests {
 
     /// Hors sous-réseau, jamais d'`with_temp_ip` : `PanicElevator` panique au premier appel.
     fn off_subnet_hik() -> Camera {
-        cam("169.254.10.20", Family::Hikvision)
+        let mut c = cam("169.254.10.20", Family::Hikvision);
+        c.sources = vec![Source::Mdns, Source::Sadp];
+        c
     }
 
     #[tokio::test]
@@ -643,6 +647,16 @@ mod tests {
             assert!(dg.sent().is_empty());
         }
         assert!(http.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hikvision_row_never_seen_over_sadp_is_refused() {
+        let (c, dg) = sadp_ctx(Arc::new(axis_ok()), true);
+        let mut cam = off_subnet_hik();
+        cam.sources = vec![Source::Mdns];
+        let r = apply(&c, &cam, &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::CameraNotSeen));
+        assert!(dg.sent().is_empty());
     }
 
     #[tokio::test]
