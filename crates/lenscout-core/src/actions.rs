@@ -614,6 +614,9 @@ mod tests {
         Ok(HttpResponse { status, headers: vec![], body: body.as_bytes().to_vec() })
     }
 
+    /// Réponse de la caméra à la lecture anonyme de `param.cgi`.
+    type AnonReply = fn(&HttpRequest) -> Result<HttpResponse, NetError>;
+
     const SERIAL_PARAM: &str = "/axis-cgi/param.cgi?action=list&group=Properties.System.SerialNumber";
 
     /// AXIS OS < 8.40 : pas de basicdeviceinfo.cgi (404), le n° de série se lit
@@ -643,7 +646,7 @@ mod tests {
             (|_: &HttpRequest| reply(401, "")) as fn(&HttpRequest) -> _,
             |_| Err(NetError::Auth),
         ] {
-            thread_local! { static ANON: std::cell::Cell<Option<fn(&HttpRequest) -> Result<HttpResponse, NetError>>> = const { std::cell::Cell::new(None) }; }
+            thread_local! { static ANON: std::cell::Cell<Option<AnonReply>> = const { std::cell::Cell::new(None) }; }
             ANON.with(|a| a.set(Some(anonymous)));
             let http = Arc::new(WithLogin::new(|req, with_login| {
                 if req.url.ends_with("basicdeviceinfo.cgi") {
