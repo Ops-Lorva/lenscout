@@ -7,6 +7,8 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use uuid::Uuid;
 
+use super::arp::ScanInterface;
+use super::pick_address;
 use crate::model::{Activation, Family, Sighting, Source, normalize_mac};
 
 pub const GROUP: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(239, 255, 255, 250), 3702);
@@ -116,14 +118,18 @@ fn read_fields(xml: &[u8]) -> (String, String) {
 }
 
 /// Lit un `ProbeMatch` ONVIF. `None` s'il ne porte aucun `XAddrs` IPv4 :
-/// sans adresse de service, rien à montrer (`_src` n'est donc pas utilisé,
-/// l'adresse annoncée fait foi — elle peut différer de la source du paquet).
-pub fn parse_probe_match(xml: &[u8], _src: Ipv4Addr) -> Option<Sighting> {
+/// sans adresse de service, rien à montrer. Parmi plusieurs adresses, choix
+/// de `pick_address` (source UDP, puis sous-réseau de `iface`, puis la
+/// première) ; l'adresse annoncée fait foi même si elle diffère de la source.
+pub fn parse_probe_match(xml: &[u8], src: Ipv4Addr, iface: Option<&ScanInterface>) -> Option<Sighting> {
     if xml.len() > MAX_XML {
         return None;
     }
     let (xaddrs, scopes) = read_fields(xml);
-    let (ip, port) = xaddrs.split_whitespace().find_map(parse_xaddr)?;
+    let all: Vec<(Ipv4Addr, u16)> = xaddrs.split_whitespace().filter_map(parse_xaddr).collect();
+    let ips: Vec<Ipv4Addr> = all.iter().map(|(ip, _)| *ip).collect();
+    let ip = pick_address(&ips, src, iface)?;
+    let port = all.iter().find(|(a, _)| *a == ip).map(|(_, p)| *p)?;
 
     let (mut model, mut name, mut mac) = (None, None, None);
     for scope in scopes.split_whitespace() {
@@ -183,7 +189,7 @@ mod tests {
 
     #[test]
     fn wsd_axis_probematch() {
-        let s = parse_probe_match(AXIS, src()).unwrap();
+        let s = parse_probe_match(AXIS, src(), None).unwrap();
         assert_eq!(s.source, Source::Wsd);
         assert_eq!(s.family, Some(Family::Axis));
         assert_eq!(s.brand.as_deref(), Some("Axis"));
@@ -196,7 +202,7 @@ mod tests {
 
     #[test]
     fn wsd_hikvision_probematch_has_mac() {
-        let s = parse_probe_match(HIKVISION, src()).unwrap();
+        let s = parse_probe_match(HIKVISION, src(), None).unwrap();
         assert_eq!(s.family, Some(Family::Hikvision));
         assert_eq!(s.brand.as_deref(), Some("Hikvision"));
         assert_eq!(s.mac.as_deref(), Some("A4:14:6B:0A:1B:2C"));
@@ -207,7 +213,7 @@ mod tests {
 
     #[test]
     fn wsd_generic_is_other() {
-        let s = parse_probe_match(GENERIC, src()).unwrap();
+        let s = parse_probe_match(GENERIC, src(), None).unwrap();
         assert_eq!(s.family, Some(Family::Other));
         assert_eq!(s.brand.as_deref(), Some("Example Cam"));
         assert_eq!(s.model.as_deref(), Some("EX-100"));
@@ -218,36 +224,53 @@ mod tests {
     }
 
     #[test]
+    fn wsd_prefers_the_udp_source_then_the_interface_subnet_over_link_local() {
+        let xml = b"<Envelope><Body><ProbeMatch><XAddrs>http://169.254.77.88/onvif/device_service http://192.0.2.11:8080/onvif/device_service</XAddrs></ProbeMatch></Body></Envelope>";
+        let cam: Ipv4Addr = "192.0.2.11".parse().unwrap();
+        let s = parse_probe_match(xml, cam, None).unwrap();
+        assert_eq!((s.ip, s.http_port), (cam, Some(8080)));
+        let iface = ScanInterface {
+            name: "en0".into(),
+            ip: "192.0.2.2".parse().unwrap(),
+            mask: "255.255.255.0".parse().unwrap(),
+        };
+        let other: Ipv4Addr = "198.51.100.9".parse().unwrap();
+        assert_eq!(parse_probe_match(xml, other, Some(&iface)).unwrap().ip, cam);
+        let s = parse_probe_match(xml, other, None).unwrap();
+        assert_eq!((s.ip, s.http_port), ("169.254.77.88".parse().unwrap(), Some(80)));
+    }
+
+    #[test]
     fn wsd_malformed_xml_is_none() {
-        assert!(parse_probe_match(b"<Envelope><Body>", src()).is_none());
-        assert!(parse_probe_match(b"", src()).is_none());
-        assert!(parse_probe_match(b"not xml at all", src()).is_none());
+        assert!(parse_probe_match(b"<Envelope><Body>", src(), None).is_none());
+        assert!(parse_probe_match(b"", src(), None).is_none());
+        assert!(parse_probe_match(b"not xml at all", src(), None).is_none());
     }
 
     #[test]
     fn wsd_without_ipv4_xaddrs_is_none() {
         let xml = b"<Envelope><Body><ProbeMatches><ProbeMatch><XAddrs>http://[2001:db8::1]/onvif</XAddrs></ProbeMatch></ProbeMatches></Body></Envelope>";
-        assert!(parse_probe_match(xml, src()).is_none());
+        assert!(parse_probe_match(xml, src(), None).is_none());
     }
 
     #[test]
     fn wsd_truncated_or_hostile_never_panics() {
         for fixture in [AXIS, HIKVISION, GENERIC] {
             for n in 0..fixture.len() {
-                let _ = parse_probe_match(&fixture[..n], src());
+                let _ = parse_probe_match(&fixture[..n], src(), None);
             }
         }
-        let _ = parse_probe_match(&[0xff, 0xfe, 0x00, 0x3c, 0xc3, 0x28], src());
+        let _ = parse_probe_match(&[0xff, 0xfe, 0x00, 0x3c, 0xc3, 0x28], src(), None);
         // imbrication profonde
         let deep = "<a>".repeat(20_000);
-        let _ = parse_probe_match(deep.as_bytes(), src());
+        let _ = parse_probe_match(deep.as_bytes(), src(), None);
         // XAddrs géant, port hors plage, scopes percent-encodés invalides
         let long = format!("<XAddrs>http://192.0.2.1:99999/{}</XAddrs>", "x".repeat(60_000));
-        assert!(parse_probe_match(long.as_bytes(), src()).is_none());
+        assert!(parse_probe_match(long.as_bytes(), src(), None).is_none());
         let huge = format!("<XAddrs>http://192.0.2.1/{}</XAddrs>", "x".repeat(2_000_000));
-        assert!(parse_probe_match(huge.as_bytes(), src()).is_none());
+        assert!(parse_probe_match(huge.as_bytes(), src(), None).is_none());
         let bad = b"<X><XAddrs>http://192.0.2.1/</XAddrs><Scopes>onvif://www.onvif.org/name/%ZZ%F0%9 onvif://www.onvif.org/MAC/%</Scopes></X>";
-        let s = parse_probe_match(bad, src()).unwrap();
+        let s = parse_probe_match(bad, src(), None).unwrap();
         assert_eq!(s.mac, None);
     }
 

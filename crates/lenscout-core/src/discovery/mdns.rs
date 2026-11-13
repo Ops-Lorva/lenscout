@@ -6,6 +6,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::{Name, RData, RecordType};
 
+use super::arp::ScanInterface;
+use super::pick_address;
 use crate::model::{Activation, Family, Sighting, Source, normalize_mac};
 
 pub const GROUP: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 251), 5353);
@@ -37,7 +39,7 @@ fn key(name: &Name) -> String {
 
 /// Un paquet tronqué ou hostile donne une liste vide, jamais une panique :
 /// `Message::from_vec` renvoie une erreur et rien ici n'indexe ni ne `unwrap`.
-pub fn parse_response(packet: &[u8], src: Ipv4Addr) -> Vec<Sighting> {
+pub fn parse_response(packet: &[u8], src: Ipv4Addr, iface: Option<&ScanInterface>) -> Vec<Sighting> {
     let Ok(msg) = Message::from_vec(packet) else {
         return Vec::new();
     };
@@ -93,14 +95,17 @@ pub fn parse_response(packet: &[u8], src: Ipv4Addr) -> Vec<Sighting> {
                 _ => {}
             }
         }
-        let ip = target
-            .and_then(|t| {
-                msg.all_sections().find_map(|r| match &r.data {
-                    RData::A(a) if key(&r.name) == t => Some(a.0),
-                    _ => None,
-                })
+        let addresses: Vec<Ipv4Addr> = target
+            .map(|t| {
+                msg.all_sections()
+                    .filter_map(|r| match &r.data {
+                        RData::A(a) if key(&r.name) == t => Some(a.0),
+                        _ => None,
+                    })
+                    .collect()
             })
-            .unwrap_or(src);
+            .unwrap_or_default();
+        let ip = pick_address(&addresses, src, iface).unwrap_or(src);
 
         out.push(Sighting {
             source: Source::Mdns,
@@ -179,7 +184,7 @@ mod tests {
 
     #[test]
     fn mdns_axis_response_gives_model_mac_ip() {
-        let s = parse_response(&axis_response_packet(), ip());
+        let s = parse_response(&axis_response_packet(), ip(), None);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].source, Source::Mdns);
         assert_eq!(s[0].model.as_deref(), Some("AXIS M3106-L Mk II"));
@@ -195,12 +200,35 @@ mod tests {
     #[test]
     fn mdns_without_a_record_or_txt_falls_back_to_src_and_name_suffix() {
         let pkt = response(vec![record(AXIS_SERVICE, RData::PTR(PTR(name(INSTANCE))))]);
-        let s = parse_response(&pkt, ip());
+        let s = parse_response(&pkt, ip(), None);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].ip, ip());
         assert_eq!(s[0].mac.as_deref(), Some("AC:CC:8E:12:34:56"));
         assert_eq!(s[0].http_port, None);
         assert_eq!(s[0].model.as_deref(), Some("AXIS M3106-L Mk II"));
+    }
+
+    /// Une Axis annonce souvent aussi son adresse de lien local, parfois en
+    /// premier : on garde la source UDP, sinon une adresse du sous-réseau.
+    #[test]
+    fn mdns_prefers_the_udp_source_then_the_interface_subnet_over_link_local() {
+        let pkt = response(vec![
+            record(AXIS_SERVICE, RData::PTR(PTR(name(INSTANCE)))),
+            record(INSTANCE, RData::SRV(SRV::new(0, 0, 80, name("axis-accc8e123456.local.")))),
+            record("axis-accc8e123456.local.", RData::A(A("169.254.77.88".parse().unwrap()))),
+            record("axis-accc8e123456.local.", RData::A(A("192.0.2.21".parse().unwrap()))),
+        ]);
+        let src: Ipv4Addr = "192.0.2.21".parse().unwrap();
+        assert_eq!(parse_response(&pkt, src, None)[0].ip, src);
+        let iface = ScanInterface {
+            name: "en0".into(),
+            ip: "192.0.2.2".parse().unwrap(),
+            mask: "255.255.255.0".parse().unwrap(),
+        };
+        let other: Ipv4Addr = "198.51.100.9".parse().unwrap();
+        assert_eq!(parse_response(&pkt, other, Some(&iface))[0].ip, src);
+        // Sans source ni sous-réseau qui tranche : la première.
+        assert_eq!(parse_response(&pkt, other, None)[0].ip, "169.254.77.88".parse::<Ipv4Addr>().unwrap());
     }
 
     #[test]
@@ -220,20 +248,20 @@ mod tests {
     fn mdns_truncated_or_garbage_never_panics() {
         let pkt = axis_response_packet();
         for n in 0..pkt.len() {
-            let _ = parse_response(&pkt[..n], ip());
+            let _ = parse_response(&pkt[..n], ip(), None);
         }
-        let _ = parse_response(&[0xff; 64], ip());
-        let _ = parse_response(&[], ip());
+        let _ = parse_response(&[0xff; 64], ip(), None);
+        let _ = parse_response(&[], ip(), None);
         // en-tête annonçant des milliers d'enregistrements absents
         let mut hostile = vec![0u8; 12];
         hostile[2] = 0x84;
         hostile[4..12].copy_from_slice(&[0xff; 8]);
-        let _ = parse_response(&hostile, ip());
+        let _ = parse_response(&hostile, ip(), None);
         // chaque octet du paquet retourné, un par un
         for i in 0..pkt.len() {
             let mut p = pkt.clone();
             p[i] ^= 0xff;
-            let _ = parse_response(&p, ip());
+            let _ = parse_response(&p, ip(), None);
         }
     }
 
@@ -249,11 +277,11 @@ mod tests {
                 RData::SRV(SRV::new(0, 0, 80, name("printer.local."))),
             ),
         ]);
-        assert!(parse_response(&pkt, ip()).is_empty());
+        assert!(parse_response(&pkt, ip(), None).is_empty());
     }
 
     #[test]
     fn mdns_query_packet_is_not_a_response() {
-        assert!(parse_response(&build_query(), ip()).is_empty());
+        assert!(parse_response(&build_query(), ip(), None).is_empty());
     }
 }

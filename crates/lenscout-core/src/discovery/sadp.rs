@@ -30,6 +30,7 @@ use quick_xml::events::Event;
 use uuid::Uuid;
 
 use crate::actions::ActionError;
+use crate::discovery::arp::ScanInterface;
 use crate::discovery::scanner::Probe;
 use crate::model::{Activation, Family, Sighting, Source, normalize_mac};
 use crate::secret::Secret;
@@ -61,7 +62,7 @@ impl Probe for SadpProbe {
     fn build(&self) -> Vec<u8> {
         build_inquiry(Uuid::new_v4())
     }
-    fn parse(&self, packet: &[u8], src: Ipv4Addr) -> Vec<Sighting> {
+    fn parse(&self, packet: &[u8], src: Ipv4Addr, _iface: &ScanInterface) -> Vec<Sighting> {
         parse_inquiry_response(packet, src).into_iter().collect()
     }
 }

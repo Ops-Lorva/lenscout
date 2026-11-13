@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::arp::{ArpSource, ScanInterface};
-use super::{mdns, wsd};
+use super::{in_subnet, mdns, wsd};
 use crate::model::{Activation, Camera, Family, Sighting, Source};
 use crate::oui::camera_brand_for_mac;
 use crate::transport::{CameraHttp, Datagram, NetError};
@@ -36,7 +36,9 @@ pub trait Probe: Send + Sync {
     fn source(&self) -> Source;
     fn group(&self) -> SocketAddrV4;
     fn build(&self) -> Vec<u8>;
-    fn parse(&self, packet: &[u8], src: Ipv4Addr) -> Vec<Sighting>;
+    /// `iface` : l'interface du scan, pour choisir entre plusieurs adresses
+    /// annoncées.
+    fn parse(&self, packet: &[u8], src: Ipv4Addr, iface: &ScanInterface) -> Vec<Sighting>;
     /// Le socket se lie-t-il au port du groupe ? Non pour un protocole dont la
     /// réponse revient en unicast sur le port source.
     fn bind_group_port(&self) -> bool {
@@ -140,6 +142,7 @@ const MAX_RECV_ERRORS: usize = 20;
 async fn recv_loop(
     probe: Arc<dyn Probe>,
     dg: Arc<dyn Datagram>,
+    iface: ScanInterface,
     events: mpsc::Sender<Event>,
     capture_dir: Option<PathBuf>,
 ) {
@@ -166,7 +169,7 @@ async fn recv_loop(
         if let Some(dir) = &capture_dir {
             capture(dir, probe.source(), src, packet);
         }
-        for sighting in probe.parse(packet, src) {
+        for sighting in probe.parse(packet, src, &iface) {
             if events.send(Event::Seen(sighting, src)).await.is_err() {
                 return;
             }
@@ -182,6 +185,7 @@ enum Target {
 }
 
 struct Scan {
+    iface: ScanInterface,
     cameras: Vec<Camera>,
     /// IP dont l'enrichissement VAPIX est déjà parti.
     enriching: HashSet<Ipv4Addr>,
@@ -219,6 +223,18 @@ impl Scan {
         }
     }
 
+    /// `new` remplace-t-elle `current` comme adresse d'une ligne ? Seulement si
+    /// elle est meilleure : dans le sous-réseau de l'interface d'abord, puis
+    /// source UDP du paquet. Le sous-réseau passe avant la source ici (au
+    /// contraire du choix dans un paquet) : une Axis répond depuis ses deux
+    /// adresses, sous-réseau et 169.254.x.y, et la source seule ferait basculer
+    /// la ligne à chaque paquet. Une caméra qui change d'adresse dans le
+    /// sous-réseau (DHCP) parle depuis la nouvelle : elle passe.
+    fn better_address(&self, new: Ipv4Addr, current: Ipv4Addr, src: Ipv4Addr) -> bool {
+        let rank = |a: Ipv4Addr| (in_subnet(&self.iface, a), a == src);
+        rank(new) > rank(current)
+    }
+
     /// Plusieurs caméras de MAC différentes sur la même IP.
     fn ip_is_shared(&self, ip: Ipv4Addr) -> bool {
         self.cameras.iter().filter(|c| c.ip == ip && c.mac.is_some()).count() > 1
@@ -232,7 +248,8 @@ impl Scan {
         }
     }
 
-    async fn on_sighting(&mut self, s: Sighting) {
+    /// `src` : la source UDP du paquet (l'adresse elle-même pour l'ARP).
+    async fn on_sighting(&mut self, s: Sighting, src: Ipv4Addr) {
         let idx = match self.find(&s) {
             Target::Ignore => return,
             Target::Row(i) => {
@@ -244,7 +261,7 @@ impl Scan {
                 if s.model.is_some() {
                     self.enriched.entry(i).and_modify(|m| *m = false);
                 }
-                if s.mac.is_some() && self.cameras[i].ip != s.ip {
+                if s.mac.is_some() && self.cameras[i].ip != s.ip && self.better_address(s.ip, self.cameras[i].ip, src) {
                     self.enriching.remove(&self.cameras[i].ip);
                     self.cameras[i].ip = s.ip;
                 }
@@ -353,7 +370,7 @@ impl Scan {
                 {
                     self.cancel.cancel();
                 }
-                self.on_sighting(s).await
+                self.on_sighting(s, src).await
             }
             Event::Enriched { idx, ip, info, activation } => self.on_enriched(idx, ip, info, activation).await,
         }
@@ -406,8 +423,8 @@ impl Scan {
                     self.cameras[i].mac = Some(mac);
                     self.emit(i).await;
                 }
-                Some(_) => self.on_sighting(sighting).await,
-                None if sighting.family.is_some() => self.on_sighting(sighting).await,
+                Some(_) => self.on_sighting(sighting, ip).await,
+                None if sighting.family.is_some() => self.on_sighting(sighting, ip).await,
                 None => {}
             }
         }
@@ -443,6 +460,7 @@ pub async fn run_scan_with_capture(
     // le jeton de l'appelant.
     let cancel = cancel.child_token();
     let mut scan = Scan {
+        iface: cfg.iface.clone(),
         cameras: vec![],
         enriching: HashSet::new(),
         enriched: HashMap::new(),
@@ -458,7 +476,7 @@ pub async fn run_scan_with_capture(
     let mut probe_tasks = JoinSet::new();
     for (probe, dg) in probes {
         probe_tasks.spawn(send_loop(probe.clone(), dg.clone(), start));
-        probe_tasks.spawn(recv_loop(probe, dg, etx.clone(), capture_dir.clone()));
+        probe_tasks.spawn(recv_loop(probe, dg, cfg.iface.clone(), etx.clone(), capture_dir.clone()));
     }
 
     let deadline = start + cfg.listen;
@@ -492,7 +510,9 @@ impl Probe for MdnsProbe {
     fn source(&self) -> Source { Source::Mdns }
     fn group(&self) -> SocketAddrV4 { mdns::GROUP }
     fn build(&self) -> Vec<u8> { mdns::build_query() }
-    fn parse(&self, packet: &[u8], src: Ipv4Addr) -> Vec<Sighting> { mdns::parse_response(packet, src) }
+    fn parse(&self, packet: &[u8], src: Ipv4Addr, iface: &ScanInterface) -> Vec<Sighting> {
+        mdns::parse_response(packet, src, Some(iface))
+    }
 }
 
 impl Probe for WsdProbe {
@@ -502,8 +522,8 @@ impl Probe for WsdProbe {
     // Les ProbeMatches reviennent en unicast sur notre port source : partir du
     // 3702 les ferait prendre par le service WSD du système (Windows).
     fn bind_group_port(&self) -> bool { false }
-    fn parse(&self, packet: &[u8], src: Ipv4Addr) -> Vec<Sighting> {
-        wsd::parse_probe_match(packet, src).into_iter().collect()
+    fn parse(&self, packet: &[u8], src: Ipv4Addr, iface: &ScanInterface) -> Vec<Sighting> {
+        wsd::parse_probe_match(packet, src, Some(iface)).into_iter().collect()
     }
 }
 
@@ -877,6 +897,36 @@ mod tests {
         // l'enrichissement se refait à la nouvelle adresse
         assert_eq!(last.serial.as_deref(), Some("ACCC8E123456"));
         assert!(http.requests().iter().any(|r| r.url.contains("192.0.2.22:8080")));
+    }
+
+    /// Une Axis répond depuis ses deux adresses (sous-réseau et lien local) :
+    /// la ligne ne bascule pas de l'une à l'autre selon l'ordre des paquets.
+    #[tokio::test(start_paused = true)]
+    async fn a_row_does_not_flip_to_the_link_local_address() {
+        let both = |first: &str, second: &str| {
+            WSD_AXIS
+                .replace(
+                    "http://192.0.2.11:80/onvif/device_service",
+                    &format!("http://{first}/onvif/device_service http://{second}/onvif/device_service"),
+                )
+                .into_bytes()
+        };
+        let (w, _) = probe_pair(
+            Arc::new(WsdProbe),
+            vec![
+                (both("169.254.77.88", "192.0.2.11"), from("192.0.2.11", 3702)),
+                (both("169.254.77.88", "192.0.2.11"), from("169.254.77.88", 3702)),
+                (wsd_at("169.254.77.88", "AC:CC:8E:12:34:56"), from("169.254.77.88", 3702)),
+            ],
+        );
+        let events = scan(vec![w], axis_http(), arp(&[])).await;
+        let cams = cameras(&events);
+        assert!(!cams.is_empty());
+        assert!(
+            cams.iter().all(|c| c.ip == "192.0.2.11".parse::<Ipv4Addr>().unwrap()),
+            "{:?}",
+            cams.iter().map(|c| c.ip).collect::<Vec<_>>()
+        );
     }
 
     #[test]
