@@ -34,6 +34,9 @@ pub struct ScanState {
 
 #[derive(Default, Clone, Debug)]
 pub struct LastSeen {
+    /// Numéro du scan : un scan remplacé qui finit de se vider ne doit pas
+    /// écrire dans celui qui l'a remplacé.
+    pub generation: u64,
     /// `ScanInterface::name` du scan.
     pub iface: Option<String>,
     /// Adresses qui se sont annoncées elles-mêmes (`ScanEvent::Heard`).
@@ -61,18 +64,26 @@ impl ScanState {
         SeenSnapshot { iface: last.iface.clone(), ips, sadp_macs }
     }
 
-    /// Un nouveau scan repart de zéro, sur son interface.
-    fn begin(&self, iface: &ScanInterface) {
-        *self.last_seen.lock().unwrap() = LastSeen { iface: Some(iface.name.clone()), ..Default::default() };
+    /// Un nouveau scan repart de zéro, sur son interface ; rend son numéro.
+    fn begin(&self, iface: &ScanInterface) -> u64 {
+        let mut last = self.last_seen.lock().unwrap();
+        let generation = last.generation.wrapping_add(1);
+        *last = LastSeen { generation, iface: Some(iface.name.clone()), ..Default::default() };
+        generation
     }
 
-    fn record(&self, ev: &ScanEvent) {
+    /// N'écrit que si `generation` est encore le scan en cours.
+    fn record(&self, generation: u64, ev: &ScanEvent) {
+        let mut last = self.last_seen.lock().unwrap();
+        if last.generation != generation {
+            return;
+        }
         match ev {
             ScanEvent::Heard { ip } => {
-                self.last_seen.lock().unwrap().ips.insert(*ip);
+                last.ips.insert(*ip);
             }
             ScanEvent::HeardSadp { mac } => {
-                self.last_seen.lock().unwrap().sadp_macs.insert(mac.clone());
+                last.sadp_macs.insert(mac.clone());
             }
             _ => {}
         }
@@ -131,13 +142,13 @@ pub async fn cmd_scan_start(
         return Err("no_socket".to_string());
     }
 
-    state.begin(&scan_iface);
+    let generation = state.begin(&scan_iface);
     let (tx, mut rx) = mpsc::channel(256);
     let cfg = ScanConfig { iface: scan_iface, listen: LISTEN };
     let http = Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT));
     let scan = tokio::spawn(run_scan(probes, http, Arc::new(SystemArp), cfg, tx, token.clone()));
     while let Some(ev) = rx.recv().await {
-        state.record(&ev);
+        state.record(generation, &ev);
         // Interne : l'adresse entendue ne part pas au webview.
         if matches!(ev, ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. }) {
             continue;
@@ -206,13 +217,13 @@ mod tests {
             http_port: 80,
             sources: vec![],
         };
-        state.begin(&eth0());
-        state.record(&ScanEvent::Done);
-        state.record(&ScanEvent::Upsert { camera: cam });
+        let g = state.begin(&eth0());
+        state.record(g, &ScanEvent::Done);
+        state.record(g, &ScanEvent::Upsert { camera: cam });
         assert!(state.seen().ips.is_empty(), "une annonce ne suffit pas");
         let ip: Ipv4Addr = "169.254.10.20".parse().unwrap();
-        state.record(&ScanEvent::Heard { ip });
-        state.record(&ScanEvent::Heard { ip });
+        state.record(g, &ScanEvent::Heard { ip });
+        state.record(g, &ScanEvent::Heard { ip });
         let seen = state.seen();
         assert_eq!(seen.ips, vec![ip]);
         assert_eq!(seen.iface.as_deref(), Some("eth0"));
@@ -222,14 +233,29 @@ mod tests {
         assert_eq!(state.seen().iface.as_deref(), Some("wlan0"));
     }
 
+    /// Un scan remplacé qui finit de se vider n'écrit pas dans le nouveau.
+    #[test]
+    fn un_ancien_scan_n_ecrit_pas_dans_le_nouveau() {
+        let state = ScanState::default();
+        let old = state.begin(&eth0());
+        let new = state.begin(&ScanInterface { name: "wlan0".into(), ..eth0() });
+        assert_ne!(old, new);
+        state.record(old, &ScanEvent::Heard { ip: "192.0.2.31".parse().unwrap() });
+        state.record(old, &ScanEvent::HeardSadp { mac: "C0:56:E3:5A:7D:01".into() });
+        assert!(state.seen().ips.is_empty());
+        assert!(state.seen().sadp_macs.is_empty());
+        state.record(new, &ScanEvent::Heard { ip: "192.0.2.32".parse().unwrap() });
+        assert_eq!(state.seen().ips, vec!["192.0.2.32".parse::<Ipv4Addr>().unwrap()]);
+    }
+
     #[test]
     fn seules_les_mac_entendues_en_sadp_sont_retenues_avec_leur_interface() {
         let state = ScanState::default();
-        state.begin(&eth0());
-        state.record(&ScanEvent::Heard { ip: "192.0.2.31".parse().unwrap() });
+        let g = state.begin(&eth0());
+        state.record(g, &ScanEvent::Heard { ip: "192.0.2.31".parse().unwrap() });
         assert!(state.seen().sadp_macs.is_empty(), "une adresse entendue ne vaut pas une MAC SADP");
-        state.record(&ScanEvent::HeardSadp { mac: "C0:56:E3:5A:7D:01".into() });
-        state.record(&ScanEvent::HeardSadp { mac: "C0:56:E3:5A:7D:01".into() });
+        state.record(g, &ScanEvent::HeardSadp { mac: "C0:56:E3:5A:7D:01".into() });
+        state.record(g, &ScanEvent::HeardSadp { mac: "C0:56:E3:5A:7D:01".into() });
         assert_eq!(state.seen().sadp_macs, vec!["C0:56:E3:5A:7D:01".to_string()]);
         state.begin(&ScanInterface { name: "wlan0".into(), ..eth0() });
         assert!(state.seen().sadp_macs.is_empty());
@@ -245,12 +271,12 @@ mod tests {
             let dg = Arc::new(FakeDatagram::new(vec![(xml.as_bytes().to_vec(), src.parse().unwrap())]));
             let probes: Vec<(Arc<dyn Probe>, Arc<dyn Datagram>)> = vec![(Arc::new(SadpProbe), dg)];
             let state = ScanState::default();
-            state.begin(&eth0());
+            let g = state.begin(&eth0());
             let (tx, mut rx) = mpsc::channel(64);
             let cfg = ScanConfig { iface: eth0(), listen: Duration::from_millis(200) };
             run_scan_with_capture(probes, Arc::new(FakeHttp::new()), Arc::new(NoArp), cfg, tx, CancellationToken::new(), None).await;
             while let Ok(ev) = rx.try_recv() {
-                state.record(&ev);
+                state.record(g, &ev);
             }
             assert_eq!(!state.seen().sadp_macs.is_empty(), heard, "{src}");
         }
@@ -280,7 +306,7 @@ mod tests {
         let dg = Arc::new(FakeDatagram::new(vec![(xml.into_bytes(), "10.0.50.9:3702".parse().unwrap())]));
         let probes: Vec<(Arc<dyn Probe>, Arc<dyn Datagram>)> = vec![(Arc::new(WsdProbe), dg)];
         let state = ScanState::default();
-        state.begin(&eth0());
+        let g = state.begin(&eth0());
         let (tx, mut rx) = mpsc::channel(64);
         let cfg = ScanConfig { iface: eth0(), listen: Duration::from_millis(200) };
         run_scan_with_capture(probes, Arc::new(FakeHttp::new()), Arc::new(NoArp), cfg, tx, CancellationToken::new(), None).await;
@@ -289,7 +315,7 @@ mod tests {
             if let ScanEvent::Upsert { camera } = &ev {
                 listed |= camera.ip == "10.66.66.66".parse::<Ipv4Addr>().unwrap();
             }
-            state.record(&ev);
+            state.record(g, &ev);
         }
         assert!(listed, "la caméra reste listée");
 
