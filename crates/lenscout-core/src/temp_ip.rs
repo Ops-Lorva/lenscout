@@ -617,6 +617,38 @@ pub fn cleanup_leftover(elev: &dyn Elevator, journal: &Path) -> Result<Option<Te
     cleanup_unlocked(elev, journal)
 }
 
+/// Filet de sortie de l'app. Une action en cours tient le verrou : on
+/// attend qu'elle finisse son retrait, au plus `max`, puis on retire ce que
+/// le journal porte encore. Au-delà de `max` → `Busy`, rien n'est fait (le
+/// démarrage suivant s'en charge). Bloquant : à appeler hors de la boucle
+/// d'événements de l'interface.
+///
+/// Le verrou n'est jamais relâché ensuite : le processus se termine, et
+/// aucune IP temporaire ne doit plus démarrer d'ici là.
+pub fn cleanup_before_exit(
+    elev: &dyn Elevator,
+    journal: &Path,
+    max: std::time::Duration,
+) -> Result<Option<TempIp>, TempIpError> {
+    let deadline = std::time::Instant::now() + max;
+    let lock = loop {
+        match lock_journal(journal) {
+            Ok(lock) => break lock,
+            Err(TempIpError::Busy) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Err(TempIpError::Busy);
+                }
+                std::thread::sleep((deadline - now).min(std::time::Duration::from_millis(50)));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    let done = cleanup_unlocked(elev, journal);
+    std::mem::forget(lock);
+    done
+}
+
 fn cleanup_unlocked(elev: &dyn Elevator, journal: &Path) -> Result<Option<TempIp>, TempIpError> {
     let t = match read_journal(journal) {
         Ok(None) => return Ok(None),
@@ -982,6 +1014,48 @@ mod tests {
         assert_eq!(cleanup_leftover(&elev, &j), Err(TempIpError::Busy));
         assert!(elev.plans().is_empty());
         assert_eq!(read_journal(&j).unwrap(), Some(t));
+    }
+
+    #[test]
+    fn exit_cleanup_waits_for_the_running_action_then_removes() {
+        // Une action tient le verrou ; elle le relâche après 150 ms en
+        // laissant son journal (retrait raté) : la sortie attend puis retire.
+        let (elev, j, t) = (FakeElevator::new(), journal(), tmp("eth0"));
+        write_journal(&j, &t).unwrap();
+        let held = hold_lock(&j);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(held);
+        });
+        let started = std::time::Instant::now();
+        assert_eq!(cleanup_before_exit(&elev, &j, std::time::Duration::from_secs(10)), Ok(Some(t.clone())));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(elev.plans(), vec![remove_plan(os(), &t, &t.iface).unwrap()]);
+        assert!(!j.exists());
+        releaser.join().unwrap();
+        // La sortie garde le verrou : plus aucune IP temporaire ne démarre.
+        assert!(matches!(lock_journal(&j), Err(TempIpError::Busy)));
+    }
+
+    #[test]
+    fn exit_cleanup_gives_up_after_the_deadline() {
+        let (elev, j, t) = (FakeElevator::new(), journal(), tmp("eth0"));
+        write_journal(&j, &t).unwrap();
+        let _held = hold_lock(&j);
+        let started = std::time::Instant::now();
+        assert_eq!(cleanup_before_exit(&elev, &j, std::time::Duration::from_millis(300)), Err(TempIpError::Busy));
+        let waited = started.elapsed();
+        assert!(waited >= std::time::Duration::from_millis(300) && waited < std::time::Duration::from_secs(2), "{waited:?}");
+        assert!(elev.plans().is_empty());
+        assert_eq!(read_journal(&j).unwrap(), Some(t), "laissé au prochain démarrage");
+    }
+
+    #[test]
+    fn exit_cleanup_without_journal_does_nothing() {
+        let (elev, j) = (FakeElevator::new(), journal());
+        assert_eq!(cleanup_before_exit(&elev, &j, std::time::Duration::from_secs(10)), Ok(None));
+        assert!(elev.plans().is_empty());
     }
 
     #[test]

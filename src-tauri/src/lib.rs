@@ -9,9 +9,14 @@ use commands::stream::{StreamState, cmd_stream_ack, cmd_stream_start, cmd_stream
 use commands::app::{cmd_app_version, cmd_interface_details, cmd_list_interfaces};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_scan_start};
 use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
-use lenscout_core::temp_ip::{SystemElevator, cleanup_leftover};
+use lenscout_core::permissions::set_data_dir;
+use lenscout_core::temp_ip::{SystemElevator, cleanup_before_exit, cleanup_leftover};
+use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, RunEvent};
+
+/// Attente maximale, à la sortie, d'une IP temporaire en cours de retrait.
+const EXIT_WAIT: Duration = Duration::from_secs(10);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -28,7 +33,10 @@ pub fn run() {
             // IP temporaire laissée par une session tuée : retirée avant toute
             // action. Un échec est journalisé et n'empêche pas le démarrage ;
             // le journal reste pour la prochaine fois.
-            let journal = app.path().app_data_dir()?.join("temp-ip.json");
+            let data_dir = app.path().app_data_dir()?;
+            // Le marqueur de la règle sudoers macOS y vit.
+            set_data_dir(&data_dir);
+            let journal = data_dir.join("temp-ip.json");
             if let Err(e) = cleanup_leftover(&SystemElevator, &journal) {
                 eprintln!("Lenscout : IP temporaire non retirée au démarrage : {e}");
             }
@@ -55,12 +63,19 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("erreur au lancement de Lenscout")
         .run(|app, event| {
-            // Filet de sortie : une IP temporaire encore journalisée est
-            // retirée avant de quitter. Verrou tenu (action en cours, autre
-            // instance) : rien n'est fait, le démarrage suivant s'en charge.
+            // Filet de sortie : une action en cours tient le verrou ; on
+            // attend qu'elle ait retiré son IP (10 s au plus), puis on retire
+            // ce que le journal porte encore. Au-delà, on quitte : le
+            // démarrage suivant s'en charge.
+            //
+            // `Exit` arrive quand la boucle d'événements se termine, fenêtres
+            // déjà fermées : attendre ici ne fige aucune fenêtre, et l'action
+            // en cours tourne sur le runtime async, pas sur ce fil. Plus
+            // simple et plus sûr que `ExitRequested` + `prevent_exit` + une
+            // seconde sortie, qui ne couvre pas tous les chemins de sortie.
             if let RunEvent::Exit = event
                 && let Some(journal) = app.try_state::<TempIpJournal>()
-                && let Err(e) = cleanup_leftover(&SystemElevator, &journal.0)
+                && let Err(e) = cleanup_before_exit(&SystemElevator, &journal.0, EXIT_WAIT)
             {
                 eprintln!("Lenscout : IP temporaire non retirée à la sortie : {e}");
             }
