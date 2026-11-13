@@ -717,9 +717,9 @@ mod tests {
             order,
             [
                 "http://192.0.2.12/axis-cgi/basicdeviceinfo.cgi",
-                "http://192.0.2.12/axis-cgi/pwdgrp.cgi",
+                "https://192.0.2.12/axis-cgi/pwdgrp.cgi",
                 "http://192.0.2.11/axis-cgi/basicdeviceinfo.cgi",
-                "http://192.0.2.11/axis-cgi/pwdgrp.cgi",
+                "https://192.0.2.11/axis-cgi/pwdgrp.cgi",
             ]
         );
     }
@@ -731,7 +731,7 @@ mod tests {
         let out = apply_all(&ctx(http.clone()), &cams, &creds(), &Action::Activate).await;
         assert_eq!(out[0].error, Some(ActionError::Unreachable { ip: "192.0.2.11".parse().unwrap() }));
         assert!(out[1].ok);
-        assert!(http.inner.requests().iter().any(|r| r.url == "http://192.0.2.12/axis-cgi/pwdgrp.cgi"));
+        assert!(http.inner.requests().iter().any(|r| r.url == "https://192.0.2.12/axis-cgi/pwdgrp.cgi"));
     }
 
     #[tokio::test]
@@ -967,7 +967,7 @@ mod tests {
         let urls: Vec<String> = http.inner.requests().into_iter().map(|r| r.url).collect();
         assert_eq!(
             urls,
-            ["http://169.254.10.20/axis-cgi/basicdeviceinfo.cgi", "http://169.254.10.20/axis-cgi/pwdgrp.cgi"]
+            ["http://169.254.10.20/axis-cgi/basicdeviceinfo.cgi", "https://169.254.10.20/axis-cgi/pwdgrp.cgi"]
         );
         assert_eq!(*http.plans_at.lock().unwrap(), vec![1, 1]);
         let plans = elev.plans();

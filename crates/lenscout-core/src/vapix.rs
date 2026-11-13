@@ -331,10 +331,29 @@ pub async fn activate(
         form_encode(login),
         form_encode(pwd)
     );
+    // https d'abord (certificat auto-signé accepté, comme partout en v1) ;
+    // http clair seulement si https ne se connecte pas (port fermé, échec
+    // TLS : `Unreachable`, rien n'est parti). Jamais après une réponse HTTP ni
+    // un silence après l'envoi : le mot de passe a pu arriver.
+    if let Some(secure) = https_base(base) {
+        match http.send(post(&secure, "/axis-cgi/pwdgrp.cgi", FORM, body.clone()), None).await {
+            Err(NetError::Unreachable(_)) => debug("pwdgrp.cgi : https injoignable, repli http"),
+            done => return require_text_ok(&done?),
+        }
+    }
     let resp = http
         .send(post(base, "/axis-cgi/pwdgrp.cgi", FORM, body), None)
         .await?;
     require_text_ok(&resp)
+}
+
+/// `http://hôte[:port]` → `https://hôte` (port 443 : le port https d'une
+/// caméra n'est pas annoncé). `None` si `base` n'est pas en http.
+fn https_base(base: &str) -> Option<String> {
+    let rest = base.strip_prefix("http://")?;
+    let authority = rest.split('/').next()?;
+    let host = authority.split(':').next().filter(|h| !h.is_empty())?;
+    Some(format!("https://{host}"))
 }
 
 /// Une coupure après l'envoi (la caméra quitte son adresse) n'est pas une
@@ -636,12 +655,78 @@ mod tests {
             .unwrap();
         let req = &http.requests()[0];
         assert!(!req.url.contains("S3cr3t"));
-        assert_eq!(req.url, "http://192.0.2.11/axis-cgi/pwdgrp.cgi");
+        assert_eq!(req.url, "https://192.0.2.11/axis-cgi/pwdgrp.cgi");
         let body = body_of(req);
         assert!(body.contains("pwd=S3cr3t"));
         assert!(body.contains("action=add&user=root&"));
         assert!(body.contains("grp=root&sgrp=admin:operator:viewer:ptz"));
         assert_eq!(req.login, None);
+    }
+
+    /// Caméra scriptée par URL complète (schéma compris), qui les enregistre.
+    struct ByUrl {
+        reply: fn(&str) -> Result<HttpResponse, NetError>,
+        urls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ByUrl {
+        fn new(reply: fn(&str) -> Result<HttpResponse, NetError>) -> Self {
+            ByUrl { reply, urls: Default::default() }
+        }
+        fn urls(&self) -> Vec<String> {
+            self.urls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl CameraHttp for ByUrl {
+        async fn send(&self, r: HttpRequest, _c: Option<&Credentials>) -> Result<HttpResponse, NetError> {
+            self.urls.lock().unwrap().push(r.url.clone());
+            (self.reply)(&r.url)
+        }
+        async fn stream(&self, _r: HttpRequest, _c: Option<&Credentials>) -> Result<(HttpResponse, ByteStream), NetError> {
+            unimplemented!()
+        }
+    }
+
+    fn created() -> Result<HttpResponse, NetError> {
+        Ok(HttpResponse { status: 200, headers: vec![], body: b"Created account root.".to_vec() })
+    }
+
+    /// Le mot de passe part d'abord en https (certificat accepté) ; http clair
+    /// seulement si https ne se connecte pas (port fermé, échec TLS).
+    #[tokio::test]
+    async fn activate_tries_https_first_then_http_only_without_a_connection() {
+        let https_ok = ByUrl::new(|_| created());
+        activate(&https_ok, "http://192.0.2.11:8080", &creds("root", "x")).await.unwrap();
+        assert_eq!(https_ok.urls(), ["https://192.0.2.11/axis-cgi/pwdgrp.cgi"]);
+
+        let no_tls = ByUrl::new(|u| {
+            if u.starts_with("https://") { Err(NetError::Unreachable("connexion impossible".into())) } else { created() }
+        });
+        activate(&no_tls, "http://192.0.2.11:8080", &creds("root", "x")).await.unwrap();
+        assert_eq!(
+            no_tls.urls(),
+            ["https://192.0.2.11/axis-cgi/pwdgrp.cgi", "http://192.0.2.11:8080/axis-cgi/pwdgrp.cgi"]
+        );
+    }
+
+    /// Une réponse HTTP en https (refus, erreur) ou un silence après l'envoi :
+    /// jamais de seconde tentative en clair.
+    #[tokio::test]
+    async fn activate_never_falls_back_to_http_after_an_https_reply() {
+        for reply in [
+            (|_: &str| Ok(HttpResponse { status: 200, headers: vec![], body: b"Error: invalid password.".to_vec() }))
+                as fn(&str) -> _,
+            |_| Ok(HttpResponse { status: 500, headers: vec![], body: vec![] }),
+            |_| Err(NetError::Auth),
+            |_| Err(NetError::Timeout),
+            |_| Err(NetError::Io("coupure".into())),
+        ] {
+            let http = ByUrl::new(reply);
+            assert!(activate(&http, BASE, &creds("root", "x")).await.is_err());
+            assert_eq!(http.urls(), ["https://192.0.2.11/axis-cgi/pwdgrp.cgi"]);
+        }
     }
 
     #[tokio::test]
