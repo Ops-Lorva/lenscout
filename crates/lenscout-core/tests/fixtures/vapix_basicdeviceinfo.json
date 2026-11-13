@@ -1,0 +1,19 @@
+{
+    "apiVersion": "1.2",
+    "context": "lenscout",
+    "data": {
+        "propertyList": {
+            "Brand": "AXIS",
+            "BuildDate": "Aug 04 2025 11:15",
+            "HardwareID": "A1B.1",
+            "ProdFullName": "AXIS M3106-L Mk II Network Camera",
+            "ProdNbr": "M3106-L Mk II",
+            "ProdShortName": "AXIS M3106-L Mk II",
+            "ProdType": "Network Camera",
+            "ProdVariant": "",
+            "SerialNumber": "ACCC8E123456",
+            "Version": "11.11.73",
+            "WebURL": "http://www.axis.com"
+        }
+    }
+}
