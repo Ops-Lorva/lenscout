@@ -1,0 +1,17 @@
+{
+  "play": "Play",
+  "stop": "Stop",
+  "none": "No camera to frame",
+  "image": "Camera stream",
+  "error": {
+    "camera_off_subnet": "Camera outside the computer's subnet",
+    "unsupported_brand": "Unsupported brand",
+    "unreachable": "Camera unreachable",
+    "auth_failed": "Authentication refused",
+    "stream_failed": "Stream interrupted",
+    "not_found": "Account not found",
+    "secret_missing": "Password missing from the keychain: enter it again",
+    "internal": "Internal error",
+    "unknown": "Unexpected error"
+  }
+}

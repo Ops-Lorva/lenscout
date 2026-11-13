@@ -24,3 +24,6 @@ minisign-verify = "0.2"
 
 [dev-dependencies]
 lenscout-core = { path = "../crates/lenscout-core", features = ["testing"] }
+async-trait = "0.1.92"
+bytes = "1.12.1"
+futures-util = "0.3.34"

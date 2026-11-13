@@ -115,7 +115,7 @@ pub async fn verify_identity(ctx: &ActionContext, cam: &Camera) -> Result<(), Ac
 /// choisie, sinon un webview compromis ferait partir un mot de passe vers un hôte
 /// quelconque. La tâche 13 (IP temporaire, caméra en 169.254.x.x) élargira cette
 /// règle au seul cas qu'elle gère.
-fn on_subnet(iface: &ScanInterface, ip: Ipv4Addr) -> bool {
+pub fn on_subnet(iface: &ScanInterface, ip: Ipv4Addr) -> bool {
     let mask = u32::from(iface.mask);
     u32::from(ip) & mask == u32::from(iface.ip) & mask
 }

@@ -1,0 +1,17 @@
+{
+  "play": "Reproducir",
+  "stop": "Detener",
+  "none": "Ninguna cámara que encuadrar",
+  "image": "Flujo de la cámara",
+  "error": {
+    "camera_off_subnet": "Cámara fuera de la subred del equipo",
+    "unsupported_brand": "Marca no compatible",
+    "unreachable": "Cámara inaccesible",
+    "auth_failed": "Autenticación rechazada",
+    "stream_failed": "Flujo interrumpido",
+    "not_found": "Cuenta no encontrada",
+    "secret_missing": "Contraseña ausente del llavero: vuelva a introducirla",
+    "internal": "Error interno",
+    "unknown": "Error inesperado"
+  }
+}

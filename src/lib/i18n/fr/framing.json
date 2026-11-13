@@ -1,0 +1,17 @@
+{
+  "play": "Lecture",
+  "stop": "Arrêter",
+  "none": "Aucune caméra à cadrer",
+  "image": "Flux de la caméra",
+  "error": {
+    "camera_off_subnet": "Caméra hors du sous-réseau du poste",
+    "unsupported_brand": "Marque non prise en charge",
+    "unreachable": "Caméra injoignable",
+    "auth_failed": "Authentification refusée",
+    "stream_failed": "Flux interrompu",
+    "not_found": "Compte introuvable",
+    "secret_missing": "Mot de passe absent du trousseau : à ressaisir",
+    "internal": "Erreur interne",
+    "unknown": "Erreur inattendue"
+  }
+}

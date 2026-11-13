@@ -2227,6 +2227,9 @@ dependencies = [
 name = "lenscout"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
  "lenscout-core",
  "minisign-verify",
  "serde",
