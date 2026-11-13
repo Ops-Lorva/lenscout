@@ -4,7 +4,7 @@
 //! plus dans la liste `probes` de `run_scan`, avec son propre `Datagram` ;
 //! l'orchestration ne connaît aucun protocole.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -173,6 +173,8 @@ struct Scan {
     cameras: Vec<Camera>,
     /// IP dont l'enrichissement VAPIX est déjà parti.
     enriching: HashSet<Ipv4Addr>,
+    /// Lignes enrichies par VAPIX ; `true` si le modèle vient de VAPIX.
+    enriched: HashMap<usize, bool>,
     pending: usize,
     http: Arc<dyn CameraHttp>,
     events: mpsc::Sender<Event>,
@@ -227,6 +229,9 @@ impl Scan {
                 // Une observation avec MAC dit où est la caméra maintenant
                 // (DHCP, autre installateur) ; ce qu'on savait de l'ancienne
                 // adresse ne vaut plus.
+                if s.model.is_some() {
+                    self.enriched.entry(i).and_modify(|m| *m = false);
+                }
                 if s.mac.is_some() && self.cameras[i].ip != s.ip {
                     self.enriching.remove(&self.cameras[i].ip);
                     self.cameras[i].ip = s.ip;
@@ -241,8 +246,33 @@ impl Scan {
                 self.cameras.len() - 1
             }
         };
+        self.drop_vapix_if_shared(idx).await;
         self.enrich_if_axis(idx);
         self.emit(idx).await;
+    }
+
+    /// Si l'IP de `idx` vient de devenir partagée, ce que VAPIX a dit des
+    /// autres lignes de cette IP peut venir de n'importe quelle caméra : on
+    /// l'oublie (le modèle seulement s'il vient de VAPIX, pas de l'annonce).
+    async fn drop_vapix_if_shared(&mut self, idx: usize) {
+        let ip = self.cameras[idx].ip;
+        if !self.ip_is_shared(ip) {
+            return;
+        }
+        for i in 0..self.cameras.len() {
+            if i == idx || self.cameras[i].ip != ip {
+                continue;
+            }
+            let Some(model_from_vapix) = self.enriched.remove(&i) else { continue };
+            let cam = &mut self.cameras[i];
+            cam.serial = None;
+            cam.firmware = None;
+            cam.activation = Activation::Unknown;
+            if model_from_vapix {
+                cam.model = None;
+            }
+            self.emit(i).await;
+        }
     }
 
     /// Une seule fois par IP : identité et état d'activation par VAPIX. Jamais
@@ -278,9 +308,11 @@ impl Scan {
         }
         let before = self.cameras[idx].clone();
         let cam = &mut self.cameras[idx];
+        let mut model_from_vapix = false;
         if let Some(info) = info {
             // La marque et le modèle déjà connus (annonce de la caméra) restent.
             if cam.model.is_none() {
+                model_from_vapix = info.model.is_some();
                 cam.model = info.model;
             }
             if cam.brand.is_none() {
@@ -293,6 +325,7 @@ impl Scan {
             cam.activation = activation;
         }
         if self.cameras[idx] != before {
+            self.enriched.insert(idx, model_from_vapix);
             self.emit(idx).await;
         }
     }
@@ -325,7 +358,7 @@ impl Scan {
     /// Voisins ARP : une MAC de marque caméra inconnue jusque-là devient une
     /// ligne (source `Oui`) ; une caméra connue par son IP sans MAC reçoit la
     /// sienne.
-    async fn on_arp(&mut self, table: std::collections::HashMap<Ipv4Addr, String>) {
+    async fn on_arp(&mut self, table: HashMap<Ipv4Addr, String>) {
         let mut entries: Vec<_> = table.into_iter().collect();
         entries.sort();
         for (ip, mac) in entries {
@@ -390,6 +423,7 @@ pub async fn run_scan_with_capture(
     let mut scan = Scan {
         cameras: vec![],
         enriching: HashSet::new(),
+        enriched: HashMap::new(),
         pending: 0,
         http,
         events: etx.clone(),
@@ -849,6 +883,65 @@ mod tests {
         let events = scan(vec![(Arc::new(MdnsProbe), dg.clone() as Arc<dyn Datagram>)], axis_http(), arp(&[])).await;
         assert!(matches!(events.last(), Some(ScanEvent::Done)));
         assert!(dg.calls.load(std::sync::atomic::Ordering::Relaxed) < 100);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn camera_outside_the_interface_subnet_is_listed() {
+        for iface_ip in ["10.0.50.7", "192.0.2.7"] {
+            let mut c = cfg();
+            c.iface.ip = iface_ip.parse().unwrap();
+            let (w, _) = probe_pair(
+                Arc::new(WsdProbe),
+                vec![(wsd_at("192.168.0.90", "AC:CC:8E:12:34:56"), from("192.168.0.90", 3702))],
+            );
+            let (tx, mut rx) = mpsc::channel(256);
+            run_scan(vec![w], axis_http(), arp(&[]), c, tx, CancellationToken::new()).await;
+            let mut found = false;
+            while let Ok(ev) = rx.try_recv() {
+                found |= matches!(ev, ScanEvent::Upsert { camera } if camera.ip == "192.168.0.90".parse::<Ipv4Addr>().unwrap());
+            }
+            assert!(found, "interface {iface_ip}");
+        }
+    }
+
+    /// Rejoue des datagrammes, chacun après son délai.
+    struct Delayed(std::sync::Mutex<std::collections::VecDeque<(Duration, Vec<u8>, SocketAddr)>>);
+
+    #[async_trait]
+    impl Datagram for Delayed {
+        async fn send_to(&self, _buf: &[u8], _dest: SocketAddr) -> Result<(), NetError> {
+            Ok(())
+        }
+        async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
+            let next = self.0.lock().unwrap().pop_front();
+            let (delay, data, from) = next.ok_or(NetError::Timeout)?;
+            tokio::time::sleep(delay).await;
+            buf[..data.len()].copy_from_slice(&data);
+            Ok((data.len(), from))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn identity_from_vapix_is_dropped_when_the_ip_becomes_shared() {
+        let (m, _) = probe_pair(Arc::new(MdnsProbe), vec![(axis_response_packet(), from("192.0.2.21", 5353))]);
+        // une seconde MAC apparaît sur la même IP, bien après l'enrichissement
+        let late = Arc::new(Delayed(std::sync::Mutex::new(
+            vec![(Duration::from_secs(2), wsd_at("192.0.2.21", "AC:CC:8E:00:00:02"), from("192.0.2.21", 3702))].into(),
+        )));
+        let events = scan(vec![m, (Arc::new(WsdProbe), late as Arc<dyn Datagram>)], axis_http(), arp(&[])).await;
+        assert!(
+            cameras(&events).iter().any(|c| c.serial.is_some()),
+            "la ligne a bien été enrichie avant"
+        );
+        let rows = last_by_mac(&events);
+        assert_eq!(rows.len(), 2);
+        for cam in rows.values() {
+            assert_eq!(cam.serial, None);
+            assert_eq!(cam.firmware, None);
+            assert_eq!(cam.activation, Activation::Unknown);
+        }
+        // le modèle annoncé par la caméra elle-même (mDNS) reste
+        assert_eq!(rows["AC:CC:8E:12:34:56"].model.as_deref(), Some("AXIS M3106-L Mk II"));
     }
 
     #[test]

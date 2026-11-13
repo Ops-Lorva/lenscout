@@ -1,6 +1,5 @@
 //! Sockets UDP multicast réels. L'envoi et la réception ne se testent pas sans
-//! réseau : les tests du scanner passent par `FakeDatagram`. Seul le filtre de
-//! source (`source_allowed`) est une fonction pure testée ici.
+//! réseau : les tests du scanner passent par `FakeDatagram`.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
@@ -13,8 +12,6 @@ use crate::transport::{Datagram, NetError};
 
 pub struct UdpDatagram {
     socket: UdpSocket,
-    /// Interface choisie : les datagrammes d'ailleurs sont écartés.
-    iface: ScanInterface,
 }
 
 impl UdpDatagram {
@@ -22,24 +19,6 @@ impl UdpDatagram {
     pub fn local_port(&self) -> std::io::Result<u16> {
         Ok(self.socket.local_addr()?.port())
     }
-}
-
-/// Faut-il garder un datagramme venu de `src` ?
-///
-/// Le socket multicast est lié à `0.0.0.0` : sur macOS et Windows il reçoit
-/// les datagrammes de **toutes** les interfaces, et sous Linux ceux de tout
-/// groupe joint par le système. On ne garde donc que les sources du
-/// sous-réseau de l'interface choisie. **Exception** : `169.254.0.0/16`
-/// reste toujours visible — une caméra neuve sans DHCP s'y annonce, hors du
-/// sous-réseau du poste, et c'est le cas que la tâche 13 sait traiter.
-/// (`IP_PKTINFO`/`IP_RECVIF` diraient l'interface d'arrivée exacte, mais
-/// demandent un `recvmsg` propre à chaque OS ; le sous-réseau suffit ici.)
-pub fn source_allowed(src: Ipv4Addr, iface: &ScanInterface) -> bool {
-    if src.octets()[..2] == [169, 254] {
-        return true;
-    }
-    let mask = u32::from(iface.mask);
-    (u32::from(src) ^ u32::from(iface.ip)) & mask == 0
 }
 
 #[async_trait]
@@ -53,17 +32,10 @@ impl Datagram for UdpDatagram {
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
-        loop {
-            let (n, from) = self
-                .socket
-                .recv_from(buf)
-                .await
-                .map_err(|e| NetError::Io(e.to_string()))?;
-            match from {
-                SocketAddr::V4(v4) if !source_allowed(*v4.ip(), &self.iface) => continue,
-                _ => return Ok((n, from)),
-            }
-        }
+        self.socket
+            .recv_from(buf)
+            .await
+            .map_err(|e| NetError::Io(e.to_string()))
     }
 }
 
@@ -78,13 +50,16 @@ pub fn open_multicast(iface: &ScanInterface, group: SocketAddrV4) -> std::io::Re
     socket.set_reuse_port(true)?;
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, group.port()).into())?;
     // Linux : sans cela le socket reçoit aussi les groupes joints par les
-    // autres sockets du système, sur toutes les interfaces.
+    // autres sockets du système, sur toutes les interfaces. Sous macOS et
+    // Windows aucun filtre de source : perdre une caméra hors du sous-réseau
+    // du poste (ancienne Axis en 192.168.0.90) est pire que voir un appareil
+    // d'une autre carte.
     #[cfg(target_os = "linux")]
     socket.set_multicast_all_v4(false)?;
     socket.join_multicast_v4(group.ip(), &iface.ip)?;
     socket.set_multicast_if_v4(&iface.ip)?;
     socket.set_nonblocking(true)?;
-    finish(socket, iface)
+    finish(socket)
 }
 
 /// Socket à port éphémère, émettant par l'interface choisie, sans abonnement.
@@ -96,11 +71,11 @@ pub fn open_ephemeral(iface: &ScanInterface) -> std::io::Result<UdpDatagram> {
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0).into())?;
     socket.set_multicast_if_v4(&iface.ip)?;
     socket.set_nonblocking(true)?;
-    finish(socket, iface)
+    finish(socket)
 }
 
-fn finish(socket: Socket, iface: &ScanInterface) -> std::io::Result<UdpDatagram> {
-    Ok(UdpDatagram { socket: UdpSocket::from_std(socket.into())?, iface: iface.clone() })
+fn finish(socket: Socket) -> std::io::Result<UdpDatagram> {
+    Ok(UdpDatagram { socket: UdpSocket::from_std(socket.into())? })
 }
 
 #[cfg(test)]
@@ -115,14 +90,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_the_chosen_subnet_and_link_local_are_kept() {
-        let i = iface();
-        assert!(source_allowed("192.0.2.77".parse().unwrap(), &i));
-        assert!(!source_allowed("198.51.100.5".parse().unwrap(), &i));
-        assert!(!source_allowed("192.0.3.1".parse().unwrap(), &i));
-        // caméra sans DHCP, hors du sous-réseau du poste
-        assert!(source_allowed("169.254.3.4".parse().unwrap(), &i));
+    /// Une caméra hors du sous-réseau du poste (ancienne Axis en 192.168.0.90,
+    /// poste en 10.0.50.x) doit rester visible : ici l'expéditeur 127.1.0.1 est
+    /// hors du /24 de l'interface (127.0.0.1/24).
+    #[tokio::test]
+    async fn datagram_from_outside_the_interface_subnet_is_received() {
+        let mut i = iface();
+        i.ip = Ipv4Addr::LOCALHOST;
+        i.mask = "255.255.255.0".parse().unwrap();
+        let dg = open_ephemeral(&i).unwrap();
+        let port = dg.local_port().unwrap();
+        let sender = UdpSocket::bind((Ipv4Addr::new(127, 1, 0, 1), 0)).await.unwrap();
+        sender.send_to(b"hello", (Ipv4Addr::LOCALHOST, port)).await.unwrap();
+        let mut buf = [0u8; 16];
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), dg.recv_from(&mut buf)).await;
+        let (n, from) = got.expect("datagramme écarté").unwrap();
+        assert_eq!(&buf[..n], b"hello");
+        assert_eq!(from.ip(), Ipv4Addr::new(127, 1, 0, 1));
     }
 
     #[tokio::test]
