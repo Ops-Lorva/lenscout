@@ -7,7 +7,7 @@ pub mod actions;
 pub mod batch;
 pub mod discovery;
 pub mod http_client;
-// Copié tel quel de LanProbe : on n'y touche pas, donc le lint est toléré ici.
+// Code repris tel quel d'un autre projet : le lint est toléré ici.
 #[allow(clippy::collapsible_if)]
 pub mod interfaces;
 pub mod mjpeg;

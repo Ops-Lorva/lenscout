@@ -3,7 +3,7 @@
   import { LANGS, setLang, type Lang } from '$lib/i18n';
   import { page, type Page } from '$lib/stores/nav';
 
-  // Icônes Lucide 16×16, trait `currentColor`, comme celles de LanProbe.
+  // Icônes Lucide 16×16, trait `currentColor`.
   const items: { id: Page; key: string; paths: string[] }[] = [
     { id: 'network',  key: 'common.nav.network',  paths: ['M8 2a6 6 0 100 12A6 6 0 008 2z', 'M2 8h12', 'M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12'] },
     { id: 'framing',  key: 'common.nav.framing',  paths: ['M2 5.5A1.5 1.5 0 013.5 4h9A1.5 1.5 0 0114 5.5v5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 10.5v-5z', 'M8 6.5a1.5 1.5 0 100 3 1.5 1.5 0 000-3z'] },

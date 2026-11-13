@@ -1,4 +1,4 @@
-// Repris de LanProbe crates/lanprobe-core/src/interfaces.rs le 2026-11-13
+// Repris de LanProbe crates/lanprobe-core/src/interfaces.rs le 2026-11-13, nettoyé
 use serde::{Deserialize, Serialize};
 use super::proc::sync_cmd;
 
@@ -62,12 +62,9 @@ pub fn list_interfaces() -> Vec<String> {
 /// Interfaces dont le **lien** est actif (niveau 2), pour le choix d'interface
 /// de l'application de bureau.
 ///
-/// Demande de Benjamin (12/11) : ne proposer que les interfaces « up », sans
-/// exiger d'adresse IP — juste le lien. Une carte Wi-Fi éteinte ou un port
-/// Ethernet débranché n'a rien à faire dans la liste.
-///
-/// ⚠️ La sonde sans écran (`lanprobe-server`) garde `list_interfaces()` : une
-/// interface configurée qui tombe doit y rester désignable, pas disparaître.
+/// Ne propose que les interfaces « up », sans exiger d'adresse IP — juste le
+/// lien. Une carte Wi-Fi éteinte ou un port Ethernet débranché n'a rien à
+/// faire dans la liste.
 ///
 /// ⚠️ Si l'état des liens ne peut pas être lu (commande absente), on rend la
 /// liste complète plutôt qu'une liste vide : « aucune interface » serait une
@@ -210,31 +207,41 @@ fn list_interfaces_up_windows() -> Vec<String> {
     }
 }
 
+/// Script PowerShell des détails d'une interface. Le nom n'y est JAMAIS
+/// inséré : PowerShell tient `‘ ’ ‚ ‛` pour des guillemets simples, donc
+/// doubler `'` ne suffit pas à échapper un nom. Il voyage par la variable
+/// d'environnement `LENSCOUT_IFACE`, que le script lit comme une donnée.
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_DETAILS_SCRIPT: &str = r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
+$n = $env:LENSCOUT_IFACE;
+$a = Get-NetIPAddress -InterfaceAlias $n -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1;
+$g = (Get-NetRoute -InterfaceAlias $n -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop;
+$dns = (Get-DnsClientServerAddress -InterfaceAlias $n -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses -join ',';
+$dhcp = (Get-NetIPInterface -InterfaceAlias $n -AddressFamily IPv4 -ErrorAction SilentlyContinue).Dhcp;
+Write-Output "$($a.IPAddress)|$($a.PrefixLength)|$g|$dns|$dhcp""#;
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_details_command(name: &str) -> std::process::Command {
+    let mut cmd = sync_cmd("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", WINDOWS_DETAILS_SCRIPT])
+        .env("LENSCOUT_IFACE", name);
+    cmd
+}
+
 #[cfg(target_os = "windows")]
 fn get_details_windows(name: &str) -> InterfaceDetails {
     // On utilise PowerShell avec des APIs .NET locale-indépendantes plutôt que
     // `netsh` dont la sortie est localisée (FR: "Adresse IP :", EN: "IP Address:").
     // Format de sortie : "IP|PrefixLen|Gateway|DNS1,DNS2|DHCP"
     // Les valeurs absentes sont vides (ex: "||" si pas de gateway).
-    let ps = format!(
-        r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
-$a = Get-NetIPAddress -InterfaceAlias '{name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1;
-$g = (Get-NetRoute -InterfaceAlias '{name}' -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop;
-$dns = (Get-DnsClientServerAddress -InterfaceAlias '{name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses -join ',';
-$dhcp = (Get-NetIPInterface -InterfaceAlias '{name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue).Dhcp;
-Write-Output "$($a.IPAddress)|$($a.PrefixLength)|$g|$dns|$dhcp""#,
-        name = name.replace('\'', "''")
-    );
-    // ⚠️ En dur, comme avant — voir la remarque dans `get_details_macos`.
+    // En dur : voir la remarque dans `get_details_macos`.
     let mut d = InterfaceDetails {
         name: name.to_string(),
         is_up: true,
         admin_up: true,
         ..Default::default()
     };
-    let out = sync_cmd("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
-        .output();
+    let out = windows_details_command(name).output();
     if let Ok(o) = out {
         let text = String::from_utf8_lossy(&o.stdout).into_owned();
         // Cherche la première ligne non-vide qui ressemble à notre format
@@ -354,15 +361,11 @@ fn get_details_macos(name: &str) -> InterfaceDetails {
     let text = sync_cmd("networksetup").args(["-getinfo", name]).output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
-    // ⚠️ `is_up` et `admin_up` restent EN DUR ici, exactement comme avant :
-    // `networksetup -getinfo` n'expose pas l'état du lien, et changer le
-    // comportement de macOS sans arbitrage n'est pas au programme — la sonde
-    // de production y tourne. Seul Linux lit désormais l'état réel ; le
-    // rattrapage macOS et Windows est à traiter pour lui-même.
+    // ⚠️ `is_up` et `admin_up` restent EN DUR ici : `networksetup -getinfo`
+    // n'expose pas l'état du lien. Seul Linux lit l'état réel.
     //
-    // ⚠️ `..Default::default()` et non plus une énumération exhaustive : le
-    // littéral complet faisait échouer la compilation macOS au premier champ
-    // ajouté à la structure — sur une plateforme qui ne se compile pas ici.
+    // `..Default::default()` plutôt qu'une énumération exhaustive : le littéral
+    // complet casse la compilation au premier champ ajouté à la structure.
     let mut d = InterfaceDetails {
         name: name.to_string(),
         is_up: true,
@@ -405,17 +408,16 @@ fn get_details_macos(name: &str) -> InterfaceDetails {
 
 /// État d'un lien : `(administratif, opérationnel)`.
 ///
-/// 🔴 `is_up` valait `true` EN DUR : une interface débranchée se présentait
-/// comme active. Sans écran, on la choisit, et la sonde reste muette — ou
-/// écrit `alive: false` pour toutes ses cibles.
+/// 🔴 `is_up` ne doit pas valoir `true` en dur : une interface débranchée se
+/// présenterait comme active.
 ///
 /// ⚠️ Le drapeau `UP` ne répond PAS à la question : il est administratif et
-/// reste vrai sans porteuse. Sur cette machine, `docker0` est
+/// reste vrai sans porteuse. Par exemple, `docker0` est
 /// `<NO-CARRIER,...,UP>` avec `state DOWN`. On rend donc les deux séparément
 /// plutôt que d'en fondre une en l'autre.
 ///
 /// ⚠️ Lecture par MOT-CLÉ, jamais par position : le noyau intercale `qdisc`,
-/// `master`, `qlen` selon les cas, et suffixe les veth (`veth912ca4b@if2`).
+/// `master`, `qlen` selon les cas, et suffixe les veth (`veth0@if2`).
 /// Les drapeaux sont comparés un à un — « LOWER_UP » porte « UP » en
 /// sous-chaîne, et un `contains` rendrait actif un lien qui ne l'est pas.
 ///
@@ -427,7 +429,7 @@ fn get_details_macos(name: &str) -> InterfaceDetails {
 fn link_states(ip_link_output: &str) -> (bool, bool) {
     let Some(line) = ip_link_output.lines().find(|l| l.contains('<')) else {
         // Interface inexistante : `ip` n'écrit rien. « Active » serait ici
-        // exactement le défaut d'origine.
+        // un défaut : seule une porteuse présente rend un lien actif.
         return (false, false);
     };
     let admin = line
@@ -446,13 +448,11 @@ fn link_states(ip_link_output: &str) -> (bool, bool) {
 ///
 /// 🔴 `ip route show default` décrit la route par défaut de la MACHINE, pas
 /// celle de l'interface interrogée. La recopier sur toutes attribuait
-/// `10.0.30.1` aux cinq `veth*` d'un hôte Docker — une valeur plausible sur
+/// `192.0.2.1` à tous les `veth*` d'un hôte Docker — une valeur plausible sur
 /// quelque chose qui ne la porte pas.
 ///
-/// ⚠️ C'est l'endroit où ça compte le plus : cette liste est le seul repère de
-/// qui choisit son interface sans écran. Une passerelle en face d'un `veth`
-/// invite à le choisir, et une sonde posée sur le mauvais lien mesure faux
-/// sans jamais le dire.
+/// ⚠️ Une passerelle en face d'un `veth` invite à le choisir comme interface
+/// de mesure, et la mesure sur le mauvais lien serait fausse sans le dire.
 ///
 /// On lit par MOT-CLÉ (`via`, `dev`) et jamais par position : le noyau ajoute
 /// `proto`, `metric`, `onlink`… selon les cas, et une lecture positionnelle
@@ -539,11 +539,10 @@ fn get_details_linux(name: &str) -> InterfaceDetails {
     d
 }
 
-/// Adresse locale de l'interface au format CIDR (« 10.6.8.42/24 »).
+/// Adresse locale de l'interface au format CIDR (« 203.0.113.42/24 »).
 ///
-/// C'est la forme que la sonde remonte au hub : l'adresse seule ne dit pas
-/// quel réseau elle occupe, et deux sites en 192.168.1.x ne se distinguent
-/// que par leur préfixe.
+/// L'adresse seule ne dit pas quel réseau elle occupe, et deux sites en
+/// 192.0.2.x ne se distinguent que par leur préfixe.
 pub fn local_cidr(details: &InterfaceDetails) -> Option<String> {
     let ip = details.ip.as_deref()?.trim();
     if ip.is_empty() {
@@ -590,22 +589,37 @@ fn cidr_to_mask(prefix: u32) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn windows_script_never_embeds_the_interface_name() {
+        // PowerShell tient ‘ ’ ‚ ‛ pour des guillemets simples : un nom piégé
+        // ne doit jamais atteindre le texte du script, seulement l'environnement.
+        let hostile = "’; calc; ’";
+        let cmd = windows_details_command(hostile);
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().all(|a| !a.contains("calc")), "nom dans les arguments : {args:?}");
+        assert!(WINDOWS_DETAILS_SCRIPT.contains("$env:LENSCOUT_IFACE"));
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert_eq!(
+            envs,
+            vec![(std::ffi::OsStr::new("LENSCOUT_IFACE"), Some(std::ffi::OsStr::new(hostile)))]
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn a_link_up_without_a_carrier_is_not_operational() {
-        // 🔴 `is_up` valait `true` EN DUR : une interface débranchée se
-        // présentait comme active. Sans écran, on la choisit, et la sonde
-        // reste muette — ou écrit `alive: false` pour toutes ses cibles.
+        // 🔴 `is_up` ne doit pas valoir `true` en dur : une interface
+        // débranchée se présenterait comme active.
         //
         // ⚠️ Le drapeau `UP` ne suffit pas : il est ADMINISTRATIF. `docker0`
         // ci-dessous est `UP` et n'a aucune porteuse. Les deux notions sont
         // distinctes, elles restent distinctes.
         //
-        // Lignes RÉELLES de cette machine, capturées.
-        let ens18 = "2: ens18: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000";
+        // Lignes `ip link` typiques d'un hôte Linux.
+        let eth0 = "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000";
         let docker0 = "6: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT group default ";
 
-        assert_eq!(link_states(ens18), (true, true), "lien réellement actif");
+        assert_eq!(link_states(eth0), (true, true), "lien réellement actif");
         assert_eq!(link_states(docker0), (true, false), "UP administratif, sans porteuse");
     }
 
@@ -621,9 +635,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_peer_suffixed_veth_is_read_like_any_other() {
-        // `veth912ca4b@if2` — le noyau suffixe le nom du pair. La lecture par
+        // `veth0@if2` — le noyau suffixe le nom du pair. La lecture par
         // mot-clé s'en moque ; une lecture positionnelle sur le nom, non.
-        let veth = "15: veth912ca4b@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master br-08f04c3fdb2e state UP mode DEFAULT group default ";
+        let veth = "15: veth0@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master br0 state UP mode DEFAULT group default ";
         assert_eq!(link_states(veth), (true, true));
     }
 
@@ -642,8 +656,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn no_answer_from_the_kernel_is_not_an_active_link() {
-        // Interface inexistante : `ip` n'écrit rien. Rendre « active » ici
-        // serait exactement le défaut d'origine.
+        // Interface inexistante : `ip` n'écrit rien. La rendre « active »
+        // serait un défaut.
         assert_eq!(link_states(""), (false, false));
     }
 
@@ -651,21 +665,14 @@ mod tests {
     #[test]
     fn the_default_gateway_belongs_only_to_the_interface_that_carries_it() {
         // 🔴 `ip route show default` décrit LA route par défaut de la machine,
-        // pas celle de l'interface qu'on interroge. Elle était recopiée sur
-        // toutes : les cinq `veth*` de cette machine s'affichaient
-        // « adresse — / passerelle 10.0.30.1 ».
+        // pas celle de l'interface qu'on interroge : elle ne doit pas être
+        // recopiée sur tous les `veth*`.
         //
-        // ⚠️ Une valeur plausible attribuée à quelque chose qui ne la porte
-        // pas. Et à l'endroit où ça compte le plus : cette liste est le SEUL
-        // repère de qui choisit son interface sans écran. Une passerelle en
-        // face d'un `veth` invite à le choisir, et une sonde posée sur le
-        // mauvais lien mesure faux sans jamais le dire.
-        //
-        // Sortie réelle de cette machine — noter l'absence de `proto`/`metric`
-        // et la présence d'`onlink` : on lit par mot-clé, jamais par position.
-        let reel = "default via 10.0.30.1 dev ens18 onlink \n";
-        assert_eq!(gateway_for_device(reel, "ens18").as_deref(), Some("10.0.30.1"));
-        assert_eq!(gateway_for_device(reel, "veth912ca4b"), None);
+        // Noter l'absence de `proto`/`metric` et la présence d'`onlink` : on
+        // lit par mot-clé, jamais par position.
+        let reel = "default via 192.0.2.1 dev eth0 onlink \n";
+        assert_eq!(gateway_for_device(reel, "eth0").as_deref(), Some("192.0.2.1"));
+        assert_eq!(gateway_for_device(reel, "veth0"), None);
         assert_eq!(gateway_for_device(reel, "docker0"), None);
     }
 
@@ -675,9 +682,9 @@ mod tests {
         // Deux sorties : chacune rend la sienne, aucune ne rend celle de
         // l'autre. Prendre la première ligne venue attribuait la passerelle du
         // lien principal au lien de secours.
-        let deux = "default via 10.0.30.1 dev ens18 proto static metric 100\n                    default via 192.168.8.1 dev wwan0 proto dhcp metric 700\n";
-        assert_eq!(gateway_for_device(deux, "ens18").as_deref(), Some("10.0.30.1"));
-        assert_eq!(gateway_for_device(deux, "wwan0").as_deref(), Some("192.168.8.1"));
+        let deux = "default via 192.0.2.1 dev eth0 proto static metric 100\n                    default via 198.51.100.1 dev wlan0 proto dhcp metric 700\n";
+        assert_eq!(gateway_for_device(deux, "eth0").as_deref(), Some("192.0.2.1"));
+        assert_eq!(gateway_for_device(deux, "wlan0").as_deref(), Some("198.51.100.1"));
         assert_eq!(gateway_for_device(deux, "eth9"), None);
     }
 
@@ -686,31 +693,31 @@ mod tests {
     fn no_default_route_means_no_gateway_not_a_placeholder() {
         // ⚠️ Rien, et surtout pas une valeur « neutre » : une absence doit se
         // lire comme une absence, pas comme une donnée.
-        assert_eq!(gateway_for_device("", "ens18"), None);
+        assert_eq!(gateway_for_device("", "eth0"), None);
         assert_eq!(gateway_for_device("default dev tun0 scope link\n", "tun0"), None);
-        assert_eq!(gateway_for_device("10.0.0.0/8 via 10.0.30.1 dev ens18\n", "ens18"), None);
+        assert_eq!(gateway_for_device("203.0.113.0/24 via 192.0.2.1 dev eth0\n", "eth0"), None);
     }
 
     #[test]
     fn only_linux_links_with_a_carrier_are_offered() {
-        // Lignes réelles de HOU-DEV : ens18 branché, docker0 UP sans porteuse,
-        // un veth suffixé, wg0 en UNKNOWN (pas de détection de porteuse).
+        // eth0 branché, docker0 UP sans porteuse, un veth suffixé, wg0 en
+        // UNKNOWN (pas de détection de porteuse).
         let ip = "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
     link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
-2: ens18: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
     link/ether bc:24:11:00:00:01 brd ff:ff:ff:ff:ff:ff
-3: ens19: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+3: eth1: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
 6: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT group default
-8: veth912ca4b@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default
+8: veth0@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default
 9: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
 ";
-        assert_eq!(linux_links_up(ip), vec!["ens18", "veth912ca4b", "wg0"]);
+        assert_eq!(linux_links_up(ip), vec!["eth0", "veth0", "wg0"]);
     }
 
     #[test]
     fn a_mac_offers_only_services_whose_link_is_active() {
         // Pas d'IP exigée : en7 a un lien actif sans adresse, il reste.
-        let services: Vec<String> = ["Wi-Fi", "Ethernet", "USB 10/100/1000 LAN", "Thunderbolt Bridge", "Mon VPN"]
+        let services: Vec<String> = ["Wi-Fi", "Ethernet", "USB 10/100/1000 LAN", "Thunderbolt Bridge", "VPN"]
             .iter().map(|s| s.to_string()).collect();
         let ports = "\nHardware Port: Ethernet\nDevice: en0\nEthernet Address: aa\n\nHardware Port: Wi-Fi\nDevice: en1\nEthernet Address: bb\n\nHardware Port: USB 10/100/1000 LAN\nDevice: en7\nEthernet Address: cc\n\nHardware Port: Thunderbolt Bridge\nDevice: bridge0\nEthernet Address: dd\n";
         let ifconfig = "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
@@ -720,7 +727,7 @@ en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
 \tmedia: autoselect (none)
 \tstatus: inactive
 en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
-\tinet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255
+\tinet 192.0.2.20 netmask 0xffffff00 broadcast 192.0.2.255
 \tstatus: active
 en7: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
 \tmedia: autoselect (1000baseT <full-duplex>)
@@ -763,11 +770,11 @@ utun3: flags=8051<UP,POINTOPOINT,MULTICAST> mtu 1380
     #[test]
     fn local_cidr_combines_the_address_and_its_mask() {
         let d = InterfaceDetails {
-            ip: Some("10.6.8.42".into()),
+            ip: Some("203.0.113.42".into()),
             subnet: Some("255.255.255.0".into()),
             ..Default::default()
         };
-        assert_eq!(local_cidr(&d).as_deref(), Some("10.6.8.42/24"));
+        assert_eq!(local_cidr(&d).as_deref(), Some("203.0.113.42/24"));
     }
 
     #[test]
@@ -775,11 +782,11 @@ utun3: flags=8051<UP,POINTOPOINT,MULTICAST> mtu 1380
         // Mieux vaut une adresse sans préfixe qu'un /32 inventé : le
         // masque manquant est une information, pas un défaut à combler.
         let d = InterfaceDetails {
-            ip: Some("10.6.8.42".into()),
+            ip: Some("203.0.113.42".into()),
             subnet: Some("pas un masque".into()),
             ..Default::default()
         };
-        assert_eq!(local_cidr(&d).as_deref(), Some("10.6.8.42"));
+        assert_eq!(local_cidr(&d).as_deref(), Some("203.0.113.42"));
     }
 
     #[test]

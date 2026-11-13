@@ -7,15 +7,22 @@ pub fn cmd_app_version() -> String {
 
 /// Seulement les liens actifs : voir `list_interfaces_up`.
 #[tauri::command]
-pub async fn cmd_list_interfaces() -> Vec<String> {
+pub async fn cmd_list_interfaces() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(list_interfaces_up)
         .await
-        .unwrap_or_default()
+        .map_err(|e| e.to_string())
 }
 
+/// Un nom qui ne figure pas dans `list_interfaces_up()` est refusé : il
+/// atteint des commandes système, il ne vient donc jamais tel quel du front.
 #[tauri::command]
-pub async fn cmd_interface_details(name: String) -> InterfaceDetails {
-    tauri::async_runtime::spawn_blocking(move || get_interface_details(&name))
-        .await
-        .unwrap_or_default()
+pub async fn cmd_interface_details(name: String) -> Result<InterfaceDetails, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !list_interfaces_up().contains(&name) {
+            return Err("interface inconnue".to_string());
+        }
+        Ok(get_interface_details(&name))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

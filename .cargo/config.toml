@@ -1,13 +1,3 @@
-# ⚠️ Machine de développement à 3,8 Go de RAM.
-#
-# Le 31/08/2026, des compilations Rust menées en parallèle (un agent par
-# worktree, chacun lançant cargo) ont saturé la mémoire : swap plein, charge
-# moyenne à 22, et l'OOM killer a tué DEUX FOIS le pont Discord — le service
-# par lequel passe toute la communication. Des tâches ont été perdues en cours
-# de route.
-#
-# `rustc` prend plusieurs centaines de mégaoctets par unité de compilation.
-# Deux jobs, c'est le compromis : la machine a 4 cœurs, mais pas la mémoire
-# pour les nourrir.
+# jobs = 2 : limite la mémoire des compilations.
 [build]
 jobs = 2
