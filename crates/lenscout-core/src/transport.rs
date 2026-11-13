@@ -71,6 +71,8 @@ pub enum NetError {
     Unreachable(String),
     #[error("authentification refusée")]
     Auth,
+    #[error("authentification Basic refusée en HTTP")]
+    InsecureBasic,
     #[error("statut HTTP {0}")]
     Status(u16),
     #[error("erreur réseau : {0}")]

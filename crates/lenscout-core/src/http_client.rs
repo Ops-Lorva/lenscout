@@ -12,6 +12,43 @@ use crate::transport::{
     ByteStream, CameraHttp, Credentials, HttpRequest, HttpResponse, Method, NetError,
 };
 
+/// Plafond du corps lu par `send()` : un appareil hostile ne doit pas pouvoir
+/// remplir la mémoire.
+const MAX_BODY: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, PartialEq)]
+enum AuthChoice<'a> {
+    Digest(&'a str),
+    Basic,
+    RefuseBasic,
+    None,
+}
+
+/// Jeton de schéma d'un défi, comparé exactement et sans tenir compte de la
+/// casse (`DigestX` n'est pas `Digest`).
+fn has_scheme(challenge: &str, scheme: &str) -> bool {
+    challenge
+        .split_whitespace()
+        .next()
+        .is_some_and(|t| t.eq_ignore_ascii_case(scheme))
+}
+
+/// Digest l'emporte ; Basic n'est accepté qu'en HTTPS, sinon un faux appareil
+/// du LAN récupérerait en clair le mot de passe du compte.
+fn choose_auth<'a>(https: bool, challenges: &[&'a str]) -> AuthChoice<'a> {
+    if let Some(d) = challenges.iter().find(|c| has_scheme(c, "digest")) {
+        return AuthChoice::Digest(d);
+    }
+    if challenges.iter().any(|c| has_scheme(c, "basic")) {
+        return if https {
+            AuthChoice::Basic
+        } else {
+            AuthChoice::RefuseBasic
+        };
+    }
+    AuthChoice::None
+}
+
 pub struct ReqwestCameraHttp {
     client: Client,
 }
@@ -72,9 +109,7 @@ impl ReqwestCameraHttp {
         let Some(creds) = creds else {
             return Err(NetError::Auth);
         };
-        let Some(auth) = answer_challenge(&first, req, creds) else {
-            return Err(NetError::Auth);
-        };
+        let auth = answer_challenge(&first, req, creds)?;
         let second = self.build(req, Some(auth))?.send().await.map_err(map_err)?;
         if second.status().as_u16() == 401 {
             return Err(NetError::Auth);
@@ -83,54 +118,53 @@ impl ReqwestCameraHttp {
     }
 }
 
-/// Calcule l'en-tête `Authorization` ; Digest l'emporte sur Basic si la
-/// caméra propose les deux.
+/// Calcule l'en-tête `Authorization` selon `choose_auth`.
 fn answer_challenge(
     resp: &reqwest::Response,
     req: &HttpRequest,
     creds: &Credentials,
-) -> Option<HeaderValue> {
+) -> Result<HeaderValue, NetError> {
     let challenges: Vec<&str> = resp
         .headers()
         .get_all(WWW_AUTHENTICATE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .collect();
-    if let Some(digest) = challenges
-        .iter()
-        .find(|c| c.trim_start().to_ascii_lowercase().starts_with("digest"))
-    {
-        let url = Url::parse(&req.url).ok()?;
-        let uri = match url.query() {
-            Some(q) => format!("{}?{q}", url.path()),
-            None => url.path().to_string(),
-        };
-        let mut prompt = WwwAuthenticateHeader::parse(digest).ok()?;
-        let method = match req.method {
-            Method::Get => HttpMethod::GET,
-            Method::Post => HttpMethod::POST,
-            Method::Put => HttpMethod::PUT,
-        };
-        let ctx = AuthContext::new_with_method(
-            creds.login.as_str(),
-            creds.password.expose(),
-            uri,
-            req.body.as_deref(),
-            method,
-        );
-        let header = prompt.respond(&ctx).ok()?;
-        return HeaderValue::from_str(&header.to_header_string()).ok();
-    }
-    if challenges
-        .iter()
-        .any(|c| c.trim_start().to_ascii_lowercase().starts_with("basic"))
-    {
-        use base64::Engine;
-        let raw = format!("{}:{}", creds.login, creds.password.expose());
-        let enc = base64::engine::general_purpose::STANDARD.encode(raw);
-        return HeaderValue::from_str(&format!("Basic {enc}")).ok();
-    }
-    None
+    let url = Url::parse(&req.url).map_err(|_| NetError::Io("URL invalide".into()))?;
+    let header = match choose_auth(url.scheme() == "https", &challenges) {
+        AuthChoice::Digest(digest) => {
+            let uri = match url.query() {
+                Some(q) => format!("{}?{q}", url.path()),
+                None => url.path().to_string(),
+            };
+            let mut prompt = WwwAuthenticateHeader::parse(digest).map_err(|_| NetError::Auth)?;
+            let method = match req.method {
+                Method::Get => HttpMethod::GET,
+                Method::Post => HttpMethod::POST,
+                Method::Put => HttpMethod::PUT,
+            };
+            let ctx = AuthContext::new_with_method(
+                creds.login.as_str(),
+                creds.password.expose(),
+                uri,
+                req.body.as_deref(),
+                method,
+            );
+            let answer = prompt.respond(&ctx).map_err(|_| NetError::Auth)?;
+            answer.to_header_string()
+        }
+        AuthChoice::Basic => {
+            use base64::Engine;
+            let raw = format!("{}:{}", creds.login, creds.password.expose());
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(raw)
+            )
+        }
+        AuthChoice::RefuseBasic => return Err(NetError::InsecureBasic),
+        AuthChoice::None => return Err(NetError::Auth),
+    };
+    HeaderValue::from_str(&header).map_err(|_| NetError::Auth)
 }
 
 /// Le message n'est jamais celui de reqwest tel quel : il embarque l'URL.
@@ -163,9 +197,15 @@ impl CameraHttp for ReqwestCameraHttp {
         req: HttpRequest,
         creds: Option<&Credentials>,
     ) -> Result<HttpResponse, NetError> {
-        let resp = self.execute(&req, creds).await?;
+        let mut resp = self.execute(&req, creds).await?;
         let mut out = head(&resp);
-        out.body = resp.bytes().await.map_err(map_err)?.to_vec();
+        // Lecture par morceaux : on s'arrête dès que le plafond est franchi.
+        while let Some(chunk) = resp.chunk().await.map_err(map_err)? {
+            if out.body.len() + chunk.len() > MAX_BODY {
+                return Err(NetError::Io("réponse trop volumineuse".into()));
+            }
+            out.body.extend_from_slice(&chunk);
+        }
         Ok(out)
     }
 
@@ -359,27 +399,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn basic_challenge_is_answered_once() {
-        // "root:S3cr3t-Unique!" en base64
-        let expected = "Basic cm9vdDpTM2NyM3QtVW5pcXVlIQ==";
-        let server = TestServer::start(move |_, raw| {
-            if header_value(raw, "authorization").as_deref() == Some(expected) {
-                response("200 OK", "", "OK")
-            } else {
-                response(
-                    "401 Unauthorized",
-                    "WWW-Authenticate: Basic realm=\"cam\"\r\n",
-                    "",
-                )
-            }
+    async fn basic_challenge_over_http_is_refused_without_replay() {
+        let server = TestServer::start(|_, _| {
+            response(
+                "401 Unauthorized",
+                "WWW-Authenticate: Basic realm=\"cam\"\r\n",
+                "",
+            )
         })
         .await;
-        let r = client()
+        let err = client()
             .send(get(server.url("/")), Some(&creds("root", PASSWORD)))
             .await
-            .unwrap();
-        assert_eq!(r.status, 200);
-        assert_eq!(server.request_count(), 2);
+            .unwrap_err();
+        assert!(matches!(err, NetError::InsecureBasic), "{err:?}");
+        assert_eq!(server.request_count(), 1);
+        assert!(
+            !server.requests.lock().unwrap()[0]
+                .to_lowercase()
+                .contains("authorization")
+        );
+    }
+
+    #[tokio::test]
+    async fn challenge_without_credentials_is_auth_error() {
+        let server = TestServer::start(digest_server(PASSWORD)).await;
+        let err = client().send(get(server.url("/")), None).await.unwrap_err();
+        assert!(matches!(err, NetError::Auth), "{err:?}");
+        assert_eq!(server.request_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn oversized_body_is_rejected() {
+        let server =
+            TestServer::start(|_, _| response("200 OK", "", &"x".repeat(MAX_BODY + 1))).await;
+        let err = client().send(get(server.url("/")), None).await.unwrap_err();
+        assert!(matches!(err, NetError::Io(_)), "{err:?}");
+    }
+
+    #[test]
+    fn auth_choice_rules() {
+        let basic = ["Basic realm=\"c\""];
+        let digest = ["basic realm=\"c\"", "DIGEST realm=\"c\", nonce=\"n\""];
+        assert_eq!(choose_auth(true, &basic), AuthChoice::Basic);
+        assert_eq!(choose_auth(false, &basic), AuthChoice::RefuseBasic);
+        assert_eq!(
+            choose_auth(false, &digest),
+            AuthChoice::Digest("DIGEST realm=\"c\", nonce=\"n\"")
+        );
+        assert_eq!(
+            choose_auth(true, &digest),
+            AuthChoice::Digest("DIGEST realm=\"c\", nonce=\"n\"")
+        );
+        assert_eq!(
+            choose_auth(true, &["DigestX realm=\"c\""]),
+            AuthChoice::None
+        );
+        assert_eq!(choose_auth(true, &[]), AuthChoice::None);
     }
 
     #[tokio::test]
