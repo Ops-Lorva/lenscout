@@ -1,4 +1,5 @@
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -8,11 +9,17 @@ use lenscout_core::discovery::arp::ScanInterface;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use lenscout_core::model::Camera;
+use lenscout_core::temp_ip::SystemElevator;
 use lenscout_core::vapix::{NetworkSettings, TimeSettings};
 use serde::Deserialize;
 use tauri::State;
 
 use super::accounts::credentials_for;
+use super::discovery::ScanState;
+
+/// `<app_data_dir>/temp-ip.json` : l'IP temporaire en cours, à retirer au
+/// démarrage si l'app a été tuée.
+pub struct TempIpJournal(pub PathBuf);
 
 /// Délai d'une requête d'écriture vers une caméra.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -71,8 +78,8 @@ pub(crate) fn to_action(dto: ActionDto) -> Result<Action, String> {
 
 /// Applique une action aux seules caméras reçues, dans l'ordre. Le front passe
 /// la sélection visible ; le cœur revérifie la marque et l'identité de chaque
-/// caméra avant d'écrire. L'interface sert au contexte d'action (IP
-/// temporaire, tâche 13).
+/// caméra avant d'écrire. Hors du sous-réseau de l'interface, une IP
+/// temporaire est posée sur le poste pour une caméra vue au dernier scan.
 #[tauri::command]
 pub async fn cmd_apply_action(
     cameras: Vec<Camera>,
@@ -80,9 +87,12 @@ pub async fn cmd_apply_action(
     action: ActionDto,
     iface: String,
     accounts: State<'_, Mutex<AccountBook>>,
+    scan: State<'_, ScanState>,
+    journal: State<'_, TempIpJournal>,
 ) -> Result<Vec<ActionResult>, String> {
     let action = to_action(action)?;
     let creds = credentials_for(&accounts, &account_id)?;
+    let service = iface.clone();
     let scan_iface = tauri::async_runtime::spawn_blocking(move || {
         if !list_interfaces_up().contains(&iface) {
             return Err("iface_unknown".to_string());
@@ -95,6 +105,10 @@ pub async fn cmd_apply_action(
     let ctx = ActionContext {
         http: Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT)),
         iface: scan_iface,
+        service,
+        elevator: Arc::new(SystemElevator),
+        journal: journal.0.clone(),
+        in_use: scan.seen(),
     };
     Ok(apply_all(&ctx, &cameras, &creds, &action).await)
 }

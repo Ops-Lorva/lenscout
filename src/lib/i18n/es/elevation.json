@@ -1,0 +1,5 @@
+{
+  "refused": "Permisos de administrador denegados: {ip} fuera de la subred del equipo",
+  "failed": "No se pudo añadir una IP temporal al equipo",
+  "left": "IP temporal {ip} sin retirar del equipo"
+}

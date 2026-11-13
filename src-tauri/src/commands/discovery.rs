@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,6 +25,22 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(4);
 #[derive(Default)]
 pub struct ScanState {
     pub cancel: Mutex<Option<CancellationToken>>,
+    /// Adresses des caméras vues par le dernier scan, tenues par Rust : seule
+    /// une adresse de cette liste peut justifier une IP temporaire (le front
+    /// fournit la caméra, il ne doit pas pouvoir inventer une cible).
+    pub last_seen: Mutex<HashSet<Ipv4Addr>>,
+}
+
+impl ScanState {
+    pub fn seen(&self) -> Vec<Ipv4Addr> {
+        self.last_seen.lock().unwrap().iter().copied().collect()
+    }
+
+    fn record(&self, ev: &ScanEvent) {
+        if let ScanEvent::Upsert { camera } = ev {
+            self.last_seen.lock().unwrap().insert(camera.ip);
+        }
+    }
 }
 
 type ProbeSocket = (Arc<dyn Probe>, Arc<dyn Datagram>);
@@ -77,11 +94,13 @@ pub async fn cmd_scan_start(
         return Err("no_socket".to_string());
     }
 
+    state.last_seen.lock().unwrap().clear();
     let (tx, mut rx) = mpsc::channel(256);
     let cfg = ScanConfig { iface: scan_iface, listen: LISTEN };
     let http = Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT));
     let scan = tokio::spawn(run_scan(probes, http, Arc::new(SystemArp), cfg, tx, token.clone()));
     while let Some(ev) = rx.recv().await {
+        state.record(&ev);
         // Webview disparue : plus personne n'écoute, on arrête le scan.
         if on_event.send(ev).is_err() {
             token.cancel();
@@ -122,6 +141,29 @@ pub fn cmd_open_camera_web(app: AppHandle, ip: String, port: u16) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lenscout_core::model::{Activation, Camera, Family};
+
+    #[test]
+    fn seules_les_cameras_du_scan_sont_retenues() {
+        let state = ScanState::default();
+        let cam = Camera {
+            ip: "169.254.10.20".parse().unwrap(),
+            mac: None,
+            family: Family::Axis,
+            brand: None,
+            model: None,
+            serial: None,
+            firmware: None,
+            activation: Activation::New,
+            http_port: 80,
+            sources: vec![],
+        };
+        state.record(&ScanEvent::Done);
+        assert!(state.seen().is_empty());
+        state.record(&ScanEvent::Upsert { camera: cam.clone() });
+        state.record(&ScanEvent::Upsert { camera: cam });
+        assert_eq!(state.seen(), vec!["169.254.10.20".parse::<Ipv4Addr>().unwrap()]);
+    }
 
     #[test]
     fn url_reconstruite_depuis_une_ipv4() {

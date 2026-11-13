@@ -33,9 +33,21 @@ test('IP : une seule Axis', () => {
 
 test('un message par code d’erreur, le texte brut seulement pour un refus', () => {
   expect(resultMessage({ key: 'k', ok: true, error: null })).toBeNull();
-  expect(resultMessage({ key: 'k', ok: false, error: { code: 'identity_mismatch' } })).toEqual({ key: 'error.identity_mismatch' });
-  expect(resultMessage({ key: 'k', ok: false, error: { code: 'unreachable', ip: '10.0.50.11' } })).toEqual({ key: 'error.unreachable' });
-  expect(resultMessage({ key: 'k', ok: false, error: { code: 'rejected', detail: 'Error: x' } })).toEqual({ key: 'error.rejected', detail: 'Error: x' });
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'identity_mismatch' } })).toEqual({ key: 'configure.error.identity_mismatch', values: {} });
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'unreachable', ip: '10.0.50.11' } })).toEqual({ key: 'configure.error.unreachable', values: {} });
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'rejected', detail: 'Error: x' } })).toEqual({ key: 'configure.error.rejected', values: { detail: 'Error: x' } });
+});
+
+test('erreurs d’IP temporaire : espace elevation, adresse en paramètre', () => {
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'elevation_refused', ip: '169.254.10.20' } })).toEqual({
+    key: 'elevation.refused',
+    values: { ip: '169.254.10.20' },
+  });
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'temp_ip_failed' } })).toEqual({ key: 'elevation.failed', values: {} });
+  expect(resultMessage({ key: 'k', ok: false, error: { code: 'temp_ip_left', ip: '169.254.7.7' } })).toEqual({
+    key: 'elevation.left',
+    values: { ip: '169.254.7.7' },
+  });
 });
 
 test('champs libres : virgules, espaces et lignes', () => {
@@ -72,7 +84,7 @@ test('hors du sous-réseau du poste : masque appliqué aux deux adresses', () =>
 
 test('les nouveaux codes ont un message', () => {
   for (const code of ['identity_unreadable', 'camera_off_subnet', 'already_activated', 'network_needs_one_camera'] as const) {
-    expect(resultMessage({ key: 'k', ok: false, error: { code } })).toEqual({ key: `error.${code}` });
+    expect(resultMessage({ key: 'k', ok: false, error: { code } })).toEqual({ key: `configure.error.${code}`, values: {} });
   }
 });
 

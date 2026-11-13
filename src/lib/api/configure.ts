@@ -14,7 +14,9 @@ export type ActionError =
   | { code: 'unreachable'; ip: string }
   | { code: 'auth_failed' }
   | { code: 'rejected'; detail: string }
-  | { code: 'elevation_refused'; ip: string };
+  | { code: 'elevation_refused'; ip: string }
+  | { code: 'temp_ip_failed' }
+  | { code: 'temp_ip_left'; ip: string };
 
 /** Miroir de `ActionResult` ; `key` = MAC de la caméra, sinon son IP (comme `cameraKey`). */
 export interface ActionResult {
@@ -79,13 +81,23 @@ export const resultFor = (m: Map<string, ActionResult>, c: Camera): ActionResult
   m.get(cameraKey(c));
 
 /**
- * Message d'une ligne : clé i18n (sous `configure.`) et, pour un refus de la
- * caméra, son texte brut en paramètre.
+ * Message d'une ligne : clé i18n complète et ses valeurs (texte brut d'un
+ * refus de la caméra, adresse d'une erreur d'IP temporaire).
  */
-export function resultMessage(r: ActionResult): { key: string; detail?: string } | null {
+export function resultMessage(r: ActionResult): { key: string; values: Record<string, string> } | null {
   if (r.ok || !r.error) return null;
-  if (r.error.code === 'rejected') return { key: 'error.rejected', detail: r.error.detail };
-  return { key: `error.${r.error.code}` };
+  switch (r.error.code) {
+    case 'rejected':
+      return { key: 'configure.error.rejected', values: { detail: r.error.detail } };
+    case 'elevation_refused':
+      return { key: 'elevation.refused', values: { ip: r.error.ip } };
+    case 'temp_ip_failed':
+      return { key: 'elevation.failed', values: {} };
+    case 'temp_ip_left':
+      return { key: 'elevation.left', values: { ip: r.error.ip } };
+    default:
+      return { key: `configure.error.${r.error.code}`, values: {} };
+  }
 }
 
 /** Fuseaux IANA proposés par le moteur du webview ; `UTC` seul s'il ne sait pas les lister. */

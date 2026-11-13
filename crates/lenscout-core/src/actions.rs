@@ -6,12 +6,16 @@
 //! seul endroit où la marque et l'identité sont contrôlées.
 
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
 
 use crate::discovery::arp::ScanInterface;
 use crate::model::{Camera, Family, normalize_mac};
+use crate::temp_ip::{
+    Elevator, TempIpError, needs_temp_ip, pick_temp_ip, reachable_with_temp_ip, read_journal, with_temp_ip,
+};
 use crate::transport::{CameraHttp, Credentials, NetError};
 use crate::vapix::{self, NetworkSettings, TimeSettings, VapixError};
 
@@ -48,9 +52,16 @@ pub enum ActionError {
     AuthFailed,
     #[error("refusé : {detail}")]
     Rejected { detail: String },
-    /// Utilisé par la tâche 13 (IP temporaire du poste).
+    /// Invite d'élévation refusée : `ip` est celle de la caméra hors sous-réseau.
     #[error("droits refusés : {ip}")]
     ElevationRefused { ip: Ipv4Addr },
+    /// L'IP temporaire n'a pas pu être posée (rien de libre, commande en échec).
+    #[error("IP temporaire impossible")]
+    TempIpFailed,
+    /// L'IP temporaire `ip` n'a pas pu être retirée du poste ; le journal
+    /// reste, le démarrage suivant réessaiera.
+    #[error("IP temporaire restée : {ip}")]
+    TempIpLeft { ip: Ipv4Addr },
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -61,10 +72,18 @@ pub struct ActionResult {
     pub error: Option<ActionError>,
 }
 
-/// La tâche 13 y ajoute l'élévation, la 14 le socket SADP.
+/// La tâche 14 y ajoutera le socket SADP.
 pub struct ActionContext {
     pub http: Arc<dyn CameraHttp>,
     pub iface: ScanInterface,
+    /// Le nom choisi dans l'app : service networksetup sur macOS (où
+    /// `iface.name` est l'ifname BSD « en0 »), le même nom ailleurs.
+    pub service: String,
+    pub elevator: Arc<dyn Elevator>,
+    /// `<app_data_dir>/temp-ip.json`.
+    pub journal: PathBuf,
+    /// Adresses vues par le dernier scan, tenues par Rust (pas par le front).
+    pub in_use: Vec<Ipv4Addr>,
 }
 
 /// Erreur d'un appel VAPIX → code affiché. `ip` n'est que celle de la caméra visée.
@@ -113,11 +132,17 @@ pub async fn verify_identity(ctx: &ActionContext, cam: &Camera) -> Result<(), Ac
 
 /// L'adresse vient du front : elle doit être dans le sous-réseau de l'interface
 /// choisie, sinon un webview compromis ferait partir un mot de passe vers un hôte
-/// quelconque. La tâche 13 (IP temporaire, caméra en 169.254.x.x) élargira cette
-/// règle au seul cas qu'elle gère.
+/// quelconque. Seule exception, `off_subnet_allowed`.
 pub fn on_subnet(iface: &ScanInterface, ip: Ipv4Addr) -> bool {
-    let mask = u32::from(iface.mask);
-    u32::from(ip) & mask == u32::from(iface.ip) & mask
+    !needs_temp_ip(iface.ip, iface.mask, ip)
+}
+
+/// Hors sous-réseau, une IP temporaire n'est posée que si les DEUX tiennent :
+/// Rust a vu cette adresse au dernier scan (le front ne peut pas l'inventer),
+/// et c'est une adresse de réseau local (169.254/16 ou RFC 1918). Sinon
+/// `camera_off_subnet`, avant toute requête et toute invite.
+fn off_subnet_allowed(ctx: &ActionContext, ip: Ipv4Addr) -> bool {
+    ctx.in_use.contains(&ip) && reachable_with_temp_ip(ip)
 }
 
 fn result(cam: &Camera, outcome: Result<(), ActionError>) -> ActionResult {
@@ -128,8 +153,8 @@ fn result(cam: &Camera, outcome: Result<(), ActionError>) -> ActionResult {
     }
 }
 
-/// Seule porte d'écriture : marque, identité, puis l'écriture. Une marque sans
-/// action (`Other`, Hikvision tant que la tâche 14 n'est pas faite) ne génère
+/// Seule porte d'écriture : marque, sous-réseau (IP temporaire au besoin),
+/// identité, puis l'écriture. Une marque sans action (`Other`, Hikvision tant que la tâche 14 n'est pas faite) ne génère
 /// aucune requête.
 pub async fn apply(
     ctx: &ActionContext,
@@ -150,9 +175,36 @@ async fn apply_checked(
         Family::Axis => {}
         Family::Hikvision | Family::Other => return Err(ActionError::Unsupported),
     }
-    if !on_subnet(&ctx.iface, cam.ip) {
+    if on_subnet(&ctx.iface, cam.ip) {
+        return verify_and_write(ctx, cam, creds, action).await;
+    }
+    if !off_subnet_allowed(ctx, cam.ip) {
         return Err(ActionError::CameraOffSubnet);
     }
+    let temp = pick_temp_ip(&ctx.iface.name, cam.ip, &ctx.in_use, rand::random())
+        .map_err(|_| ActionError::TempIpFailed)?;
+    // L'IP temporaire couvre la vérification d'identité ET l'écriture.
+    let done = with_temp_ip(ctx.elevator.as_ref(), &ctx.journal, &temp, &ctx.service, || {
+        verify_and_write(ctx, cam, creds, action)
+    })
+    .await;
+    match done {
+        Ok(outcome) => outcome,
+        Err(TempIpError::ElevationRefused) => Err(ActionError::ElevationRefused { ip: cam.ip }),
+        // Journal encore là : une adresse est restée sur le poste.
+        Err(_) => Err(match read_journal(&ctx.journal) {
+            Ok(Some(left)) => ActionError::TempIpLeft { ip: left.ip },
+            _ => ActionError::TempIpFailed,
+        }),
+    }
+}
+
+async fn verify_and_write(
+    ctx: &ActionContext,
+    cam: &Camera,
+    creds: &Credentials,
+    action: &Action,
+) -> Result<(), ActionError> {
     verify_identity(ctx, cam).await?;
     let http = ctx.http.as_ref();
     let base = cam.base_url();
@@ -195,7 +247,8 @@ mod tests {
     use super::*;
     use crate::model::{Activation, Source};
     use crate::secret::Secret;
-    use crate::testing::FakeHttp;
+    use crate::temp_ip::TempIpError;
+    use crate::testing::{FakeElevator, FakeHttp, PanicElevator};
     use crate::transport::{ByteStream, HttpRequest, HttpResponse, Method};
     use async_trait::async_trait;
 
@@ -222,7 +275,12 @@ mod tests {
         }
     }
 
+    /// Contexte sans élévation possible : un appel ferait échouer le test.
     fn ctx(http: Arc<dyn CameraHttp>) -> ActionContext {
+        ctx_with(http, Arc::new(PanicElevator), vec![])
+    }
+
+    fn ctx_with(http: Arc<dyn CameraHttp>, elevator: Arc<dyn Elevator>, in_use: Vec<Ipv4Addr>) -> ActionContext {
         ActionContext {
             http,
             iface: ScanInterface {
@@ -230,6 +288,12 @@ mod tests {
                 ip: "192.0.2.2".parse().unwrap(),
                 mask: "255.255.255.0".parse().unwrap(),
             },
+            service: "eth0".into(),
+            elevator,
+            journal: std::env::temp_dir()
+                .join(format!("lenscout-test-{}", uuid::Uuid::new_v4()))
+                .join("temp-ip.json"),
+            in_use,
         }
     }
 
@@ -533,6 +597,125 @@ mod tests {
         assert_eq!(r.error, Some(ActionError::Rejected { detail: "Error: invalid password.".into() }));
     }
 
+    fn ll_cam() -> Camera {
+        cam("169.254.10.20", Family::Axis)
+    }
+
+    #[tokio::test]
+    async fn out_of_subnet_refused_elevation_reports_ip() {
+        let http = Arc::new(axis_ok());
+        let elev = Arc::new(FakeElevator::replying(vec![Err(TempIpError::ElevationRefused)]));
+        let c = ctx_with(http.clone(), elev.clone(), vec![ll_cam().ip]);
+        let r = apply(&c, &ll_cam(), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::ElevationRefused { ip: "169.254.10.20".parse().unwrap() }));
+        assert!(http.requests().is_empty(), "aucune requête HTTP");
+        assert_eq!(elev.plans().len(), 1, "l'ajout seul, refusé");
+        assert!(!c.journal.exists());
+    }
+
+    #[tokio::test]
+    async fn off_subnet_ip_not_seen_by_the_scan_gets_no_elevation_nor_request() {
+        // Le webview fournit la caméra : une adresse que Rust n'a pas vue au
+        // dernier scan ne justifie ni invite ni requête, même en 169.254.
+        let http = Arc::new(axis_ok());
+        let seen_other = vec!["169.254.1.1".parse().unwrap(), "192.0.2.11".parse().unwrap()];
+        for ip in ["169.254.10.20", "192.168.0.90", "10.0.0.1"] {
+            let c = ctx_with(http.clone(), Arc::new(PanicElevator), seen_other.clone());
+            let r = apply(&c, &cam(ip, Family::Axis), &creds(), &Action::Activate).await;
+            assert_eq!(r.error, Some(ActionError::CameraOffSubnet), "{ip}");
+        }
+        assert!(http.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn off_subnet_public_ip_is_refused_even_when_seen() {
+        let http = Arc::new(axis_ok());
+        for ip in ["198.51.100.5", "8.8.8.8", "172.32.0.1"] {
+            let c = ctx_with(http.clone(), Arc::new(PanicElevator), vec![ip.parse().unwrap()]);
+            let r = apply(&c, &cam(ip, Family::Axis), &creds(), &Action::Activate).await;
+            assert_eq!(r.error, Some(ActionError::CameraOffSubnet), "{ip}");
+        }
+        assert!(http.requests().is_empty());
+    }
+
+    /// Note, à chaque requête, combien de plans l'élévateur a déjà reçus.
+    struct Watch {
+        inner: FakeHttp,
+        elev: Arc<FakeElevator>,
+        plans_at: std::sync::Mutex<Vec<usize>>,
+    }
+
+    #[async_trait]
+    impl CameraHttp for Watch {
+        async fn send(&self, req: HttpRequest, c: Option<&Credentials>) -> Result<HttpResponse, NetError> {
+            self.plans_at.lock().unwrap().push(self.elev.plans().len());
+            self.inner.send(req, c).await
+        }
+        async fn stream(&self, req: HttpRequest, c: Option<&Credentials>) -> Result<(HttpResponse, ByteStream), NetError> {
+            self.inner.stream(req, c).await
+        }
+    }
+
+    #[tokio::test]
+    async fn seen_link_local_camera_is_reached_through_a_temp_ip() {
+        let elev = Arc::new(FakeElevator::new());
+        let http = Arc::new(Watch { inner: axis_ok(), elev: elev.clone(), plans_at: Default::default() });
+        let seen: Vec<Ipv4Addr> = vec![ll_cam().ip, "192.0.2.11".parse().unwrap()];
+        let c = ctx_with(http.clone(), elev.clone(), seen.clone());
+        let r = apply(&c, &ll_cam(), &creds(), &Action::Activate).await;
+        assert!(r.ok, "{r:?}");
+        // Lecture d'identité ET écriture, toutes deux entre l'ajout et le retrait.
+        let urls: Vec<String> = http.inner.requests().into_iter().map(|r| r.url).collect();
+        assert_eq!(
+            urls,
+            ["http://169.254.10.20/axis-cgi/basicdeviceinfo.cgi", "http://169.254.10.20/axis-cgi/pwdgrp.cgi"]
+        );
+        assert_eq!(*http.plans_at.lock().unwrap(), vec![1, 1]);
+        let plans = elev.plans();
+        assert_eq!(plans.len(), 2);
+        assert_ne!(plans[0], plans[1], "un ajout puis un retrait");
+        assert!(!c.journal.exists());
+    }
+
+    #[tokio::test]
+    async fn temp_ip_avoids_the_camera_and_every_seen_address() {
+        let elev = Arc::new(FakeElevator::new());
+        let http = Arc::new(axis_ok());
+        let c = ctx_with(http, elev.clone(), vec!["192.168.0.90".parse().unwrap(), "192.168.0.200".parse().unwrap()]);
+        assert!(apply(&c, &cam("192.168.0.90", Family::Axis), &creds(), &time()).await.ok);
+        let expected = crate::temp_ip::add_plan(
+            crate::temp_ip::OsKind::current(),
+            &crate::temp_ip::TempIp {
+                iface: "eth0".into(),
+                ip: "192.168.0.201".parse().unwrap(),
+                mask: "255.255.255.0".parse().unwrap(),
+            },
+            "eth0",
+        )
+        .unwrap();
+        assert_eq!(elev.plans()[0], expected);
+    }
+
+    #[tokio::test]
+    async fn temp_ip_left_on_the_computer_is_reported() {
+        let elev = Arc::new(FakeElevator::replying(vec![Ok(()), Err(TempIpError::Failed("netsh".into()))]));
+        let c = ctx_with(Arc::new(axis_ok()), elev, vec![ll_cam().ip]);
+        let r = apply(&c, &ll_cam(), &creds(), &Action::Activate).await;
+        let Some(ActionError::TempIpLeft { ip }) = r.error else { panic!("{r:?}") };
+        assert_eq!(ip.octets()[..2], [169, 254]);
+        assert!(c.journal.exists(), "gardé pour le retrait au démarrage");
+    }
+
+    #[tokio::test]
+    async fn temp_ip_that_cannot_be_added_is_reported_without_request() {
+        let elev = Arc::new(FakeElevator::replying(vec![Err(TempIpError::Failed("x".into()))]));
+        let http = Arc::new(axis_ok());
+        let c = ctx_with(http.clone(), elev, vec![ll_cam().ip]);
+        let r = apply(&c, &ll_cam(), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::TempIpFailed));
+        assert!(http.requests().is_empty());
+    }
+
     #[test]
     fn action_error_json_has_no_password() {
         let ip: Ipv4Addr = "192.0.2.11".parse().unwrap();
@@ -547,6 +730,8 @@ mod tests {
             ActionError::AuthFailed,
             ActionError::Rejected { detail: "Error: invalid password.".into() },
             ActionError::ElevationRefused { ip },
+            ActionError::TempIpFailed,
+            ActionError::TempIpLeft { ip },
         ];
         for e in all {
             let json = serde_json::to_string(&e).unwrap();

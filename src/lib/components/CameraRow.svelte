@@ -39,7 +39,7 @@
     {#if result?.ok}
       <span class="pill ok">{$_('configure.ok')}</span>
     {:else if message}
-      <span class="pill bad">{$_(`configure.${message.key}`, { values: { detail: message.detail ?? '' } })}</span>
+      <span class="pill bad">{$_(message.key, { values: message.values })}</span>
     {/if}
   </td>
   <td class="actions">

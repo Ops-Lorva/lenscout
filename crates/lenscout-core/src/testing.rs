@@ -211,3 +211,42 @@ mod tests {
         assert_eq!(d.sent(), vec![(b"probe".to_vec(), addr)]);
     }
 }
+
+/// Faux `Elevator` : enregistre les plans dans l'ordre et rend les réponses
+/// prévues (puis `Ok`). Rien n'est jamais exécuté sur le poste.
+#[derive(Default)]
+pub struct FakeElevator {
+    replies: Mutex<VecDeque<Result<(), crate::temp_ip::TempIpError>>>,
+    plans: Mutex<Vec<crate::temp_ip::ElevatedPlan>>,
+}
+
+impl FakeElevator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Réponses des appels successifs ; au-delà, `Ok`.
+    pub fn replying(replies: Vec<Result<(), crate::temp_ip::TempIpError>>) -> Self {
+        FakeElevator { replies: Mutex::new(replies.into()), plans: Mutex::default() }
+    }
+
+    pub fn plans(&self) -> Vec<crate::temp_ip::ElevatedPlan> {
+        self.plans.lock().unwrap().clone()
+    }
+}
+
+impl crate::temp_ip::Elevator for FakeElevator {
+    fn run(&self, plan: &crate::temp_ip::ElevatedPlan) -> Result<(), crate::temp_ip::TempIpError> {
+        self.plans.lock().unwrap().push(plan.clone());
+        self.replies.lock().unwrap().pop_front().unwrap_or(Ok(()))
+    }
+}
+
+/// `Elevator` des tests où aucune élévation ne doit avoir lieu.
+pub struct PanicElevator;
+
+impl crate::temp_ip::Elevator for PanicElevator {
+    fn run(&self, _: &crate::temp_ip::ElevatedPlan) -> Result<(), crate::temp_ip::TempIpError> {
+        panic!("élévation inattendue dans ce test");
+    }
+}
