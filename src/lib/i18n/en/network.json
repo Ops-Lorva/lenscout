@@ -1,0 +1,13 @@
+{
+  "rescan": "Rescan",
+  "stop": "Stop",
+  "search": "MAC, serial, IP, model",
+  "none": "No camera",
+  "col": { "camera": "Camera", "ip": "IP", "mac": "MAC", "serial": "Serial no.", "firmware": "Firmware", "state": "State" },
+  "state": { "new": "New", "activated": "Activated", "unknown": "—" },
+  "selectAll": "Select all",
+  "select": "Select",
+  "openWeb": "Open web page",
+  "frame": "Frame",
+  "error": { "interfaces": "Cannot read interfaces", "scan": "Scan failed" }
+}

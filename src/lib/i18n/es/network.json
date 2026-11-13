@@ -1,0 +1,13 @@
+{
+  "rescan": "Reescanear",
+  "stop": "Detener",
+  "search": "MAC, serie, IP, modelo",
+  "none": "Ninguna cámara",
+  "col": { "camera": "Cámara", "ip": "IP", "mac": "MAC", "serial": "N.º de serie", "firmware": "Firmware", "state": "Estado" },
+  "state": { "new": "Nueva", "activated": "Activada", "unknown": "—" },
+  "selectAll": "Seleccionar todo",
+  "select": "Seleccionar",
+  "openWeb": "Abrir la página web",
+  "frame": "Encuadrar",
+  "error": { "interfaces": "Interfaces ilegibles", "scan": "Escaneo imposible" }
+}
