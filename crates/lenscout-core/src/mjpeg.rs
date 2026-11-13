@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::model::{Camera, Family};
-use crate::transport::{CameraHttp, Credentials, HttpRequest, Method, NetError};
+use crate::transport::{ByteStream, CameraHttp, Credentials, HttpRequest, Method, NetError};
 
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
@@ -171,18 +171,21 @@ pub fn stream_url(cam: &Camera) -> Option<String> {
     }
 }
 
-/// `Ok(())` à l'annulation ; `Err` si le flux se ferme ou si l'auth échoue.
-pub async fn run_stream(
+/// Réponse qui ne donne pas de flux : statut autre que 200 (hors refus
+/// d'authentification), ou corps qui n'est pas du multipart.
+const NOT_MULTIPART: &str = "flux non multipart";
+
+/// Ouvre le flux. `Ok(None)` à l'annulation.
+async fn open(
     http: &dyn CameraHttp,
     url: String,
     creds: &Credentials,
-    cancel: CancellationToken,
-    mut on_frame: impl FnMut(Bytes) + Send,
-) -> Result<(), NetError> {
+    cancel: &CancellationToken,
+) -> Result<Option<(MjpegParser, ByteStream)>, NetError> {
     let req = HttpRequest { method: Method::Get, url, body: None, content_type: None };
-    let (resp, mut body) = tokio::select! {
+    let (resp, body) = tokio::select! {
         biased;
-        _ = cancel.cancelled() => return Ok(()),
+        _ = cancel.cancelled() => return Ok(None),
         r = http.stream(req, Some(creds)) => r?,
     };
     match resp.status {
@@ -196,8 +199,39 @@ pub async fn run_stream(
         .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
-    let mut parser = MjpegParser::from_content_type(ct)
-        .ok_or_else(|| NetError::Io("flux non multipart".into()))?;
+    let parser = MjpegParser::from_content_type(ct).ok_or_else(|| NetError::Io(NOT_MULTIPART.into()))?;
+    Ok(Some((parser, body)))
+}
+
+/// L'URL sans son paramètre `resolution` ; `None` s'il n'y en a pas.
+fn without_resolution(url: &str) -> Option<String> {
+    let (path, query) = url.split_once('?')?;
+    let kept: Vec<&str> = query.split('&').filter(|p| !p.starts_with("resolution=")).collect();
+    if kept.len() == query.split('&').count() {
+        return None;
+    }
+    Some(if kept.is_empty() { path.to_string() } else { format!("{path}?{}", kept.join("&")) })
+}
+
+/// `Ok(())` à l'annulation ; `Err` si le flux se ferme ou si l'auth échoue.
+///
+/// Une caméra qui ne sert pas `resolution=640x360` (refus, ou réponse sans
+/// multipart) est relancée une fois sans `resolution` : elle choisit alors
+/// sa résolution par défaut. Jamais après un refus d'authentification.
+pub async fn run_stream(
+    http: &dyn CameraHttp,
+    url: String,
+    creds: &Credentials,
+    cancel: CancellationToken,
+    mut on_frame: impl FnMut(Bytes) + Send,
+) -> Result<(), NetError> {
+    let retry = without_resolution(&url);
+    let opened = match (open(http, url, creds, &cancel).await, retry) {
+        (Err(NetError::Status(_)), Some(u)) => open(http, u, creds, &cancel).await,
+        (Err(NetError::Io(m)), Some(u)) if m == NOT_MULTIPART => open(http, u, creds, &cancel).await,
+        (r, _) => r,
+    };
+    let Some((mut parser, mut body)) = opened? else { return Ok(()) };
     loop {
         let item = tokio::select! {
             biased;
@@ -450,5 +484,47 @@ mod tests {
         let http = FakeHttp::new().on(crate::transport::Method::Get, "/c", 500, "");
         let r = run_stream(&http, "http://192.0.2.11/c".into(), &creds(), CancellationToken::new(), |_| {}).await;
         assert!(matches!(r, Err(NetError::Status(500))));
+    }
+
+    const WITH_RES: &str = "http://192.0.2.11/axis-cgi/mjpg/video.cgi?resolution=640x360&fps=10&compression=40";
+    const WITHOUT_RES: &str = "http://192.0.2.11/axis-cgi/mjpg/video.cgi?fps=10&compression=40";
+
+    fn urls(http: &FakeHttp) -> Vec<String> {
+        http.requests().into_iter().map(|r| r.url).collect()
+    }
+
+    /// Une caméra qui ne connaît pas `640x360` : refus, ou réponse qui n'est
+    /// pas un flux multipart. Une seule relance, sans `resolution`.
+    #[tokio::test]
+    async fn run_stream_retries_once_without_resolution() {
+        let data = multipart("myboundary", &frames3(), true);
+        for refusal in [
+            FakeHttp::new().on(crate::transport::Method::Get, "/axis-cgi/mjpg/video.cgi?resolution=", 400, "bad res"),
+            FakeHttp::new().on(crate::transport::Method::Get, "/axis-cgi/mjpg/video.cgi?resolution=", 200, "<html>"),
+        ] {
+            let http = refusal.on_stream("/axis-cgi/mjpg/video.cgi?fps=", CT, vec![data.clone()]);
+            let mut seen = 0;
+            let r = run_stream(&http, WITH_RES.into(), &creds(), CancellationToken::new(), |_| seen += 1).await;
+            assert!(r.is_err(), "le flux se ferme en fin de données");
+            assert_eq!(seen, 3);
+            assert_eq!(urls(&http), [WITH_RES, WITHOUT_RES]);
+        }
+    }
+
+    #[tokio::test]
+    async fn run_stream_does_not_retry_a_good_stream_an_auth_refusal_or_twice() {
+        let http = FakeHttp::new().on_stream("/axis-cgi/mjpg", CT, vec![multipart("myboundary", &frames3(), true)]);
+        let _ = run_stream(&http, WITH_RES.into(), &creds(), CancellationToken::new(), |_| {}).await;
+        assert_eq!(urls(&http), [WITH_RES]);
+
+        let http = FakeHttp::new().on(crate::transport::Method::Get, "/axis-cgi/mjpg", 401, "");
+        let r = run_stream(&http, WITH_RES.into(), &creds(), CancellationToken::new(), |_| {}).await;
+        assert!(matches!(r, Err(NetError::Auth)));
+        assert_eq!(urls(&http), [WITH_RES]);
+
+        let http = FakeHttp::new().on(crate::transport::Method::Get, "/axis-cgi/mjpg", 500, "");
+        let r = run_stream(&http, WITH_RES.into(), &creds(), CancellationToken::new(), |_| {}).await;
+        assert!(matches!(r, Err(NetError::Status(500))));
+        assert_eq!(urls(&http), [WITH_RES, WITHOUT_RES]);
     }
 }
