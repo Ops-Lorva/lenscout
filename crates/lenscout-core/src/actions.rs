@@ -127,20 +127,29 @@ fn from_vapix(e: VapixError, ip: Ipv4Addr) -> ActionError {
 /// n° de série est la MAC sans séparateurs). Sans rien à comparer, ou si
 /// l'appareil ne répond pas comme une Axis (autre appareil arrivé à cette
 /// adresse), on refuse : la caméra visée n'est pas confirmée.
-pub async fn verify_identity(ctx: &ActionContext, cam: &Camera) -> Result<(), ActionError> {
+///
+/// AXIS OS < 8.40 n'a pas `basicdeviceinfo.cgi` (404) : le n° de série se lit
+/// alors dans `param.cgi` (`creds` seulement si la lecture anonyme est fermée).
+pub async fn verify_identity(ctx: &ActionContext, cam: &Camera, creds: &Credentials) -> Result<(), ActionError> {
     if cam.family != Family::Axis {
         return Err(ActionError::Unsupported);
     }
-    let info = match vapix::device_info(ctx.http.as_ref(), &cam.base_url()).await {
-        Ok(info) => info,
-        Err(
-            VapixError::Parse(_)
-            | VapixError::Rejected(_)
-            | VapixError::Net(NetError::Status(_) | NetError::Auth),
-        ) => return Err(ActionError::IdentityUnreadable),
-        Err(e) => return Err(from_vapix(e, cam.ip)),
+    let unreadable = |e: VapixError| match e {
+        VapixError::Parse(_) | VapixError::Rejected(_) | VapixError::Net(NetError::Status(_) | NetError::Auth) => {
+            ActionError::IdentityUnreadable
+        }
+        e => from_vapix(e, cam.ip),
     };
-    let Some(found) = info.serial.as_deref().map(str::trim) else {
+    let http = ctx.http.as_ref();
+    let base = cam.base_url();
+    let serial = match vapix::device_info(http, &base).await {
+        Ok(info) => info.serial,
+        Err(VapixError::Net(NetError::Status(404))) => {
+            Some(vapix::serial_from_params(http, &base, creds).await.map_err(unreadable)?)
+        }
+        Err(e) => return Err(unreadable(e)),
+    };
+    let Some(found) = serial.as_deref().map(str::trim) else {
         return Err(ActionError::IdentityUnreadable);
     };
     let same = match (cam.serial.as_deref(), cam.mac.as_deref()) {
@@ -282,7 +291,7 @@ async fn verify_and_write(
     creds: &Credentials,
     action: &Action,
 ) -> Result<(), ActionError> {
-    verify_identity(ctx, cam).await?;
+    verify_identity(ctx, cam, creds).await?;
     let http = ctx.http.as_ref();
     let base = cam.base_url();
     let done = match action {
@@ -548,7 +557,119 @@ mod tests {
             let http = Arc::new(Scripted::new(reply));
             let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
             assert_eq!(r.error, Some(ActionError::IdentityUnreadable));
-            assert_eq!(http.urls.lock().unwrap().len(), 1, "seule la lecture d'identité est partie");
+            // Sur 404, la lecture de repli (param.cgi, AXIS OS < 8.40) part aussi.
+            let urls = http.urls.lock().unwrap().clone();
+            assert!(urls.iter().all(|u| u.contains("basicdeviceinfo.cgi") || u.contains("action=list")), "{urls:?}");
+        }
+    }
+
+    /// Caméra scriptée qui voit aussi si des identifiants accompagnent la requête.
+    struct WithLogin {
+        reply: fn(&HttpRequest, bool) -> Result<HttpResponse, NetError>,
+        seen: std::sync::Mutex<Vec<(String, bool)>>,
+    }
+
+    impl WithLogin {
+        fn new(reply: fn(&HttpRequest, bool) -> Result<HttpResponse, NetError>) -> Self {
+            WithLogin { reply, seen: Default::default() }
+        }
+        fn seen(&self) -> Vec<(String, bool)> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl CameraHttp for WithLogin {
+        async fn send(&self, req: HttpRequest, c: Option<&Credentials>) -> Result<HttpResponse, NetError> {
+            let path = req.url.trim_start_matches("http://192.0.2.11").to_string();
+            self.seen.lock().unwrap().push((path, c.is_some()));
+            (self.reply)(&req, c.is_some())
+        }
+        async fn stream(&self, _: HttpRequest, _: Option<&Credentials>) -> Result<(HttpResponse, ByteStream), NetError> {
+            Err(NetError::Cancelled)
+        }
+    }
+
+    fn reply(status: u16, body: &str) -> Result<HttpResponse, NetError> {
+        Ok(HttpResponse { status, headers: vec![], body: body.as_bytes().to_vec() })
+    }
+
+    const SERIAL_PARAM: &str = "/axis-cgi/param.cgi?action=list&group=Properties.System.SerialNumber";
+
+    /// AXIS OS < 8.40 : pas de basicdeviceinfo.cgi (404), le n° de série se lit
+    /// dans `param.cgi`, anonyme d'abord.
+    #[tokio::test]
+    async fn old_firmware_identity_is_read_from_param_cgi_anonymously() {
+        let http = Arc::new(WithLogin::new(|req, _| {
+            if req.url.ends_with("basicdeviceinfo.cgi") {
+                reply(404, "")
+            } else if req.url.contains("action=list") {
+                reply(200, "root.Properties.System.SerialNumber=ACCC8E123456\n")
+            } else {
+                reply(200, "OK")
+            }
+        }));
+        let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+        assert!(r.ok, "{:?}", r.error);
+        let seen = http.seen();
+        assert_eq!(seen[0], ("/axis-cgi/basicdeviceinfo.cgi".to_string(), false));
+        assert_eq!(seen[1], (SERIAL_PARAM.to_string(), false));
+    }
+
+    /// Lecture anonyme fermée (401) : la même requête repart avec le compte.
+    #[tokio::test]
+    async fn old_firmware_identity_retries_param_cgi_with_the_account_on_401() {
+        for anonymous in [
+            (|_: &HttpRequest| reply(401, "")) as fn(&HttpRequest) -> _,
+            |_| Err(NetError::Auth),
+        ] {
+            thread_local! { static ANON: std::cell::Cell<Option<fn(&HttpRequest) -> Result<HttpResponse, NetError>>> = const { std::cell::Cell::new(None) }; }
+            ANON.with(|a| a.set(Some(anonymous)));
+            let http = Arc::new(WithLogin::new(|req, with_login| {
+                if req.url.ends_with("basicdeviceinfo.cgi") {
+                    reply(404, "")
+                } else if req.url.contains("action=list") && !with_login {
+                    ANON.with(|a| a.get().unwrap())(req)
+                } else if req.url.contains("action=list") {
+                    reply(200, "root.Properties.System.SerialNumber=ACCC8E123456")
+                } else {
+                    reply(200, "OK")
+                }
+            }));
+            let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+            assert!(r.ok, "{:?}", r.error);
+            let seen = http.seen();
+            assert_eq!(seen[1], (SERIAL_PARAM.to_string(), false));
+            assert_eq!(seen[2], (SERIAL_PARAM.to_string(), true));
+        }
+    }
+
+    #[tokio::test]
+    async fn old_firmware_identity_still_blocks_a_mismatch_or_an_unreadable_serial() {
+        let other = Arc::new(WithLogin::new(|req, _| {
+            if req.url.ends_with("basicdeviceinfo.cgi") {
+                reply(404, "")
+            } else if req.url.contains("action=list") {
+                reply(200, "root.Properties.System.SerialNumber=ACCC8E999999")
+            } else {
+                reply(200, "OK")
+            }
+        }));
+        let r = apply(&ctx(other.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &time()).await;
+        assert_eq!(r.error, Some(ActionError::IdentityMismatch));
+        assert_eq!(other.seen().len(), 2, "rien n'est écrit");
+        for body in ["# Error: Error -1 getting param in group 'Properties.System.SerialNumber'", "", "<html>"] {
+            thread_local! { static BODY: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") }; }
+            BODY.with(|b| b.set(body));
+            let http = Arc::new(WithLogin::new(|req, _| {
+                if req.url.ends_with("basicdeviceinfo.cgi") {
+                    reply(404, "")
+                } else {
+                    reply(200, BODY.with(|b| b.get()))
+                }
+            }));
+            let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &time()).await;
+            assert_eq!(r.error, Some(ActionError::IdentityUnreadable), "{body}");
         }
     }
 

@@ -237,6 +237,35 @@ pub async fn device_info(http: &dyn CameraHttp, base: &str) -> Result<DeviceInfo
     parse_basic_device_info(&resp.body)
 }
 
+/// N° de série par `param.cgi` (repli d'AXIS OS < 8.40, sans
+/// `basicdeviceinfo.cgi`) : `root.Properties.System.SerialNumber=…`. Anonyme
+/// d'abord, puis avec le compte sur un 401. La query ne porte aucun secret.
+pub async fn serial_from_params(
+    http: &dyn CameraHttp,
+    base: &str,
+    creds: &Credentials,
+) -> Result<String, VapixError> {
+    let req = || HttpRequest {
+        method: Method::Get,
+        url: url(base, "/axis-cgi/param.cgi?action=list&group=Properties.System.SerialNumber"),
+        body: None,
+        content_type: None,
+    };
+    let resp = match http.send(req(), None).await {
+        Ok(r) if r.status != 401 => r,
+        Ok(_) | Err(NetError::Auth) => http.send(req(), Some(creds)).await?,
+        Err(e) => return Err(e.into()),
+    };
+    require_success(&resp)?;
+    let body = String::from_utf8_lossy(&resp.body);
+    body.lines()
+        .filter_map(|l| l.trim().split_once('='))
+        .find(|(k, _)| k.ends_with("Properties.System.SerialNumber"))
+        .map(|(_, v)| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| VapixError::Parse("SerialNumber absent".into()))
+}
+
 pub async fn activation_state(http: &dyn CameraHttp, base: &str) -> Activation {
     // 1. `systemready.cgi` : anonyme, documenté pour cet usage (AXIS OS 9.50+).
     // `timeout` borne l'attente d'une caméra encore en démarrage.
