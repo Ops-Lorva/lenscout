@@ -7,6 +7,7 @@ use lenscout_core::discovery::arp::{ScanInterface, SystemArp};
 use lenscout_core::discovery::scanner::{
     open_probe_socket, run_scan, MdnsProbe, Probe, ScanConfig, ScanEvent, WsdProbe,
 };
+use lenscout_core::discovery::sadp::SadpProbe;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use lenscout_core::transport::Datagram;
@@ -37,12 +38,17 @@ pub struct LastSeen {
     pub iface: Option<String>,
     /// Adresses qui se sont annoncées elles-mêmes (`ScanEvent::Heard`).
     pub ips: HashSet<Ipv4Addr>,
+    /// MAC (normalisées) annoncées en SADP depuis leur propre adresse
+    /// (`ScanEvent::HeardSadp`) : seules celles-ci peuvent recevoir une action
+    /// SADP, qui diffuse le mot de passe sur le LAN de l'interface.
+    pub sadp_macs: HashSet<String>,
 }
 
 /// Instantané de `LastSeen`, adresses triées.
 pub struct SeenSnapshot {
     pub iface: Option<String>,
     pub ips: Vec<Ipv4Addr>,
+    pub sadp_macs: Vec<String>,
 }
 
 impl ScanState {
@@ -50,29 +56,36 @@ impl ScanState {
         let last = self.last_seen.lock().unwrap();
         let mut ips: Vec<Ipv4Addr> = last.ips.iter().copied().collect();
         ips.sort();
-        SeenSnapshot { iface: last.iface.clone(), ips }
+        let mut sadp_macs: Vec<String> = last.sadp_macs.iter().cloned().collect();
+        sadp_macs.sort();
+        SeenSnapshot { iface: last.iface.clone(), ips, sadp_macs }
     }
 
     /// Un nouveau scan repart de zéro, sur son interface.
     fn begin(&self, iface: &ScanInterface) {
-        *self.last_seen.lock().unwrap() = LastSeen { iface: Some(iface.name.clone()), ips: HashSet::new() };
+        *self.last_seen.lock().unwrap() = LastSeen { iface: Some(iface.name.clone()), ..Default::default() };
     }
 
     fn record(&self, ev: &ScanEvent) {
-        if let ScanEvent::Heard { ip } = ev {
-            self.last_seen.lock().unwrap().ips.insert(*ip);
+        match ev {
+            ScanEvent::Heard { ip } => {
+                self.last_seen.lock().unwrap().ips.insert(*ip);
+            }
+            ScanEvent::HeardSadp { mac } => {
+                self.last_seen.lock().unwrap().sadp_macs.insert(mac.clone());
+            }
+            _ => {}
         }
     }
 }
 
 type ProbeSocket = (Arc<dyn Probe>, Arc<dyn Datagram>);
 
-/// La liste des sondes de la découverte : c'est ici que SADP s'ajoutera
-/// (tâche 14). Une sonde dont le socket ne s'ouvre pas est ignorée (port déjà
+/// La liste des sondes de la découverte. Une sonde dont le socket ne s'ouvre pas est ignorée (port déjà
 /// pris par un autre programme) : les autres sources suffisent à remplir la
 /// liste, et l'ARP complète le reste.
 fn probes(iface: &ScanInterface) -> Vec<ProbeSocket> {
-    let all: Vec<Arc<dyn Probe>> = vec![Arc::new(MdnsProbe), Arc::new(WsdProbe)];
+    let all: Vec<Arc<dyn Probe>> = vec![Arc::new(MdnsProbe), Arc::new(WsdProbe), Arc::new(SadpProbe)];
     all.into_iter()
         .filter_map(|p| match open_probe_socket(p.as_ref(), iface) {
             Ok(dg) => Some((p, dg)),
@@ -124,7 +137,7 @@ pub async fn cmd_scan_start(
     while let Some(ev) = rx.recv().await {
         state.record(&ev);
         // Interne : l'adresse entendue ne part pas au webview.
-        if matches!(ev, ScanEvent::Heard { .. }) {
+        if matches!(ev, ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. }) {
             continue;
         }
         // Webview disparue : plus personne n'écoute, on arrête le scan.
@@ -204,6 +217,40 @@ mod tests {
         assert_eq!(state.seen().iface.as_deref(), Some("wlan0"));
     }
 
+    #[test]
+    fn seules_les_mac_entendues_en_sadp_sont_retenues_avec_leur_interface() {
+        let state = ScanState::default();
+        state.begin(&eth0());
+        state.record(&ScanEvent::Heard { ip: "192.0.2.31".parse().unwrap() });
+        assert!(state.seen().sadp_macs.is_empty(), "une adresse entendue ne vaut pas une MAC SADP");
+        state.record(&ScanEvent::HeardSadp { mac: "C0:56:E3:5A:7D:01".into() });
+        state.record(&ScanEvent::HeardSadp { mac: "C0:56:E3:5A:7D:01".into() });
+        assert_eq!(state.seen().sadp_macs, vec!["C0:56:E3:5A:7D:01".to_string()]);
+        state.begin(&ScanInterface { name: "wlan0".into(), ..eth0() });
+        assert!(state.seen().sadp_macs.is_empty());
+    }
+
+    /// Un paquet SADP dont l'adresse annoncée n'est pas sa source ne prouve rien.
+    #[tokio::test]
+    async fn sadp_heard_requires_source_equal_announced_address() {
+        use lenscout_core::discovery::scanner::run_scan_with_capture;
+        use lenscout_core::testing::{FakeDatagram, FakeHttp};
+        let xml = include_str!("../../../crates/lenscout-core/tests/fixtures/sadp_inquiry_response_activated.xml");
+        for (src, heard) in [("192.0.2.31:37020", true), ("192.0.2.77:37020", false)] {
+            let dg = Arc::new(FakeDatagram::new(vec![(xml.as_bytes().to_vec(), src.parse().unwrap())]));
+            let probes: Vec<(Arc<dyn Probe>, Arc<dyn Datagram>)> = vec![(Arc::new(SadpProbe), dg)];
+            let state = ScanState::default();
+            state.begin(&eth0());
+            let (tx, mut rx) = mpsc::channel(64);
+            let cfg = ScanConfig { iface: eth0(), listen: Duration::from_millis(200) };
+            run_scan_with_capture(probes, Arc::new(FakeHttp::new()), Arc::new(NoArp), cfg, tx, CancellationToken::new(), None).await;
+            while let Ok(ev) = rx.try_recv() {
+                state.record(&ev);
+            }
+            assert_eq!(!state.seen().sadp_macs.is_empty(), heard, "{src}");
+        }
+    }
+
     use lenscout_core::discovery::arp::ArpSource;
 
     struct NoArp;
@@ -250,6 +297,8 @@ mod tests {
             journal: std::env::temp_dir().join("lenscout-test-jamais-cree").join("temp-ip.json"),
             seen: seen.ips,
             seen_iface: seen.iface,
+            seen_sadp: seen.sadp_macs,
+            sadp: None,
             in_use: vec![],
             other_ifaces: vec![],
         };

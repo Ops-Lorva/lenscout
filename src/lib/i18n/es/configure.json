@@ -31,6 +31,7 @@
     "unknown": "Error",
     "identity_unreadable": "Identidad ilegible",
     "camera_off_subnet": "Cámara fuera de la subred",
+    "camera_not_seen": "Cámara no vista por SADP en esta interfaz",
     "already_activated": "Ya activada",
     "network_needs_one_camera": "Una sola cámara a la vez",
     "no_cameras": "Ninguna cámara"

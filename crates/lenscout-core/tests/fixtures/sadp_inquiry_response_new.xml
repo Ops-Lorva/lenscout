@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ProbeMatch>
+  <Uuid>7b2d9c10-1a2b-4c3d-9e8f-001122334455</Uuid>
+  <Types>inquiry</Types>
+  <DeviceType>41</DeviceType>
+  <DeviceDescription>LTS-CMIP7842</DeviceDescription>
+  <DeviceSN>LTS-CMIP7842-20240101AAWRE00000002</DeviceSN>
+  <CommandPort>8000</CommandPort>
+  <HttpPort>80</HttpPort>
+  <MAC>c0-56-e3-5a-7d-02</MAC>
+  <IPv4Address>192.0.2.32</IPv4Address>
+  <IPv4SubnetMask>255.255.255.0</IPv4SubnetMask>
+  <IPv4Gateway>0.0.0.0</IPv4Gateway>
+  <DHCP>false</DHCP>
+  <SoftwareVersion>V5.7.15build 240101</SoftwareVersion>
+  <Activated>false</Activated>
+</ProbeMatch>

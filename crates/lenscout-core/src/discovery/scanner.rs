@@ -1,6 +1,6 @@
 //! Orchestration de la découverte : une ligne par caméra, émise au fil de l'eau.
 //!
-//! Point d'extension : une nouvelle source (SADP, tâche 14) est un `Probe` de
+//! Point d'extension : une nouvelle source (SADP, par exemple) est un `Probe` de
 //! plus dans la liste `probes` de `run_scan`, avec son propre `Datagram` ;
 //! l'orchestration ne connaît aucun protocole.
 
@@ -66,6 +66,11 @@ pub enum ScanEvent {
     /// quelle adresse). Interne à Rust : jamais envoyé au webview.
     #[serde(skip)]
     Heard { ip: Ipv4Addr },
+    /// Une caméra s'est annoncée en SADP depuis sa propre adresse (source UDP
+    /// = `IPv4Address`) : seule preuve qu'elle est sur le LAN de l'interface,
+    /// là où un mot de passe SADP sera diffusé. Interne à Rust.
+    #[serde(skip)]
+    HeardSadp { mac: String },
     Done,
 }
 
@@ -341,6 +346,11 @@ impl Scan {
         match ev {
             Event::Seen(s, src) => {
                 if s.ip == src && self.out.send(ScanEvent::Heard { ip: src }).await.is_err() {
+                    self.cancel.cancel();
+                }
+                if let (Source::Sadp, true, Some(mac)) = (s.source, s.ip == src, &s.mac)
+                    && self.out.send(ScanEvent::HeardSadp { mac: mac.clone() }).await.is_err()
+                {
                     self.cancel.cancel();
                 }
                 self.on_sighting(s).await
@@ -622,7 +632,7 @@ mod tests {
             .iter()
             .filter_map(|e| match e {
                 ScanEvent::Upsert { camera } => Some(camera),
-                ScanEvent::Heard { .. } | ScanEvent::Done => None,
+                ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. } | ScanEvent::Done => None,
             })
             .collect()
     }

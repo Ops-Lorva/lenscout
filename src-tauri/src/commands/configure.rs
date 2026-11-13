@@ -6,9 +6,12 @@ use std::time::Duration;
 use lenscout_core::accounts::AccountBook;
 use lenscout_core::actions::{Action, ActionContext, ActionResult, apply_all, on_subnet};
 use lenscout_core::discovery::arp::{ScanInterface, read_neighbours};
+use lenscout_core::discovery::sadp;
+use lenscout_core::discovery::socket::open_multicast;
+use lenscout_core::transport::Datagram;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
-use lenscout_core::model::Camera;
+use lenscout_core::model::{Camera, Family};
 use lenscout_core::temp_ip::SystemElevator;
 use lenscout_core::vapix::{NetworkSettings, TimeSettings};
 use serde::Deserialize;
@@ -119,6 +122,13 @@ pub async fn cmd_apply_action(
     // Voisins ARP : jamais pris pour l'IP temporaire.
     let in_use = if any_off_subnet { read_neighbours(&scan_iface).await.into_keys().collect() } else { vec![] };
     let seen = scan.seen();
+    // Le socket SADP ne s'ouvre que pour une sélection Hikvision ; un port
+    // déjà pris ne bloque rien : l'action rendra `unsupported`.
+    let sadp: Option<Arc<dyn Datagram>> = if cameras.iter().any(|c| c.family == Family::Hikvision) {
+        open_multicast(&scan_iface, sadp::GROUP).ok().map(|d| Arc::new(d) as Arc<dyn Datagram>)
+    } else {
+        None
+    };
     let ctx = ActionContext {
         http: Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT)),
         iface: scan_iface,
@@ -127,6 +137,8 @@ pub async fn cmd_apply_action(
         journal: journal.0.clone(),
         seen: seen.ips,
         seen_iface: seen.iface,
+        seen_sadp: seen.sadp_macs,
+        sadp,
         in_use,
         other_ifaces,
     };

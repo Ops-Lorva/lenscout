@@ -17,7 +17,9 @@ use crate::temp_ip::{
     Elevator, TempIpError, needs_temp_ip, pick_temp_ip, reachable_with_temp_ip, read_journal, subnets_overlap,
     temp_mask, with_temp_ip,
 };
-use crate::transport::{CameraHttp, Credentials, NetError};
+use crate::discovery::sadp;
+use crate::transport::{CameraHttp, Credentials, Datagram, NetError};
+use std::time::Duration;
 use crate::vapix::{self, NetworkSettings, TimeSettings, VapixError};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +61,11 @@ pub enum ActionError {
     /// L'IP temporaire n'a pas pu être posée (rien de libre, commande en échec).
     #[error("IP temporaire impossible")]
     TempIpFailed,
+    /// Hikvision : sa MAC ne s'est pas annoncée en SADP, sur cette interface,
+    /// au dernier scan. Rien n'est envoyé (un mot de passe SADP est diffusé en
+    /// multicast sur le LAN de l'interface).
+    #[error("caméra non vue en SADP")]
+    CameraNotSeen,
     /// L'IP temporaire `ip` n'a pas pu être retirée du poste ; le journal
     /// reste, le démarrage suivant réessaiera.
     #[error("IP temporaire restée : {ip}")]
@@ -76,7 +83,6 @@ pub struct ActionResult {
     pub error: Option<ActionError>,
 }
 
-/// La tâche 14 y ajoutera le socket SADP.
 pub struct ActionContext {
     pub http: Arc<dyn CameraHttp>,
     pub iface: ScanInterface,
@@ -92,6 +98,11 @@ pub struct ActionContext {
     pub seen: Vec<Ipv4Addr>,
     /// Interface de ce scan (`ScanInterface::name`).
     pub seen_iface: Option<String>,
+    /// MAC (normalisées) qui se sont annoncées en SADP depuis leur propre
+    /// adresse au dernier scan (`seen_iface`), tenues par Rust.
+    pub seen_sadp: Vec<String>,
+    /// Socket SADP ouvert sur `iface` ; `None` : pas d'action SADP possible.
+    pub sadp: Option<Arc<dyn Datagram>>,
     /// Autres adresses à ne pas prendre pour l'IP temporaire (voisins ARP).
     pub in_use: Vec<Ipv4Addr>,
     /// Les autres interfaces actives du poste.
@@ -178,8 +189,8 @@ fn result(cam: &Camera, outcome: Result<(), ActionError>) -> ActionResult {
 }
 
 /// Seule porte d'écriture : marque, sous-réseau (IP temporaire au besoin),
-/// identité, puis l'écriture. Une marque sans action (`Other`, Hikvision tant que la tâche 14 n'est pas faite) ne génère
-/// aucune requête.
+/// identité, puis l'écriture. Une marque sans action (`Other`) ne génère aucune requête ;
+/// Hikvision passe par SADP (`apply_sadp`), sans IP temporaire.
 pub async fn apply(
     ctx: &ActionContext,
     cam: &Camera,
@@ -197,7 +208,8 @@ async fn apply_checked(
 ) -> Result<(), ActionError> {
     match cam.family {
         Family::Axis => {}
-        Family::Hikvision | Family::Other => return Err(ActionError::Unsupported),
+        Family::Hikvision => return apply_sadp(ctx, cam, creds, action).await,
+        Family::Other => return Err(ActionError::Unsupported),
     }
     if on_subnet(&ctx.iface, cam.ip) {
         return verify_and_write(ctx, cam, creds, action).await;
@@ -223,6 +235,42 @@ async fn apply_checked(
             _ => ActionError::TempIpFailed,
         }),
     }
+}
+
+/// Délai d'attente de la réponse d'une caméra à une commande SADP.
+const SADP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Hikvision : SADP pour `Activate` et `Network`, jamais d'IP temporaire (le
+/// message va au groupe multicast, la caméra n'a pas besoin d'être joignable
+/// en IP). Le mot de passe sera diffusé sur le LAN de l'interface : la MAC doit
+/// donc s'être annoncée en SADP, sur cette interface, au dernier scan ; le
+/// front fournit la caméra, il ne peut pas inventer une cible. L'identité est
+/// la MAC du message, relue dans la réponse.
+async fn apply_sadp(
+    ctx: &ActionContext,
+    cam: &Camera,
+    creds: &Credentials,
+    action: &Action,
+) -> Result<(), ActionError> {
+    if matches!(action, Action::Time(_)) {
+        return Err(ActionError::Unsupported);
+    }
+    let (Some(sock), Some(mac)) = (ctx.sadp.as_deref(), cam.mac.as_deref().and_then(normalize_mac)) else {
+        return Err(ActionError::Unsupported);
+    };
+    let heard = ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str()) && ctx.seen_sadp.contains(&mac);
+    if !heard {
+        return Err(ActionError::CameraNotSeen);
+    }
+    let uuid = uuid::Uuid::new_v4();
+    let msg = match action {
+        Action::Activate => sadp::build_activate(uuid, &mac, &creds.password),
+        Action::Network(net) => sadp::build_update(uuid, &mac, &creds.password, net),
+        Action::Time(_) => None,
+    };
+    // Sans encodage de mot de passe documenté, rien n'est construit.
+    let Some(msg) = msg else { return Err(ActionError::Unsupported) };
+    sadp::send_and_wait(sock, &msg, &mac, cam.ip, SADP_TIMEOUT).await
 }
 
 async fn verify_and_write(
@@ -322,6 +370,8 @@ mod tests {
                 .join("temp-ip.json"),
             seen,
             seen_iface: Some("eth0".into()),
+            seen_sadp: vec![],
+            sadp: None,
             in_use: vec![],
             other_ifaces: vec![],
         }
@@ -537,18 +587,68 @@ mod tests {
         assert!(http.requests().is_empty());
     }
 
+    /// Contexte Hikvision : socket SADP faux, MAC entendue en SADP sur `eth0`
+    /// si `heard`. Un Elevator qui panique : jamais d'IP temporaire.
+    fn sadp_ctx(http: Arc<dyn CameraHttp>, heard: bool) -> (ActionContext, Arc<crate::testing::FakeDatagram>) {
+        let dg = Arc::new(crate::testing::FakeDatagram::new(vec![]));
+        let mut c = ctx(http);
+        c.sadp = Some(dg.clone());
+        if heard {
+            c.seen_sadp = vec![MAC.into()];
+        }
+        (c, dg)
+    }
+
+    /// Hors sous-réseau, jamais d'`with_temp_ip` : `PanicElevator` panique au premier appel.
+    fn off_subnet_hik() -> Camera {
+        cam("169.254.10.20", Family::Hikvision)
+    }
+
     #[tokio::test]
-    async fn hikvision_is_unsupported_until_its_task() {
+    async fn hikvision_time_is_unsupported() {
         let http = Arc::new(axis_ok());
-        let out = apply_all(
-            &ctx(http.clone()),
-            &[cam("192.0.2.11", Family::Hikvision)],
-            &creds(),
-            &Action::Activate,
-        )
-        .await;
-        assert_eq!(out[0].error, Some(ActionError::Unsupported));
+        let (c, dg) = sadp_ctx(http.clone(), true);
+        let r = apply(&c, &cam("192.0.2.11", Family::Hikvision), &creds(), &time()).await;
+        assert_eq!(r.error, Some(ActionError::Unsupported));
         assert!(http.requests().is_empty());
+        assert!(dg.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hikvision_activate_uses_sadp_not_http() {
+        let http = Arc::new(axis_ok());
+        let (c, _) = sadp_ctx(http.clone(), true);
+        for action in [Action::Activate, static_net()] {
+            let r = apply(&c, &off_subnet_hik(), &creds(), &action).await;
+            // Sans encodage de mot de passe documenté : rien ne part, nulle part.
+            assert_eq!(r.error, Some(ActionError::Unsupported));
+        }
+        assert!(http.requests().is_empty(), "ISAPI/VAPIX non utilisés");
+    }
+
+    #[tokio::test]
+    async fn hikvision_not_heard_over_sadp_is_refused_before_any_send() {
+        let http = Arc::new(axis_ok());
+        for action in [Action::Activate, static_net()] {
+            // MAC jamais entendue.
+            let (c, dg) = sadp_ctx(http.clone(), false);
+            let r = apply(&c, &off_subnet_hik(), &creds(), &action).await;
+            assert_eq!(r.error, Some(ActionError::CameraNotSeen));
+            assert!(dg.sent().is_empty());
+            // Entendue, mais lors d'un scan fait sur une autre interface.
+            let (mut c, dg) = sadp_ctx(http.clone(), true);
+            c.seen_iface = Some("wlan0".into());
+            let r = apply(&c, &off_subnet_hik(), &creds(), &action).await;
+            assert_eq!(r.error, Some(ActionError::CameraNotSeen));
+            assert!(dg.sent().is_empty());
+        }
+        assert!(http.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hikvision_without_sadp_socket_is_unsupported() {
+        let r = apply(&ctx(Arc::new(axis_ok())), &cam("192.0.2.11", Family::Hikvision), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::Unsupported));
     }
 
     #[tokio::test]
@@ -806,6 +906,7 @@ mod tests {
             ActionError::IdentityMismatch,
             ActionError::IdentityUnreadable,
             ActionError::CameraOffSubnet,
+            ActionError::CameraNotSeen,
             ActionError::AlreadyActivated,
             ActionError::NetworkNeedsOneCamera,
             ActionError::Unreachable { ip },

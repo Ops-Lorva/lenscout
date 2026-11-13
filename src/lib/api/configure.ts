@@ -9,6 +9,7 @@ export type ActionError =
   | { code: 'identity_mismatch' }
   | { code: 'identity_unreadable' }
   | { code: 'camera_off_subnet' }
+  | { code: 'camera_not_seen' }
   | { code: 'already_activated' }
   | { code: 'network_needs_one_camera' }
   | { code: 'unreachable'; ip: string }
@@ -34,8 +35,10 @@ export type ActionDto =
   | { kind: 'time'; ntp_servers: string[]; timezone: string };
 
 /**
- * Marques sur lesquelles une action existe. Hikvision s'ajoute ici avec la
- * tâche 14 ; le cœur refuse de toute façon ce qu'il ne sait pas faire.
+ * Marques sur lesquelles une action existe. Hikvision n'y est PAS : l'heure
+ * est sans objet en v1 et l'encodage du mot de passe SADP n'a pas de source
+ * publique (voir `discovery/sadp.rs`), donc Activer / IP restent grisés. Le
+ * cœur refuse de toute façon ce qu'il ne sait pas faire.
  */
 const ACTIONABLE: readonly Family[] = ['axis'];
 
