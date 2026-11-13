@@ -199,7 +199,8 @@ impl PreviewStore {
 
     /// Sort l'aperçu du magasin dans tous les cas : un identifiant ne sert
     /// qu'une fois, même si l'application a échoué en partie ou si l'aperçu est
-    /// refusé. `scan_iface` : interface du dernier scan.
+    /// refusé. `iface` : `ScanInterface::name` de l'application ; `scan_iface` :
+    /// celui du dernier scan.
     fn take(&self, id: &str, iface: &str, scan_iface: Option<&str>, now: Instant) -> Result<StoredPreview, String> {
         let p = self.0.lock().unwrap().remove(id).ok_or("preview_unknown")?;
         if now.saturating_duration_since(p.created) > PREVIEW_TTL
@@ -261,21 +262,34 @@ pub async fn cmd_batch_preview(
     store: State<'_, PreviewStore>,
 ) -> Result<BatchPreview, PreviewError> {
     let req: BatchRequest = req.into();
-    let name = iface.clone();
+    let name = iface;
     let host = tauri::async_runtime::spawn_blocking(move || {
         if !list_interfaces_up().contains(&name) {
             return Err("iface_unknown".to_string());
         }
         ScanInterface::from_details(&name, &get_interface_details(&name))
-            .map(|i| i.ip)
             .ok_or_else(|| "iface_no_ipv4".to_string())
     })
     .await
     .map_err(|_| PreviewError::Code("internal".into()))?
     .map_err(PreviewError::Code)?;
-    let rows = plan_batch(&selection, &req, &others, &[host])?;
-    let id = store.put(StoredPreview { cameras: selection, rows: rows.clone(), req, iface, created: Instant::now() });
+    let rows = plan_batch(&selection, &req, &others, &[host.ip])?;
+    let id = remember_preview(&store, selection, rows.clone(), req, &host, Instant::now());
     Ok(BatchPreview { id, rows })
+}
+
+/// Garde un aperçu sous l'interface telle que le scan et l'application la
+/// nomment (`ScanInterface::name`) : sur macOS le front choisit un service
+/// networksetup (« Ethernet ») mais le scan retient l'ifname système (« en0 »).
+fn remember_preview(
+    store: &PreviewStore,
+    cameras: Vec<Camera>,
+    rows: Vec<Assignment>,
+    req: BatchRequest,
+    resolved: &ScanInterface,
+    created: Instant,
+) -> String {
+    store.put(StoredPreview { cameras, rows, req, iface: resolved.name.clone(), created })
 }
 
 /// Applique exactement l'aperçu gardé, caméra par caméra, par `apply` : sous-
@@ -295,8 +309,9 @@ pub async fn cmd_batch_apply(
 ) -> Result<Vec<ActionResult>, String> {
     let cameras = store.cameras_of(&preview_id)?;
     let creds = credentials_for(&accounts, &account_id)?;
-    let ctx = build_context(iface.clone(), &cameras, &scan, &journal.0).await?;
-    let preview = store.take(&preview_id, &iface, scan.seen().iface.as_deref(), Instant::now())?;
+    let ctx = build_context(iface, &cameras, &scan, &journal.0).await?;
+    // Noms système des deux côtés : celui du contexte, celui du dernier scan.
+    let preview = store.take(&preview_id, &ctx.iface.name, scan.seen().iface.as_deref(), Instant::now())?;
     apply_batch(ctx, &preview.cameras, &preview.rows, &creds, &preview.req).await
 }
 
@@ -399,6 +414,27 @@ mod tests {
         assert_eq!(store.take(&id, "wlan0", Some("wlan0"), t0).err().as_deref(), Some("preview_expired"));
         let id = store.put(stored("eth0", t0));
         assert_eq!(store.take(&id, "eth0", None, t0).err().as_deref(), Some("preview_expired"));
+    }
+
+    /// macOS : le front choisit un service networksetup (« Ethernet »), le scan
+    /// et le contexte d'écriture nomment l'interface système (« en0 »).
+    #[test]
+    fn un_apercu_macos_se_reprend_sous_le_nom_systeme() {
+        use lenscout_core::interfaces::InterfaceDetails;
+        let details = InterfaceDetails {
+            ip: Some("10.0.50.2".into()),
+            subnet: Some("255.255.255.0".into()),
+            bsd_name: Some("en0".into()),
+            ..Default::default()
+        };
+        let resolved = ScanInterface::from_details("Ethernet", &details).unwrap();
+        assert_eq!(resolved.name, "en0");
+        let store = PreviewStore::default();
+        let now = Instant::now();
+        let s = stored("", now);
+        let id = remember_preview(&store, s.cameras, s.rows, s.req, &resolved, now);
+        // Ce que cmd_batch_apply passe : le nom du contexte, celui du scan.
+        assert!(store.take(&id, &resolved.name, Some("en0"), now).is_ok());
     }
 
     #[test]
