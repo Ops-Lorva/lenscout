@@ -196,15 +196,15 @@ mod tests {
     #[test]
     fn sudoers_rule_is_scoped_to_the_user_and_the_lenscout_service() {
         assert_eq!(
-            sudoers_rule("benjamin").unwrap(),
-            "benjamin ALL=(root) NOPASSWD: /usr/sbin/networksetup -duplicatenetworkservice * Lenscout, /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout"
+            sudoers_rule("alice").unwrap(),
+            "alice ALL=(root) NOPASSWD: /usr/sbin/networksetup -duplicatenetworkservice * Lenscout, /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout"
         );
         assert!(sudoers_rule("_svc.x-1").is_ok());
     }
 
     #[test]
     fn invalid_user_name_is_refused() {
-        for bad in ["", "Benjamin", "1abc", "a b", "a,ALL", "a'b", "%admin", "a\nb", "a\n", "root ALL=(ALL) ALL #", "é"] {
+        for bad in ["", "Alice", "1abc", "a b", "a,ALL", "a'b", "%admin", "a\nb", "a\n", "root ALL=(ALL) ALL #", "é"] {
             assert!(matches!(sudoers_rule(bad), Err(TempIpError::Invalid(_))), "{bad:?}");
         }
     }
@@ -220,7 +220,7 @@ mod tests {
         let d = scratch();
         let (sudoers, marker) = (d.join("lenscout"), d.join(MARKER_FILE));
         std::fs::write(&sudoers, b"").unwrap();
-        let rule = sudoers_rule("benjamin").unwrap();
+        let rule = sudoers_rule("alice").unwrap();
         write_marker(&marker, &rule).unwrap();
         assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), rule_hash(&rule));
         assert_eq!(rule_hash(&rule).len(), 64);
@@ -231,7 +231,7 @@ mod tests {
     fn missing_or_different_marker_or_file_forces_a_reinstall() {
         let d = scratch();
         let (sudoers, marker) = (d.join("lenscout"), d.join(MARKER_FILE));
-        let rule = sudoers_rule("benjamin").unwrap();
+        let rule = sudoers_rule("bob").unwrap();
         std::fs::write(&sudoers, b"").unwrap();
         assert!(!rule_installed(&sudoers, &marker, &rule), "marqueur absent");
         write_marker(&marker, &sudoers_rule("alice").unwrap()).unwrap();
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn install_script_keeps_0440_root_wheel_and_checks_before_moving() {
-        let rule = sudoers_rule("benjamin").unwrap();
+        let rule = sudoers_rule("alice").unwrap();
         let sh = install_shell(&rule, "/etc/sudoers.d/lenscout");
         let tmp = "/etc/sudoers.d/lenscout.tmp";
         let order = [

@@ -17,6 +17,8 @@ Download the installer for your system from the
 | Windows 10 / 11 | `lenscout_vX.Y.Z_x64-setup.exe` |
 | Debian / Ubuntu | `lenscout_vX.Y.Z_amd64.deb` (`sudo apt install ./lenscout_vX.Y.Z_amd64.deb`) |
 
+The Windows installer is not code-signed, so SmartScreen may warn on first run (More info, Run anyway).
+
 Lenscout checks for a newer release at startup and offers to install it. Every
 installer ships with a `.sig` minisign signature, which the app verifies before
 running anything it downloaded.

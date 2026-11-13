@@ -28,6 +28,8 @@ pub fn run() {
         .manage(StreamState::default())
         .manage(PreviewStore::default())
         .setup(|app| {
+            // Installeurs laissés par une mise à jour précédente.
+            updater::cleanup_old_updates();
             // Un accounts.json illisible est mis de côté, jamais écrasé ni bloquant.
             let path = app.path().app_config_dir()?.join("accounts.json");
             let (book, startup) = load_or_quarantine(path, Arc::new(KeyringStore));
