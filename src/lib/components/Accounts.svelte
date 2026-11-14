@@ -3,8 +3,8 @@
   import { _ } from 'svelte-i18n';
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
-    accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, listAccounts, netIn, noticeKey,
-    passwordRequired, pcIpError, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
+    accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, listAccounts, netIn, noticeKey,
+    passwordRequired, passwordToSend, pcIpError, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
   import { clearStatusIf, status, type Status } from '$lib/stores/nav';
@@ -22,6 +22,9 @@
   let password = $state('');
   // Masqué par défaut, remasqué à chaque ouverture et fermeture.
   let showPassword = $state(false);
+  // Mot de passe prérempli en Modifier : sans changement, il n'est pas renvoyé.
+  // Vidé à la fermeture de la fiche, comme le champ.
+  let prefilled = '';
   let pcIp = $state('');
   let gateway = $state('');
   let confirming = $state('');
@@ -101,14 +104,29 @@
     name = a?.name ?? '';
     login = a?.login ?? '';
     password = '';
+    prefilled = '';
     showPassword = false;
     pcIp = a?.pc_ip ?? '';
     gateway = a?.gateway ?? '';
+    if (a?.has_secret) void reveal(a.id);
+  }
+
+  /** Préremplit le mot de passe (masqué) ; ignoré si la fiche a changé ou a été fermée entre-temps, ou déjà saisi. */
+  async function reveal(id: string) {
+    try {
+      const p = await accountPassword(id);
+      if (editing !== id || password !== '' || !p) return;
+      password = p;
+      prefilled = p;
+    } catch {
+      // Champ vide : on peut toujours ressaisir, ou garder l'actuel.
+    }
   }
 
   function close() {
     editing = null;
     password = '';
+    prefilled = '';
     showPassword = false;
     error = '';
     errorCode = '';
@@ -119,7 +137,7 @@
     errorCode = '';
     try {
       const net = netIn(pcIp, gateway);
-      if (editing) await updateAccount(editing, name, login, password === '' ? null : password, net);
+      if (editing) await updateAccount(editing, name, login, passwordToSend(password, prefilled), net);
       else await createAccount(name, login, password, net);
     } catch (e) {
       fail(e);
@@ -127,6 +145,7 @@
     } finally {
       // Le mot de passe ne reste pas dans le champ, succès ou non.
       password = '';
+      prefilled = '';
     }
     close();
     await refresh();

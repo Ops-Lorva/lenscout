@@ -2,7 +2,7 @@ mod commands;
 mod updater;
 
 use commands::accounts::{
-    StartupNotice, cmd_account_create, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
+    StartupNotice, cmd_account_create, cmd_account_password, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
     cmd_accounts_import_plan, cmd_account_update, cmd_accounts_list,
     cmd_accounts_startup, startup_code,
 };
@@ -74,6 +74,7 @@ pub fn run() {
             cmd_accounts_startup,
             cmd_account_create,
             cmd_account_update,
+            cmd_account_password,
             cmd_account_remove,
             cmd_accounts_export,
             cmd_accounts_import_plan,

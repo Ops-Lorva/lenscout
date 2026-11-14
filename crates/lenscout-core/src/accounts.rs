@@ -725,6 +725,12 @@ impl AccountBook {
         })
     }
 
+    /// Mot de passe d'un compte, pour la fiche Modifier qui le montre à la
+    /// demande. `None` : compte à ressaisir.
+    pub fn password(&self, id: &str) -> Result<Option<Secret>, AccountError> {
+        Ok(self.entries[self.index_of(id)?].password.clone())
+    }
+
     /// Fichier d'export : sans ids, identifiant et mot de passe scellés, sans
     /// `password` pour un compte à ressaisir.
     pub fn export(&self) -> String {
@@ -1377,6 +1383,18 @@ mod tests {
             fx.book().credentials(&acc.id).unwrap().password.expose(),
             PWD
         );
+    }
+
+    #[test]
+    fn password_of_one_account_on_demand() {
+        let fx = Fixture::new();
+        fx.write_v1(&[("id-1", "Mairie", "root"), ("id-2", "Gare", "admin")]);
+        fx.store.set("id-2", &pwd(PWD)).unwrap();
+        let book = fx.book();
+        assert_eq!(book.password("id-2").unwrap().unwrap().expose(), PWD);
+        // Compte repris sans secret : rien à montrer, pas une erreur.
+        assert!(book.password("id-1").unwrap().is_none());
+        assert!(matches!(book.password("zzz"), Err(AccountError::NotFound)));
     }
 
     #[test]

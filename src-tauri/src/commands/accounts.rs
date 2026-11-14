@@ -38,7 +38,8 @@ fn lock(state: &Mutex<AccountBook>) -> Result<std::sync::MutexGuard<'_, AccountB
 }
 
 // Les fonctions pures portent la logique ; les commandes ne font que
-// verrouiller l'état. Aucune ne renvoie de mot de passe.
+// verrouiller l'état. Aucune ne renvoie de mot de passe, sauf
+// `cmd_account_password`, à la demande, pour un seul compte.
 
 /// Entrée de liste : le compte et un booléen disant s'il a un mot de passe
 /// (jamais le mot de passe) ; sinon il est à ressaisir.
@@ -228,6 +229,23 @@ pub(crate) fn account_update(
     book.update(id, name, login, password, net).map_err(code)
 }
 
+/// Mot de passe montré dans la fiche Modifier. Sérialisé tel quel pour le
+/// front, jamais affiché par `Debug` (journaux).
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct RevealedPassword(String);
+
+impl std::fmt::Debug for RevealedPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("***")
+    }
+}
+
+/// `None` : compte à ressaisir (champ vide dans la fiche).
+pub(crate) fn account_password(book: &AccountBook, id: &str) -> Result<Option<RevealedPassword>, String> {
+    Ok(book.password(id).map_err(code)?.map(|p| RevealedPassword(p.expose().to_string())))
+}
+
 pub(crate) fn account_remove(book: &mut AccountBook, id: &str) -> Result<(), String> {
     book.remove(id).map_err(code)
 }
@@ -285,6 +303,16 @@ pub async fn cmd_account_update(
 ) -> Result<Account, String> {
     let mut book = lock(&state)?;
     account_update(&mut book, &id, &name, &login, password, net.unwrap_or_default())
+}
+
+/// Déchiffre le mot de passe d'UN compte, à l'ouverture de sa fiche.
+#[tauri::command]
+pub async fn cmd_account_password(
+    id: String,
+    state: State<'_, Mutex<AccountBook>>,
+) -> Result<Option<RevealedPassword>, String> {
+    let book = lock(&state)?;
+    account_password(&book, &id)
 }
 
 #[tauri::command]
@@ -353,6 +381,16 @@ mod tests {
 
     fn no_net() -> AccountNetwork {
         AccountNetwork::default()
+    }
+
+    #[test]
+    fn password_is_revealed_for_one_account_only_never_in_debug() {
+        let (mut book, _g_book) = book();
+        let acc = account_create(&mut book, "A", "r", Secret::new("Unique-Pw-9".into()), no_net()).unwrap();
+        let shown = account_password(&book, &acc.id).unwrap().unwrap();
+        assert_eq!(serde_json::to_value(&shown).unwrap(), "Unique-Pw-9");
+        assert!(!format!("{shown:?}").contains("Unique"));
+        assert_eq!(account_password(&book, "zzz").unwrap_err(), "not_found");
     }
 
     #[test]

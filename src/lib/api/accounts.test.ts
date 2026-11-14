@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  createAccount, joinable, netIn, pcIpError, updateAccount, whyKeys,
+  accountPassword, createAccount, joinable, netIn, passwordToSend, pcIpError, updateAccount, whyKeys,
   applyImport, defaultChoices, exportAccounts, groupPlan, importPlan, keepBothNames, noticeKey, passwordRequired,
   pickAccount, suffixedName, withExtension, type ImportPlan,
 } from './accounts';
@@ -174,4 +174,19 @@ test('IP du PC sans masque : erreur sous le champ, jamais de /24 ajouté', () =>
   expect(pcIpError('')).toBe('');
   expect(pcIpError('  ')).toBe('');
   expect(errorKey('missing_mask')).toBe('error.missing_mask');
+});
+
+test('mot de passe de la fiche Modifier : déchiffré à la demande, un compte à la fois', async () => {
+  invoke.mockResolvedValue('pw');
+  expect(await accountPassword('id-1')).toBe('pw');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_password', { id: 'id-1' });
+});
+
+test('mot de passe non touché : conservé (rien envoyé), modifié : envoyé', () => {
+  expect(passwordToSend('secret', 'secret')).toBeNull();
+  expect(passwordToSend('', 'secret')).toBeNull();
+  expect(passwordToSend('', '')).toBeNull();
+  expect(passwordToSend('neuf', 'secret')).toBe('neuf');
+  // Compte à ressaisir : rien de prérempli, la saisie part.
+  expect(passwordToSend('neuf', '')).toBe('neuf');
 });

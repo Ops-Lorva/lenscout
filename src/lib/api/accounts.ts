@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
-/** Miroir de `Account` (accounts.rs). Aucun mot de passe ne revient jamais de Rust. */
+/** Miroir de `Account` (accounts.rs). Aucun mot de passe ne revient de Rust, sauf `accountPassword`. */
 export interface Account {
   id: string;
   name: string;
@@ -49,6 +49,12 @@ export const createAccount = (name: string, login: string, password: string, net
 export const updateAccount = (id: string, name: string, login: string, password: string | null, net: AccountNetIn) =>
   invoke<Account>('cmd_account_update', { id, name, login, password, net });
 export const removeAccount = (id: string) => invoke<void>('cmd_account_remove', { id });
+/** Mot de passe d'UN compte, pour la fiche Modifier ; `null` : à ressaisir. Ne pas le garder après la fiche. */
+export const accountPassword = (id: string) => invoke<string | null>('cmd_account_password', { id });
+
+/** Mot de passe à envoyer à la modification : `null` (conservé) si le champ est vide ou n'a pas bougé depuis le préremplissage. */
+export const passwordToSend = (current: string, prefilled: string): string | null =>
+  current === '' || current === prefilled ? null : current;
 
 /** Plan d'import (miroir de `ImportPlanOut`) : aucun secret, seulement ce qui diffère. */
 export interface ImportItem {
