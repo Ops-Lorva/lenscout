@@ -2,7 +2,7 @@
 name = "lenscout"
 version.workspace = true
 edition.workspace = true
-description = "Lenscout — découverte et configuration de caméras IP"
+description = "LenScout — découverte et configuration de caméras IP"
 authors = []
 
 [lib]

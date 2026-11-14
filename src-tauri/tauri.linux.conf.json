@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Lenscout",
+  "app": {
+    "windows": [
+      {
+        "title": "LenScout",
+        "width": 1100,
+        "height": 700
+      }
+    ]
+  },
+  "bundle": {
+    "linux": {
+      "deb": {
+        "desktopTemplate": "lenscout.desktop"
+      }
+    }
+  }
+}

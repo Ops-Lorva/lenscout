@@ -51,12 +51,6 @@
     "active": true,
     "targets": ["deb", "app", "dmg", "nsis"],
     "resources": [],
-    "linux": {
-      "deb": {
-        "conflicts": ["lenscout"],
-        "replaces": ["lenscout"]
-      }
-    },
     "windows": {
       "nsis": {
         "installMode": "perMachine"
