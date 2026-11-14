@@ -12,6 +12,7 @@ use ping_async::{IcmpEchoRequestor, IcmpEchoStatus};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
+use crate::accounts::Exclusions;
 use crate::discovery::arp::{ScanInterface, read_neighbours};
 use crate::interfaces::mask_to_prefix;
 use crate::proc::async_cmd;
@@ -76,6 +77,14 @@ pub fn first_fit(ranges: &[FreeRange], n: usize) -> Option<Ipv4Addr> {
         return None;
     }
     ranges.iter().find(|r| r.count >= n).map(|r| r.first)
+}
+
+/// Les IP exclues d'un compte qui tombent dans ce que `scan` balaierait : à
+/// joindre à `exclude`. Lues sur les candidats (1 024 au plus), jamais en
+/// dépliant les plages, qui peuvent couvrir un /8.
+pub fn excluded_in(iface: &ScanInterface, excluded: &Exclusions) -> HashSet<Ipv4Addr> {
+    let prefix = mask_to_prefix(&iface.mask.to_string()).unwrap_or(32) as u8;
+    candidates(iface.ip, prefix).0.into_iter().filter(|a| excluded.contains(*a)).collect()
 }
 
 /// Ce qu'un tir de ping apprend de l'hôte visé.
@@ -451,6 +460,36 @@ mod tests {
         assert!(!pinged.contains(&ip("192.0.2.10")) && !pinged.contains(&ip("192.0.2.12")));
         let calls = calls.lock().unwrap();
         assert_eq!(calls.last(), Some(&(4, 4)));
+    }
+
+    #[test]
+    fn account_exclusions_are_read_within_the_scanned_subnet_only() {
+        let ex = Exclusions::parse("192.0.2.12-192.0.2.13, 10.0.0.0-10.255.255.255").unwrap();
+        let want: HashSet<Ipv4Addr> = [ip("192.0.2.12"), ip("192.0.2.13")].into();
+        assert_eq!(excluded_in(&iface(), &ex), want);
+        assert!(excluded_in(&iface(), &Exclusions::default()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn excluded_addresses_are_never_free_nor_first_fit() {
+        // /29 : .9 à .14, le poste en .10. Exclues : .12 et .13.
+        let ex = Exclusions::parse("192.0.2.12 - 192.0.2.13").unwrap();
+        let fake = Arc::new(Fake::new(&[], &[]));
+        let out = scan(&iface(), excluded_in(&iface(), &ex), fake.clone(), |_, _| {}, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            out.ranges,
+            vec![
+                FreeRange { first: ip("192.0.2.9"), last: ip("192.0.2.9"), count: 1 },
+                FreeRange { first: ip("192.0.2.11"), last: ip("192.0.2.11"), count: 1 },
+                FreeRange { first: ip("192.0.2.14"), last: ip("192.0.2.14"), count: 1 },
+            ]
+        );
+        // Pas même pinguées.
+        assert!(!fake.pinged.lock().unwrap().contains(&ip("192.0.2.12")));
+        // Deux adresses de suite : aucune plage, l'exclusion coupe .11–.14.
+        assert_eq!(first_fit(&out.ranges, 2), None);
     }
 
     #[tokio::test]

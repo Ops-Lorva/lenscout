@@ -75,7 +75,7 @@
       <option value={true}>{$_('configure.dhcp')}</option>
     </select>
     <!-- Au-dessus du champ : on choisit une plage, le champ se remplit. -->
-    <FreeIps {iface} {ifaceIp} {ifaceMask} value={ip} hidden={dhcp} onPick={(a) => (ip = a)} />
+    <FreeIps {iface} {accountId} {ifaceIp} {ifaceMask} value={ip} hidden={dhcp} onPick={(a) => (ip = a)} />
     {#if !dhcp}
       <label for="ip-ip">{$_('configure.ipaddr')}</label><input id="ip-ip" type="text" bind:value={ip} inputmode="decimal" autocomplete="off" />
       {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}

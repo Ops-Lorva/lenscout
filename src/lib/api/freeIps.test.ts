@@ -66,10 +66,18 @@ test('startFreeIps numérote le balayage, relaie ses événements, et cancelFree
   expect(cmd).toBe('cmd_free_ips');
   expect(args.interface).toBe('eth0');
   expect(args.id).toBe(run.id);
+  // Sans compte retenu : rien d'exclu côté Rust.
+  expect(args.accountId).toBeNull();
   args.channel.onmessage({ kind: 'progress', done: 1, total: 2 });
   expect(got).toEqual([{ kind: 'progress', done: 1, total: 2 }]);
   await cancelFreeIps(run.id);
   expect(invoke).toHaveBeenLastCalledWith('cmd_free_ips_cancel', { id: run.id });
+});
+
+test('le balayage part avec le compte retenu : ses IP exclues ne sont pas proposées', async () => {
+  invoke.mockResolvedValue(undefined);
+  await startFreeIps('eth0', () => {}, 'acc').done;
+  expect(invoke.mock.lastCall?.[1].accountId).toBe('acc');
 });
 
 test('deux balayages ont deux numéros différents', () => {

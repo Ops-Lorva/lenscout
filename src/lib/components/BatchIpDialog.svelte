@@ -41,7 +41,7 @@
   // L'aperçu garde l'empreinte des champs et de la sélection qui l'ont produit.
   let preview = $state<{ data: BatchPreview; fingerprint: string } | null>(null);
 
-  const fingerprint = $derived(batchFingerprint(cams, { iface, start, mask, gateway, dns }));
+  const fingerprint = $derived(batchFingerprint(cams, { iface, start, mask, gateway, dns, accountId }));
   // Un champ ou la sélection qui change retire l'aperçu : Appliquer se désactive.
   const shown = $derived(preview && preview.fingerprint === fingerprint ? preview.data : null);
   const ready = $derived(!busy && start.trim() !== '' && mask.trim() !== '');
@@ -95,6 +95,7 @@
         others,
         { start: start.trim(), mask: mask.trim(), gateway: orNull(gateway), dns: splitList(dns) },
         iface,
+        accountId,
       );
       preview = { data, fingerprint: fp };
     } catch (e) {
@@ -124,7 +125,7 @@
 <Dialog title={$_('batch.title')} width={560} {onClose}>
   <div class="form">
     <label for="b-account">{$_('accounts.picker')}</label><AccountPicker id="b-account" bind:accountId bind:account />
-    <FreeIps {iface} {ifaceIp} {ifaceMask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
+    <FreeIps {iface} {accountId} {ifaceIp} {ifaceMask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
     <label for="b-start">{$_('batch.start')}</label><input id="b-start" type="text" bind:value={start} inputmode="decimal" autocomplete="off" />
     {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
     <label for="b-mask">{$_('configure.mask')}</label><input id="b-mask" type="text" bind:value={mask} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />

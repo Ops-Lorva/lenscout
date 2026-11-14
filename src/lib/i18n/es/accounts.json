@@ -16,7 +16,8 @@
     "login": "Usuario",
     "password": "Contraseña",
     "pc_ip": "IP del PC",
-    "gateway": "Puerta de enlace"
+    "gateway": "Puerta de enlace",
+    "exclusions": "IP excluidas"
   },
   "error": {
     "empty_field": "Campo vacío",
@@ -33,7 +34,8 @@
     "invalid_pc_ip": "IP del PC no válida (p. ej. 192.168.1.250/24)",
     "missing_mask": "Falta la máscara (p. ej. /24)",
     "invalid_gateway": "Puerta de enlace no válida",
-    "gateway_outside_network": "La puerta de enlace no está en la red"
+    "gateway_outside_network": "La puerta de enlace no está en la red",
+    "invalid_exclusions": "IP excluidas ilegibles (p. ej. 192.168.1.2-192.168.1.9, 192.168.1.100)"
   },
   "notice": {
     "quarantined": "Archivo de cuentas ilegible, apartado",

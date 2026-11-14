@@ -9,6 +9,8 @@ export interface Account {
   pc_ip?: string;
   network?: string;
   gateway?: string;
+  /** Adresses et plages jamais proposées aux caméras (`a.b.c.d, a.b.c.d-a.b.c.e`). */
+  exclusions?: string;
 }
 
 /** Champs réseau envoyés à Rust : `null` pour un champ vide. */
@@ -16,15 +18,17 @@ export interface AccountNetIn {
   pc_ip: string | null;
   network: string | null;
   gateway: string | null;
+  exclusions: string | null;
 }
 
 const orNull = (s: string) => (s.trim() === '' ? null : s.trim());
 
-/** Les deux champs du formulaire → ce que Rust attend ; le réseau, Rust le déduit de l'IP du PC. */
-export const netIn = (pc_ip: string, gateway: string): AccountNetIn => ({
+/** Les champs du formulaire → ce que Rust attend ; le réseau, Rust le déduit de l'IP du PC. */
+export const netIn = (pc_ip: string, gateway: string, exclusions = ''): AccountNetIn => ({
   pc_ip: orNull(pc_ip),
   network: null,
   gateway: orNull(gateway),
+  exclusions: orNull(exclusions),
 });
 
 /** Erreur à afficher sous le champ IP du PC (même clé que le code Rust `missing_mask`), sinon `''`. */

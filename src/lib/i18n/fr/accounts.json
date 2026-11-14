@@ -16,7 +16,8 @@
     "login": "Identifiant",
     "password": "Mot de passe",
     "pc_ip": "IP du PC",
-    "gateway": "Passerelle"
+    "gateway": "Passerelle",
+    "exclusions": "IP exclues"
   },
   "error": {
     "empty_field": "Champ vide",
@@ -33,7 +34,8 @@
     "invalid_pc_ip": "IP du PC invalide (ex. 192.168.1.250/24)",
     "missing_mask": "Masque manquant (ex. /24)",
     "invalid_gateway": "Passerelle invalide",
-    "gateway_outside_network": "La passerelle n'est pas dans le réseau"
+    "gateway_outside_network": "La passerelle n'est pas dans le réseau",
+    "invalid_exclusions": "IP exclues illisibles (ex. 192.168.1.2-192.168.1.9, 192.168.1.100)"
   },
   "notice": {
     "quarantined": "Fichier des comptes illisible, mis de côté",

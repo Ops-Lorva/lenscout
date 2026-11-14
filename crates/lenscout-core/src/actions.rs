@@ -1531,7 +1531,7 @@ mod tests {
             gateway: Some("192.0.2.1".parse().unwrap()),
             dns: vec![],
         };
-        let rows = crate::batch::plan_batch(cams, &req, &[], &[]).unwrap();
+        let rows = crate::batch::plan_batch(cams, &req, &[], &[], &Default::default()).unwrap();
         (req, rows)
     }
 
@@ -1605,7 +1605,7 @@ mod tests {
             gateway: None,
             dns: vec![],
         };
-        let rows = crate::batch::plan_batch(&[a.clone(), b.clone()], &req, &[], &[]).unwrap();
+        let rows = crate::batch::plan_batch(&[a.clone(), b.clone()], &req, &[], &[], &Default::default()).unwrap();
         // Le tirage est aléatoire : plusieurs essais pour qu'une collision se voie.
         for _ in 0..12 {
             let elev = Arc::new(FakeElevator::new());
@@ -1640,7 +1640,7 @@ mod tests {
             gateway: None,
             dns: vec![],
         };
-        let rows = crate::batch::plan_batch(std::slice::from_ref(&a), &req, &[], &[]).unwrap();
+        let rows = crate::batch::plan_batch(std::slice::from_ref(&a), &req, &[], &[], &Default::default()).unwrap();
         let out = apply_batch(ctx(http.clone()).c, &[a], &rows, &creds(), &req).await.unwrap();
         assert!(out[0].ok, "{out:?}");
         let body = http.requests().into_iter().find(|r| r.url.ends_with("/axis-cgi/param.cgi")).unwrap();

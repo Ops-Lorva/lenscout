@@ -12,9 +12,11 @@
 
   // `value` : l'adresse du champ voisin, pour marquer la plage qui la contient ;
   // `onPick` la remplit ; `onFound` reçoit les plages à la fin de chaque balayage.
+  // `accountId` : le compte retenu, ses IP exclues ne sont jamais proposées.
   // Fermer la feuille (démontage) annule le balayage.
   let {
     iface,
+    accountId = '',
     ifaceIp,
     ifaceMask,
     value,
@@ -23,6 +25,7 @@
     onFound = () => {},
   }: {
     iface: string;
+    accountId?: string;
     ifaceIp: string | null;
     ifaceMask: string | null;
     value: string;
@@ -43,11 +46,15 @@
     const mine = ++run;
     state = { phase: 'scanning', done: 0, total: 0 };
     try {
-      const started = startFreeIps(iface, (e) => {
-        if (!alive || mine !== run) return;
-        state = reduceFreeEvent(state, e);
-        if (e.kind === 'done') onFound(e.ranges);
-      });
+      const started = startFreeIps(
+        iface,
+        (e) => {
+          if (!alive || mine !== run) return;
+          state = reduceFreeEvent(state, e);
+          if (e.kind === 'done') onFound(e.ranges);
+        },
+        accountId,
+      );
       runId = started.id;
       await started.done;
     } catch (e) {
@@ -76,6 +83,18 @@
         interrupted = false;
         void scan();
       }
+    });
+  });
+
+  // Un autre compte retenu, d'autres IP exclues : les plages affichées ne
+  // valent plus, on rebalaie (si un balayage a déjà eu lieu ou tourne).
+  let scannedFor = untrack(() => accountId);
+  $effect(() => {
+    const a = accountId;
+    untrack(() => {
+      if (a === scannedFor) return;
+      scannedFor = a;
+      if (!interrupted) void scan();
     });
   });
 

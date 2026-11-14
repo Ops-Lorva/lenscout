@@ -3,8 +3,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use lenscout_core::accounts::{
-    Account, AccountBook, AccountError, AccountNetwork, Choice, ImportKind, ImportPlan, ImportSummary, Startup,
-    write_file_private,
+    Account, AccountBook, AccountError, AccountNetwork, Choice, Exclusions, ImportKind, ImportPlan, ImportSummary,
+    Startup, write_file_private,
 };
 use lenscout_core::secret::Secret;
 use lenscout_core::transport::Credentials;
@@ -14,7 +14,7 @@ use tauri::State;
 /// Erreurs : codes stables (`empty_field`, `duplicate_name`, `not_found`,
 /// `secret_missing`, `keyring`, `io`, `import_invalid`, `file_unwritable`,
 /// `file_unreadable`, `invalid_pc_ip`, `missing_mask`, `invalid_gateway`,
-/// `gateway_outside_network`), traduits par le front. Le message de
+/// `gateway_outside_network`, `invalid_exclusions`), traduits par le front. Le message de
 /// l'OS n'est pas renvoyé.
 fn code(e: AccountError) -> String {
     match e {
@@ -29,6 +29,7 @@ fn code(e: AccountError) -> String {
         AccountError::MaskMissing => "missing_mask",
         AccountError::InvalidGateway => "invalid_gateway",
         AccountError::GatewayOutsideNetwork => "gateway_outside_network",
+        AccountError::InvalidExclusions => "invalid_exclusions",
     }
     .to_string()
 }
@@ -314,6 +315,14 @@ pub(crate) fn credentials_for(state: &Mutex<AccountBook>, id: &str) -> Result<Cr
     })
 }
 
+/// IP exclues du compte retenu par une feuille. Sans compte (ou compte
+/// supprimé entre-temps) : rien d'exclu, la feuille reste utilisable.
+pub(crate) fn exclusions_for(state: &Mutex<AccountBook>, id: Option<&str>) -> Exclusions {
+    let Some(id) = id else { return Exclusions::default() };
+    let Ok(book) = lock(state) else { return Exclusions::default() };
+    book.list().into_iter().find(|a| a.id == id).map(|a| a.net.excluded()).unwrap_or_default()
+}
+
 // `async` : le trousseau peut bloquer (D-Bus, invite de l'OS), ce qui ne doit
 // pas geler le thread principal.
 
@@ -458,12 +467,14 @@ mod tests {
             pc_ip: Some(pc.into()),
             network: Some(n.into()),
             gateway: Some(g.into()),
+            exclusions: None,
         };
         let cases = [
             (net("x/24", "", ""), "invalid_pc_ip"),
             (net("10.0.1.5", "", ""), "missing_mask"),
             (net("", "", "x"), "invalid_gateway"),
             (net("10.0.1.5/24", "10.0.0.0/16", "10.0.2.1"), "gateway_outside_network"),
+            (AccountNetwork { exclusions: Some("10.0.1.9-10.0.1.2".into()), ..no_net() }, "invalid_exclusions"),
         ];
         for (n, want) in cases {
             assert_eq!(account_create(&mut book, "A", "r", pwd(), n).unwrap_err(), want);
@@ -478,12 +489,14 @@ mod tests {
             pc_ip: Some("192.168.1.250/24".into()),
             network: Some("192.168.1.0/24".into()),
             gateway: Some("192.168.1.1".into()),
+            exclusions: Some("192.168.1.2-192.168.1.9".into()),
         };
         account_create(&mut src, "Mairie", "root", Secret::new("x".into()), full).unwrap();
         let json = serde_json::to_value(accounts_list(&src)).unwrap();
         assert_eq!(json[0]["pc_ip"], "192.168.1.250/24");
         assert_eq!(json[0]["network"], "192.168.1.0/24");
         assert_eq!(json[0]["gateway"], "192.168.1.1");
+        assert_eq!(json[0]["exclusions"], "192.168.1.2-192.168.1.9");
         let (path, _g_path) = temp_file("n.lenscout");
         accounts_export(&src, &path).unwrap();
         let (mut dst, _g_dst) = book();
@@ -493,6 +506,18 @@ mod tests {
         assert_eq!(plan["items"][0]["network_differs"], true);
         assert_eq!(plan["items"][0]["gateway_dropped"], false);
         assert_eq!(plan["items"][0]["login_differs"], false);
+    }
+
+    #[test]
+    fn exclusions_of_the_chosen_account_only() {
+        let (mut book, _g_book) = book();
+        let n = AccountNetwork { exclusions: Some("10.0.0.5".into()), ..no_net() };
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), n).unwrap();
+        let state = Mutex::new(book);
+        assert!(exclusions_for(&state, Some(&acc.id)).contains("10.0.0.5".parse().unwrap()));
+        // Aucun compte, ou un compte disparu : rien d'exclu, la recherche continue.
+        assert_eq!(exclusions_for(&state, None), Exclusions::default());
+        assert_eq!(exclusions_for(&state, Some("zzz")), Exclusions::default());
     }
 
     fn uuid_like() -> String {

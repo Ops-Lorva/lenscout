@@ -27,6 +27,8 @@ pub struct Account {
 /// (`192.168.1.0/24`), `gateway` = IPv4. Normalisé par `validated`.
 /// `network` ne se saisit plus : il se déduit de `pc_ip` (gardé dans le
 /// fichier et l'export pour les versions précédentes, qui le lisent).
+/// `exclusions` = adresses et plages jamais proposées aux caméras (voir
+/// `Exclusions`).
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct AccountNetwork {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,6 +37,73 @@ pub struct AccountNetwork {
     pub network: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusions: Option<String>,
+}
+
+/// Adresses qu'un site réserve (NVR, serveur, plage d'un autre installateur) :
+/// la recherche d'IP libres et le plan en lot n'y touchent jamais. Saisies
+/// comme `192.168.1.10, 192.168.1.20-192.168.1.29`, virgules ou espaces.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Exclusions(Vec<(u32, u32)>);
+
+impl Exclusions {
+    /// `None` si un élément ne se lit pas : une plage à l'envers ou une
+    /// adresse tronquée ne doit pas devenir « rien d'exclu » en silence.
+    pub fn parse(s: &str) -> Option<Exclusions> {
+        // `a - b` s'écrit aussi avec des espaces : on les retire autour du tiret
+        // avant de découper sur les espaces.
+        let mut compact = String::with_capacity(s.len());
+        for c in s.chars() {
+            if c.is_whitespace() && compact.ends_with('-') {
+                continue;
+            }
+            if c == '-' {
+                while compact.ends_with(char::is_whitespace) {
+                    compact.pop();
+                }
+            }
+            compact.push(c);
+        }
+        let mut out = Vec::new();
+        for item in compact.split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()) {
+            let (first, last) = item.split_once('-').unwrap_or((item, item));
+            let (first, last) = (u32::from(first.parse::<Ipv4Addr>().ok()?), u32::from(last.parse::<Ipv4Addr>().ok()?));
+            if first > last {
+                return None;
+            }
+            out.push((first, last));
+        }
+        Some(Exclusions(out))
+    }
+
+    pub fn contains(&self, ip: Ipv4Addr) -> bool {
+        let n = u32::from(ip);
+        self.0.iter().any(|&(first, last)| first <= n && n <= last)
+    }
+
+    /// Première adresse non exclue à partir de `n` (comprise), `None` au-delà
+    /// de 255.255.255.255. Saute une plage d'un coup : jamais une boucle sur
+    /// des millions d'adresses.
+    pub fn next_free(&self, mut n: u32) -> Option<u32> {
+        while let Some(&(_, last)) = self.0.iter().find(|&&(first, last)| first <= n && n <= last) {
+            n = last.checked_add(1)?;
+        }
+        Some(n)
+    }
+
+    /// Forme enregistrée : `a`, `a-b`, séparés par `, `.
+    fn normalized(&self) -> Option<String> {
+        let items: Vec<String> = self
+            .0
+            .iter()
+            .map(|&(first, last)| match first == last {
+                true => Ipv4Addr::from(first).to_string(),
+                false => format!("{}-{}", Ipv4Addr::from(first), Ipv4Addr::from(last)),
+            })
+            .collect();
+        (!items.is_empty()).then(|| items.join(", "))
+    }
 }
 
 /// `a.b.c.d/n` → adresse et préfixe (1 à 32).
@@ -87,6 +156,10 @@ impl AccountNetwork {
                 .map(str::to_string)
         };
         let (pc_ip, gateway) = (clean(&self.pc_ip), clean(&self.gateway));
+        let exclusions = match &self.exclusions {
+            None => None,
+            Some(s) => Exclusions::parse(s).ok_or(AccountError::InvalidExclusions)?.normalized(),
+        };
         let pc = match &pc_ip {
             None => None,
             // Jamais de /24 ajouté d'office : le masque se saisit.
@@ -118,7 +191,14 @@ impl AccountNetwork {
             network: pc_ip.as_deref().and_then(network_of),
             pc_ip,
             gateway,
+            exclusions,
         })
+    }
+
+    /// Adresses exclues du compte. Un champ illisible (fichier retouché à la
+    /// main, jamais passé par `validated`) n'exclut rien.
+    pub fn excluded(&self) -> Exclusions {
+        self.exclusions.as_deref().and_then(Exclusions::parse).unwrap_or_default()
     }
 
     /// Import : comme `validated`, mais une passerelle incohérente (ancien
@@ -134,8 +214,8 @@ impl AccountNetwork {
         }
     }
 
-    fn fields(&self) -> [&Option<String>; 3] {
-        [&self.pc_ip, &self.network, &self.gateway]
+    fn fields(&self) -> [&Option<String>; 4] {
+        [&self.pc_ip, &self.network, &self.gateway, &self.exclusions]
     }
 
     /// Un champ présent dans `imported` diffère-t-il ? Un champ absent du
@@ -157,6 +237,7 @@ impl AccountNetwork {
             (&mut merged.pc_ip, &imported.pc_ip),
             (&mut merged.network, &imported.network),
             (&mut merged.gateway, &imported.gateway),
+            (&mut merged.exclusions, &imported.exclusions),
         ] {
             if theirs.is_some() {
                 *mine = theirs.clone();
@@ -175,12 +256,18 @@ impl AccountNetwork {
             network: pc_ip.as_deref().and_then(network_of),
             pc_ip,
             gateway: field("gateway"),
+            exclusions: field("exclusions"),
         }
     }
 
     /// Champs présents ajoutés à un objet JSON (fichier, export).
     fn write_into(&self, a: &mut serde_json::Value) {
-        for (key, value) in [("pc_ip", &self.pc_ip), ("network", &self.network), ("gateway", &self.gateway)] {
+        for (key, value) in [
+            ("pc_ip", &self.pc_ip),
+            ("network", &self.network),
+            ("gateway", &self.gateway),
+            ("exclusions", &self.exclusions),
+        ] {
             if let Some(v) = value {
                 a[key] = v.clone().into();
             }
@@ -198,6 +285,7 @@ impl AccountNetwork {
             pc_ip: field("pc_ip")?,
             network: field("network")?,
             gateway: field("gateway")?,
+            exclusions: field("exclusions")?,
         })
     }
 }
@@ -243,6 +331,9 @@ pub enum AccountError {
     InvalidGateway,
     #[error("passerelle hors du réseau")]
     GatewayOutsideNetwork,
+    // Une adresse ou une plage `a.b.c.d-a.b.c.e` illisible, ou à l'envers.
+    #[error("IP exclues illisibles")]
+    InvalidExclusions,
 }
 
 /// Ancien trousseau : ne sert plus qu'à la reprise des comptes du format 1.
@@ -1019,7 +1110,132 @@ mod tests {
             pc_ip: some(pc_ip),
             network: some(network),
             gateway: some(gateway),
+            exclusions: None,
         }
+    }
+
+    fn with_exclusions(mut n: AccountNetwork, exclusions: &str) -> AccountNetwork {
+        n.exclusions = Some(exclusions.to_string());
+        n
+    }
+
+    fn ip(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
+
+    // ---- IP exclues ----
+
+    #[test]
+    fn exclusions_read_addresses_and_ranges_split_by_commas_or_spaces() {
+        let e = Exclusions::parse("192.168.1.10, 192.168.1.20-192.168.1.25 192.168.1.30 - 192.168.1.31,,").unwrap();
+        for yes in ["192.168.1.10", "192.168.1.20", "192.168.1.22", "192.168.1.25", "192.168.1.30", "192.168.1.31"] {
+            assert!(e.contains(ip(yes)), "{yes}");
+        }
+        for no in ["192.168.1.11", "192.168.1.19", "192.168.1.26", "192.168.1.32"] {
+            assert!(!e.contains(ip(no)), "{no}");
+        }
+        // Rien de saisi : rien d'exclu.
+        assert!(!Exclusions::parse("  ").unwrap().contains(ip("192.168.1.10")));
+        assert!(!Exclusions::default().contains(ip("192.168.1.10")));
+    }
+
+    #[test]
+    fn unreadable_exclusions_are_refused() {
+        for bad in ["x", "192.168.1", "192.168.1.300", "192.168.1.20-192.168.1.10", "192.168.1.1-", "-192.168.1.1", "1.2.3.4-5-6", "10.0.0.0/24"] {
+            assert!(Exclusions::parse(bad).is_none(), "{bad}");
+            assert!(
+                matches!(
+                    with_exclusions(net("192.168.1.250/24", "", ""), bad).validated(),
+                    Err(AccountError::InvalidExclusions)
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn exclusions_are_normalized_by_validated() {
+        let n = with_exclusions(no_net(), "  192.168.1.10   192.168.1.20 - 192.168.1.25 ,192.168.1.30 ");
+        assert_eq!(
+            n.validated().unwrap().exclusions.as_deref(),
+            Some("192.168.1.10, 192.168.1.20-192.168.1.25, 192.168.1.30")
+        );
+        // Vide ou blanc : champ absent.
+        assert_eq!(with_exclusions(no_net(), " , ").validated().unwrap().exclusions, None);
+    }
+
+    #[test]
+    fn exclusions_are_stored_and_reload() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let wanted = with_exclusions(net("192.168.1.250/24", "", "192.168.1.1"), "192.168.1.10-192.168.1.19");
+        let acc = book.create("Mairie", "root", pwd(PWD), wanted).unwrap();
+        assert!(fx.raw().contains("\"exclusions\": \"192.168.1.10-192.168.1.19\""));
+        assert_eq!(fx.book().list()[0].net, acc.net);
+        assert!(acc.net.excluded().contains(ip("192.168.1.15")));
+    }
+
+    #[test]
+    fn older_file_without_exclusions_loads_and_writes_no_key() {
+        let fx = Fixture::new();
+        let file = serde_json::json!({"version": 2, "accounts": [{
+            "id": "1", "name": "A", "pc_ip": "192.168.1.250/24", "gateway": "192.168.1.1",
+            "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes()),
+        }]});
+        std::fs::write(fx.path(), file.to_string()).unwrap();
+        let book = fx.book();
+        assert_eq!(book.list()[0].net.exclusions, None);
+        assert!(!book.export().contains("exclusions"));
+        // Désérialisé directement (commande du front) : le champ est facultatif.
+        let n: AccountNetwork = serde_json::from_str(r#"{"pc_ip": "192.168.1.250/24"}"#).unwrap();
+        assert_eq!(n.exclusions, None);
+    }
+
+    #[test]
+    fn export_and_import_carry_exclusions() {
+        let (mut src, _fx_src) = empty_book();
+        let full = with_exclusions(net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1"), "192.168.1.2-192.168.1.9");
+        src.create("Mairie", "root", pwd(PWD), full.clone()).unwrap();
+        let data = src.export();
+        assert!(data.contains("\"exclusions\": \"192.168.1.2-192.168.1.9\""));
+        let (mut dst, _fx_dst) = empty_book();
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        assert_eq!(dst.list()[0].net, full);
+    }
+
+    #[test]
+    fn import_compares_and_merges_exclusions() {
+        let (mut src, _fx_src) = empty_book();
+        src.create("Mairie", "root", pwd(PWD), with_exclusions(no_net(), "10.0.0.5")).unwrap();
+        let data = src.export();
+        let (mut dst, _fx_dst) = empty_book();
+        let mine = with_exclusions(net("10.0.0.250/24", "", "10.0.0.1"), "10.0.0.9");
+        dst.create("Mairie", "root", pwd(PWD), mine).unwrap();
+        assert_eq!(
+            dst.import_plan(&data).unwrap().items[0].kind,
+            ImportKind::Differs { login_differs: false, password_differs: false, network_differs: true }
+        );
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        // Les exclusions du fichier remplacent les miennes, le reste du réseau reste.
+        assert_eq!(dst.list()[0].net, with_exclusions(net("10.0.0.250/24", "10.0.0.0/24", "10.0.0.1"), "10.0.0.5"));
+        // Un fichier sans exclusions ne vide pas celles du carnet.
+        let (mut bare, _fx_bare) = empty_book();
+        bare.create("Mairie", "root", pwd(PWD), no_net()).unwrap();
+        let data = bare.export();
+        assert_eq!(dst.import_plan(&data).unwrap().items[0].kind, ImportKind::Identical);
+    }
+
+    #[test]
+    fn import_rejects_unreadable_exclusions() {
+        let book = sample_book();
+        let before = book.list();
+        let data = serde_json::json!({
+            "format": "lenscout-accounts", "version": 1,
+            "accounts": [{"name": "X", "login": seal::seal(b"root"), "exclusions": "pas une ip"}],
+        })
+        .to_string();
+        assert!(matches!(book.import_plan(&data), Err(AccountError::ImportInvalid)));
+        assert_eq!(book.list(), before);
     }
 
     // ---- Champs réseau ----

@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
+use lenscout_core::accounts::{AccountBook, Exclusions};
 use lenscout_core::discovery::arp::ScanInterface;
-use lenscout_core::free_ips::{FreeError, FreeRange, SystemProbe, scan};
+use lenscout_core::free_ips::{FreeError, FreeRange, SystemProbe, excluded_in, scan};
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use serde::Serialize;
 use tauri::State;
@@ -71,10 +72,10 @@ pub enum FreeIpsEvent {
 }
 
 /// Ce que le balayage ne doit pas proposer : les caméras entendues au dernier
-/// scan de cette interface, la passerelle de l'interface. (L'adresse du poste
-/// est écartée par le balayage lui-même.)
-fn exclusions(iface: &ScanInterface, seen: &SeenSnapshot, gateway: Option<&str>) -> HashSet<Ipv4Addr> {
-    let mut out: HashSet<Ipv4Addr> = HashSet::new();
+/// scan de cette interface, la passerelle de l'interface, les IP exclues du
+/// compte retenu. (L'adresse du poste est écartée par le balayage lui-même.)
+fn exclusions(iface: &ScanInterface, seen: &SeenSnapshot, gateway: Option<&str>, account: &Exclusions) -> HashSet<Ipv4Addr> {
+    let mut out: HashSet<Ipv4Addr> = excluded_in(iface, account);
     if seen.iface.as_deref() == Some(iface.name.as_str()) {
         out.extend(seen.ips.iter().copied());
     }
@@ -88,14 +89,19 @@ fn exclusions(iface: &ScanInterface, seen: &SeenSnapshot, gateway: Option<&str>)
 /// Balaie le sous-réseau de l'interface et envoie `Progress` puis `Done`. Un
 /// balayage annulé (`cmd_free_ips_cancel`, feuille fermée, balayage remplacé)
 /// rend `Ok` sans `Done` : plus rien ne doit viser la feuille disparue.
+/// `account_id` : le compte retenu par la feuille, dont les IP exclues ne sont
+/// jamais proposées.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_free_ips(
     id: u64,
     interface: String,
+    account_id: Option<String>,
     channel: Channel<FreeIpsEvent>,
     state: State<'_, FreeIpsState>,
     scan_state: State<'_, ScanState>,
     join: State<'_, super::join::JoinState>,
+    accounts: State<'_, Mutex<AccountBook>>,
 ) -> Result<(), String> {
     let token = state.begin(id);
 
@@ -117,7 +123,8 @@ pub async fn cmd_free_ips(
         None if join.temp().is_some_and(|t| t.iface == iface.name) => (join.scope(iface), None),
         None => (iface, gateway),
     };
-    let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref());
+    let account = super::accounts::exclusions_for(&accounts, account_id.as_deref());
+    let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref(), &account);
     let probe = Arc::new(SystemProbe { iface: iface.clone() });
     let sender = channel.clone();
     let result = scan(&iface, exclude, probe, progress_to(token.clone(), move |e| sender.send(e).is_ok()), token.clone()).await;
@@ -160,16 +167,24 @@ mod tests {
 
     #[test]
     fn exclusions_hold_seen_cameras_and_the_gateway() {
-        let out = exclusions(&eth0(), &seen("eth0", &["10.0.50.31"]), Some("10.0.50.1"));
+        let out = exclusions(&eth0(), &seen("eth0", &["10.0.50.31"]), Some("10.0.50.1"), &Exclusions::default());
         let want: HashSet<Ipv4Addr> = ["10.0.50.31", "10.0.50.1"].iter().map(|s| s.parse().unwrap()).collect();
         assert_eq!(out, want);
     }
 
     #[test]
+    fn exclusions_hold_the_account_exclusions_of_the_subnet() {
+        let account = Exclusions::parse("10.0.50.40-10.0.50.42, 192.168.1.1").unwrap();
+        let out = exclusions(&eth0(), &seen("eth0", &[]), None, &account);
+        let want: HashSet<Ipv4Addr> = ["10.0.50.40", "10.0.50.41", "10.0.50.42"].iter().map(|s| s.parse().unwrap()).collect();
+        assert_eq!(out, want);
+    }
+
+    #[test]
     fn cameras_heard_on_another_interface_are_not_excluded() {
-        let out = exclusions(&eth0(), &seen("wlan0", &["10.0.50.31"]), None);
+        let out = exclusions(&eth0(), &seen("wlan0", &["10.0.50.31"]), None, &Exclusions::default());
         assert!(out.is_empty());
-        assert!(exclusions(&eth0(), &seen("eth0", &[]), Some("pas une ip")).is_empty());
+        assert!(exclusions(&eth0(), &seen("eth0", &[]), Some("pas une ip"), &Exclusions::default()).is_empty());
     }
 
     #[test]

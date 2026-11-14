@@ -218,21 +218,22 @@ export interface BatchRequest {
 }
 
 /** Aperçu calculé et gardé par Rust ; rien n'est envoyé aux caméras. */
-export const batchPreview = (selection: Camera[], others: Camera[], req: BatchRequest, iface: string) =>
+/** `accountId` : le compte retenu, dont Rust saute les IP exclues. */
+export const batchPreview = (selection: Camera[], others: Camera[], req: BatchRequest, iface: string, accountId: string) =>
   selection.length === 0
     ? Promise.reject('no_cameras')
-    : invoke<BatchPreview>('cmd_batch_preview', { selection, others, req, iface });
+    : invoke<BatchPreview>('cmd_batch_preview', { selection, others, req, iface, accountId: accountId || null });
 
 /** Applique l'aperçu gardé par Rust sous `previewId` (usage unique). */
 export const batchApply = (previewId: string, accountId: string, iface: string) =>
   invoke<ActionResult[]>('cmd_batch_apply', { previewId, accountId, iface });
 
-/** La sélection (ordre compris), l'interface ou un champ qui changent : l'aperçu n'est plus celui de l'écran. */
+/** La sélection (ordre compris), l'interface, le compte ou un champ qui changent : l'aperçu n'est plus celui de l'écran. */
 export const batchFingerprint = (
   cams: Camera[],
-  f: { iface: string; start: string; mask: string; gateway: string; dns: string },
+  f: { iface: string; start: string; mask: string; gateway: string; dns: string; accountId?: string },
 ): string =>
-  JSON.stringify([f.iface, cams.map(cameraKey), f.start.trim(), f.mask.trim(), f.gateway.trim(), splitList(f.dns)]);
+  JSON.stringify([f.iface, cams.map(cameraKey), f.start.trim(), f.mask.trim(), f.gateway.trim(), splitList(f.dns), f.accountId ?? '']);
 
 /**
  * Message d'une ligne pour l'erreur d'un aperçu : `BatchError` (objet à code)

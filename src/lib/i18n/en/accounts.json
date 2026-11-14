@@ -16,7 +16,8 @@
     "login": "Login",
     "password": "Password",
     "pc_ip": "PC IP",
-    "gateway": "Gateway"
+    "gateway": "Gateway",
+    "exclusions": "Excluded IPs"
   },
   "error": {
     "empty_field": "Empty field",
@@ -33,7 +34,8 @@
     "invalid_pc_ip": "Invalid PC IP (e.g. 192.168.1.250/24)",
     "missing_mask": "Missing mask (e.g. /24)",
     "invalid_gateway": "Invalid gateway",
-    "gateway_outside_network": "The gateway is not in the network"
+    "gateway_outside_network": "The gateway is not in the network",
+    "invalid_exclusions": "Unreadable excluded IPs (e.g. 192.168.1.2-192.168.1.9, 192.168.1.100)"
   },
   "notice": {
     "quarantined": "Accounts file unreadable, set aside",

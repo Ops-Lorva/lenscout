@@ -29,6 +29,7 @@
   let prefilled = '';
   let pcIp = $state('');
   let gateway = $state('');
+  let exclusions = $state('');
   let confirming = $state('');
   let needPassword = $state(true);
 
@@ -110,6 +111,7 @@
     showPassword = false;
     pcIp = a?.pc_ip ?? '';
     gateway = a?.gateway ?? '';
+    exclusions = a?.exclusions ?? '';
     if (a?.has_secret) void reveal(a.id);
   }
 
@@ -138,7 +140,7 @@
     error = '';
     errorCode = '';
     try {
-      const net = netIn(pcIp, gateway);
+      const net = netIn(pcIp, gateway, exclusions);
       if (editing) await updateAccount(editing, name, login, passwordToSend(password, prefilled), net);
       else await createAccount(name, login, password, net);
     } catch (e) {
@@ -257,6 +259,8 @@
         {#if pcIpMessage}<span class="note bad" id="a-pcip-err">{pcIpMessage}</span>{/if}
         <label for="a-gw">{$_('accounts.field.gateway')}</label>
         <input id="a-gw" type="text" bind:value={gateway} placeholder="192.168.1.1" inputmode="decimal" autocomplete="off" spellcheck="false" />
+        <label for="a-excl">{$_('accounts.field.exclusions')}</label>
+        <input id="a-excl" type="text" bind:value={exclusions} placeholder="192.168.1.2-192.168.1.9, 192.168.1.100" autocomplete="off" spellcheck="false" />
       </div>
       <div class="foot">
         <span class="sum" class:e={!!otherError}>{otherError ? $_(otherError) : ''}</span>

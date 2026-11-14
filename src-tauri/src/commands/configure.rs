@@ -278,15 +278,19 @@ impl From<BatchError> for PreviewError {
 /// Calcule et valide le plan, sans rien envoyer à aucune caméra, et le garde
 /// côté Rust sous un identifiant. `selection` est dans l'ordre affiché ;
 /// `others` : les autres caméras connues. L'adresse du poste sur l'interface
-/// vient d'ici, pas du front : elle n'est jamais attribuée.
+/// vient d'ici, pas du front : elle n'est jamais attribuée. Les IP exclues du
+/// compte retenu (`account_id`) sont sautées.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_batch_preview(
     selection: Vec<Camera>,
     others: Vec<Camera>,
     req: BatchRequestDto,
     iface: String,
+    account_id: Option<String>,
     store: State<'_, PreviewStore>,
     join: State<'_, super::join::JoinState>,
+    accounts: State<'_, Mutex<AccountBook>>,
 ) -> Result<BatchPreview, PreviewError> {
     let req: BatchRequest = req.into();
     let name = iface;
@@ -303,7 +307,8 @@ pub async fn cmd_batch_preview(
     // Les deux adresses du poste sont réservées : la principale et celle d'un compte.
     let primary = host.ip;
     let host = join.scope(host);
-    let rows = plan_batch(&selection, &req, &others, &[primary, host.ip])?;
+    let excluded = super::accounts::exclusions_for(&accounts, account_id.as_deref());
+    let rows = plan_batch(&selection, &req, &others, &[primary, host.ip], &excluded)?;
     let id = remember_preview(&store, selection, rows.clone(), req, &host, Instant::now());
     Ok(BatchPreview { id, rows })
 }

@@ -32,6 +32,7 @@ export const CODES = [
   'missing_mask',
   'invalid_gateway',
   'gateway_outside_network',
+  'invalid_exclusions',
   'account_no_pc_ip',
   'pc_ip_prefix_unsupported',
   'already_in_network',

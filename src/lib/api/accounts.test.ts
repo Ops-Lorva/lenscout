@@ -141,8 +141,9 @@ test('les codes d’E/S du fichier choisi ont leur libellé', () => {
 test('champs réseau : vides → null, transmis à la création et à la modification', async () => {
   invoke.mockResolvedValue({});
   // Le réseau ne se saisit plus : Rust le déduit de l'IP du PC.
-  const net = netIn(' 192.168.1.250/24 ', '192.168.1.1');
-  expect(net).toEqual({ pc_ip: '192.168.1.250/24', network: null, gateway: '192.168.1.1' });
+  const net = netIn(' 192.168.1.250/24 ', '192.168.1.1', ' 192.168.1.2-192.168.1.9 ');
+  expect(net).toEqual({ pc_ip: '192.168.1.250/24', network: null, gateway: '192.168.1.1', exclusions: '192.168.1.2-192.168.1.9' });
+  expect(netIn('', '', ' ').exclusions).toBeNull();
   await createAccount('A', 'root', 'pw', net);
   expect(invoke).toHaveBeenLastCalledWith('cmd_account_create', { name: 'A', login: 'root', password: 'pw', net });
   await updateAccount('id', 'A', 'root', null, net);

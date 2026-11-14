@@ -190,16 +190,20 @@ test('lot : l’empreinte change avec un champ ou la sélection', () => {
   expect(batchFingerprint(a, { ...f, iface: 'wlan0' })).not.toBe(base);
   expect(batchFingerprint(a.slice(0, 1), f)).not.toBe(base);
   expect(batchFingerprint([a[1], a[0]], f)).not.toBe(base);
+  // Un autre compte, d'autres IP exclues : l'aperçu n'est plus le bon.
+  expect(batchFingerprint(a, { ...f, accountId: 'b' })).not.toBe(batchFingerprint(a, { ...f, accountId: 'a' }));
 });
 
 test('lot : liste vide jamais envoyée, aperçu et application passent par Rust', async () => {
   invoke.mockClear();
   const req = { start: '10.0.50.11', mask: '255.255.255.0', gateway: null, dns: [] };
-  await expect(batchPreview([], [], req, 'eth0')).rejects.toBe('no_cameras');
+  await expect(batchPreview([], [], req, 'eth0', 'acc')).rejects.toBe('no_cameras');
   expect(invoke).not.toHaveBeenCalled();
   invoke.mockResolvedValue({ id: 'x', rows: [] });
-  await batchPreview([cam('axis')], [], req, 'eth0');
-  expect(invoke).toHaveBeenCalledWith('cmd_batch_preview', { selection: [cam('axis')], others: [], req, iface: 'eth0' });
+  await batchPreview([cam('axis')], [], req, 'eth0', 'acc');
+  expect(invoke).toHaveBeenCalledWith('cmd_batch_preview', { selection: [cam('axis')], others: [], req, iface: 'eth0', accountId: 'acc' });
+  await batchPreview([cam('axis')], [], req, 'eth0', '');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_batch_preview', { selection: [cam('axis')], others: [], req, iface: 'eth0', accountId: null });
   await batchApply('x', 'acc', 'eth0');
   expect(invoke).toHaveBeenLastCalledWith('cmd_batch_apply', { previewId: 'x', accountId: 'acc', iface: 'eth0' });
 });
