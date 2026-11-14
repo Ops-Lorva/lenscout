@@ -1,6 +1,6 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
-import { clearStatusIf, initialPage, status, type Status } from './nav';
+import { clearStatusIf, initialPage, status, suspendStep, type Status } from './nav';
 
 beforeEach(() => status.set(null));
 
@@ -23,4 +23,13 @@ test('clearStatusIf n’efface que le message qu’on a posé soi-même', () => 
   expect(get(status)).toBe(other);
   clearStatusIf(null);
   expect(get(status)).toBe(other);
+});
+
+test('flux du Cadrage : suspendu quand l’onglet se cache, repris au retour', () => {
+  expect(suspendStep(false, true, false)).toBe('suspend');
+  expect(suspendStep(true, false, true)).toBe('resume');
+  // Rien en cours, ou déjà dans le bon état : rien à faire.
+  expect(suspendStep(false, false, false)).toBe('none');
+  expect(suspendStep(true, true, false)).toBe('none');
+  expect(suspendStep(true, false, false)).toBe('none');
 });

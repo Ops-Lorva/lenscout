@@ -11,7 +11,8 @@
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
   import { actionResults, resultFor } from '$lib/api/configure';
-  import { joinable, listAccounts, type Account } from '$lib/api/accounts';
+  import { joinable } from '$lib/api/accounts';
+  import { accountList, ensureAccounts } from '$lib/stores/accounts';
   import { createJoinSwitch, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice } from '$lib/api/net';
 
   const IFACE_KEY = 'lenscout.iface';
@@ -24,12 +25,12 @@
   let scanning = $state(false);
   // Sélecteur de compte : `''` = DHCP (aucune IP ajoutée), sinon l'id du compte
   // dont l'IP du PC est posée sur l'interface. Un choix vaut validation.
-  let accounts = $state<Account[]>([]);
   let account = $state('');
   let switching = $state(false);
   // L'IP du compte vient d'être posée : on attend de la voir sur le poste avant de scanner.
   let posing = $state(false);
-  const choices = $derived(joinable(accounts));
+  // Liste partagée : un compte ajouté ou importé apparaît sans quitter l'onglet.
+  const choices = $derived(joinable($accountList ?? []));
   // DHCP : l'adresse actuelle de l'interface ; compte : l'IP réellement posée.
   const shownAddr = $derived(account ? ($joined?.account_id === account ? $joined.cidr : '') : ifaceAddr);
   const sw = createJoinSwitch({ join: joinNetwork, leave: leaveNetwork });
@@ -173,9 +174,14 @@
 
   // La barre d'état porte la recherche en cours : interface et compte de caméras.
   // On ne retire que son propre message : un autre écran a pu poser le sien.
+  // Onglet caché (il reste monté, le scan continue) : la barre est à l'écran visible.
   let scanStatus: Status | null = null;
+  const visible = $derived($page === 'network');
   $effect(() => {
-    if (scanning) {
+    if (!visible) clearStatusIf(failStatus);
+  });
+  $effect(() => {
+    if (scanning && visible) {
       scanStatus = { text: $_('network.scanning', { values: { iface, count: $cameras.length } }) };
       status.set(scanStatus);
     } else {
@@ -194,7 +200,7 @@
     let saved = '';
     try { saved = localStorage.getItem(IFACE_KEY) ?? ''; } catch {}
     iface = interfaces.includes(saved) ? saved : (interfaces[0] ?? '');
-    try { accounts = await listAccounts(); } catch {}
+    try { await ensureAccounts(); } catch {}
     // Retour sur l'écran : un compte déjà posé reste choisi, sur son interface.
     let j = null;
     try { j = await joinedNetwork(); } catch {}
@@ -202,8 +208,20 @@
     ({ iface, account } = sw.applied);
     joined.set(j);
     void loadAddr(iface);
-    // Retour sur la page : la liste et la sélection existantes restent ; « Rescanner » relance.
-    if (shouldAutoScan(get(cameras))) void scan();
+    // L'écran reste monté : le premier scan part au premier affichage, ensuite
+    // seuls Rescanner et un changement d'interface ou de compte en relancent.
+    if (shouldAutoScan(get(cameras))) {
+      if (visible) void scan();
+      else firstScanPending = true;
+    }
+  });
+
+  let firstScanPending = false;
+  $effect(() => {
+    if (visible && firstScanPending) {
+      firstScanPending = false;
+      void scan();
+    }
   });
 
   // Une caméra dont l'IP vient de changer met un instant à reparaître : on

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
+  import { page } from '$lib/stores/nav';
   import { _ } from 'svelte-i18n';
   import {
     cancelFreeIps, freeErrorKey, networkLabel, rangeContaining, rangeLabel, reduceFreeEvent, startFreeIps,
@@ -54,10 +55,33 @@
     }
   }
 
-  onMount(scan);
+  /** Balayage en cours abandonné : plus rien n'écrit, le cœur l'arrête. */
+  function cancel() {
+    run++;
+    if (runId !== null) void cancelFreeIps(runId).catch(() => {});
+    runId = null;
+  }
+
+  // Les feuilles vivent dans l'onglet Réseau, gardé monté : onglet quitté,
+  // le balayage s'arrête (pas de trafic dans le dos) ; au retour il reprend
+  // s'il n'avait pas fini. Premier passage visible : le premier balayage.
+  let interrupted = true;
+  $effect(() => {
+    const visible = $page === 'network';
+    untrack(() => {
+      if (!visible && state?.phase === 'scanning') {
+        cancel();
+        interrupted = true;
+      } else if (visible && interrupted) {
+        interrupted = false;
+        void scan();
+      }
+    });
+  });
+
   onDestroy(() => {
     alive = false;
-    if (runId !== null) void cancelFreeIps(runId).catch(() => {});
+    cancel();
   });
 </script>
 

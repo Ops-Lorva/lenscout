@@ -3,7 +3,7 @@
   import { _ } from 'svelte-i18n';
   import { errorKey } from '$lib/api/errors';
   import { ackFrame, FramePresenter, identifyCamera, startStream, stopStream } from '$lib/api/stream';
-  import { framingTarget } from '$lib/stores/nav';
+  import { framingTarget, page, suspendStep } from '$lib/stores/nav';
   import AccountPicker from './AccountPicker.svelte';
 
   let accountId = $state('');
@@ -13,6 +13,8 @@
   // Un start remplacé par un autre se résout aussi : seule la dernière
   // génération a le droit de toucher à l'état.
   let generation = 0;
+  // Flux coupé parce que l'onglet est passé caché : à reprendre au retour.
+  let suspended = false;
 
   const presenter = new FramePresenter(
     (u) => (src = u),
@@ -81,15 +83,35 @@
     else void el.requestFullscreen?.();
   }
 
-  // Changer de caméra cible coupe le flux de la précédente.
+  // Changer de caméra cible coupe le flux de la précédente (et oublie une
+  // reprise en attente : c'était l'autre caméra).
   $effect(() => {
     void cam;
     untrack(() => {
+      suspended = false;
       if (playing) void stop();
     });
   });
 
-  // Quitter l'onglet coupe le flux et libère l'image.
+  // Onglet caché (il reste monté) : le flux est coupé, pas de bande
+  // passante dans le dos ; il reprend au retour sur l'onglet.
+  $effect(() => {
+    const visible = $page === 'framing';
+    untrack(() => {
+      const step = suspendStep(visible, playing, suspended);
+      if (step === 'suspend') {
+        suspended = true;
+        void stop();
+      } else if (step === 'resume') {
+        suspended = false;
+        void play();
+      } else if (visible) {
+        suspended = false;
+      }
+    });
+  });
+
+  // Démontage (sortie de l'app) : coupe le flux et libère l'image.
   onDestroy(() => {
     generation++;
     presenter.dispose();

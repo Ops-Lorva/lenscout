@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { _ } from 'svelte-i18n';
   import { errorKey } from '$lib/api/errors';
-  import { ACCOUNT_KEY, listAccounts, pickAccount, type Account } from '$lib/api/accounts';
+  import { ACCOUNT_KEY, pickAccount, type Account } from '$lib/api/accounts';
+  import { accountList, ensureAccounts } from '$lib/stores/accounts';
 
   // `id` : pour le `<label for>` d'une feuille ; `account` : le compte retenu
   // (champs réseau compris), pour le préremplissage.
@@ -12,11 +13,13 @@
     id = undefined,
   }: { accountId?: string; account?: Account | null; id?: string } = $props();
 
-  let accounts = $state<Account[]>([]);
+  // Liste partagée : un compte ajouté, importé ou supprimé dans l'écran
+  // Comptes apparaît ici sans démontage (onglets gardés montés).
+  const accounts = $derived<Account[]>($accountList ?? []);
   let error = $state('');
   // Le select reste focalisable pendant le chargement (premier champ d'une
   // feuille) ; il ne se grise que si la liste revient vide.
-  let loaded = $state(false);
+  const loaded = $derived($accountList !== null || error !== '');
 
   function onChange(e: Event) {
     accountId = (e.currentTarget as HTMLSelectElement).value;
@@ -27,18 +30,24 @@
     account = accounts.find((a) => a.id === accountId) ?? null;
   });
 
+  // Choix retenu, ou repris quand la liste change (compte supprimé : le premier).
+  $effect(() => {
+    if ($accountList === null) return;
+    const list = $accountList;
+    untrack(() => {
+      let saved = '';
+      try { saved = localStorage.getItem(ACCOUNT_KEY) ?? ''; } catch {}
+      const next = pickAccount(list, accountId || saved);
+      if (next !== accountId) accountId = next;
+    });
+  });
+
   onMount(async () => {
     try {
-      accounts = await listAccounts();
+      await ensureAccounts();
     } catch (e) {
       error = $_(`accounts.${errorKey(e)}`);
-      return;
-    } finally {
-      loaded = true;
     }
-    let saved = '';
-    try { saved = localStorage.getItem(ACCOUNT_KEY) ?? ''; } catch {}
-    accountId = pickAccount(accounts, accountId || saved);
   });
 </script>
 

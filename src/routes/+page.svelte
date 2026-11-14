@@ -12,12 +12,13 @@
   <UpdateBanner />
   <div class="body">
     <Sidebar />
+    <!-- Les quatre écrans restent montés, un seul visible : changer d'onglet ne
+         perd ni le scan, ni le filtre, ni les coches, ni une feuille ouverte. -->
     <main class="pane">
-      {#if $page === 'network'}<Network />
-      {:else if $page === 'framing'}<Framing />
-      {:else if $page === 'accounts'}<Accounts />
-      {:else}<Settings />
-      {/if}
+      <section class="page" hidden={$page !== 'network'}><Network /></section>
+      <section class="page" hidden={$page !== 'framing'}><Framing /></section>
+      <section class="page" hidden={$page !== 'accounts'}><Accounts /></section>
+      <section class="page" hidden={$page !== 'settings'}><Settings /></section>
     </main>
   </div>
   {#if $status}
@@ -31,6 +32,9 @@
   .app { display: flex; flex-direction: column; height: 100vh; position: relative; background: var(--win); color: var(--text); }
   .body { flex: 1; min-height: 0; display: flex; }
   .pane { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 16px 16px 36px; display: flex; flex-direction: column; }
+  /* Même mise en page que le panneau : chaque écran y était enfant direct. */
+  .page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .page[hidden] { display: none; }
   /* Barre d'état : à droite de la barre latérale, par-dessus le bas du panneau. */
   .status {
     position: absolute; left: 160px; right: 0; bottom: 0;

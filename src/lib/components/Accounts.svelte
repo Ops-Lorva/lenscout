@@ -3,15 +3,17 @@
   import { _ } from 'svelte-i18n';
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
-    accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, listAccounts, netIn, noticeKey,
+    accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, netIn, noticeKey,
     passwordRequired, passwordToSend, pcIpError, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
-  import { clearStatusIf, status, type Status } from '$lib/stores/nav';
+  import { accountList, refreshAccounts } from '$lib/stores/accounts';
+  import { clearStatusIf, page, status, type Status } from '$lib/stores/nav';
   import Dialog from './Dialog.svelte';
   import ImportSheet from './ImportSheet.svelte';
 
-  let accounts = $state<AccountEntry[]>([]);
+  // Liste partagée avec les sélecteurs des autres écrans.
+  const accounts = $derived<AccountEntry[]>($accountList ?? []);
   let error = $state('');
   // Clé de l'erreur en cours : « Nom déjà utilisé » se place sous le champ Nom.
   let errorCode = $state('');
@@ -89,7 +91,7 @@
 
   async function refresh() {
     try {
-      accounts = await listAccounts();
+      await refreshAccounts();
     } catch (e) {
       fail(e);
     }
@@ -167,6 +169,10 @@
     await refresh();
   }
 
+  // Onglet quitté (il reste monté) : son message quitte la barre d'état.
+  $effect(() => {
+    if ($page !== 'accounts') clearStatusIf(ownStatus);
+  });
   onMount(() => () => clearStatusIf(ownStatus));
 
   onMount(async () => {
