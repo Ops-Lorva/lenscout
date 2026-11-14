@@ -35,12 +35,9 @@ export function maskOf(s: string): string {
   return c ? dotted(maskBits(c.prefix)) : '';
 }
 
-/**
- * Valeur d'un champ prérempli : `current` reste s'il a été saisi (différent du
- * dernier préremplissage `lastAuto` et non vide), sinon il prend `wanted`.
- */
-export const autoFill = (current: string, lastAuto: string, wanted: string): string =>
-  current.trim() === '' || current === lastAuto ? wanted : current;
+/** Réseau du formulaire de compte : déduit de l'IP du PC tant que l'utilisateur n'a pas touché le champ. */
+export const derivedNetwork = (pcIp: string, network: string, touched: boolean): string =>
+  touched ? network : networkOf(pcIp) || network;
 
 export interface AccountNet {
   pc_ip?: string | null;
@@ -145,17 +142,14 @@ export interface MaskGateway {
 }
 
 /**
- * Préremplissage des feuilles IP par le compte retenu : `fields` = valeurs à
- * l'écran, `last` = dernier préremplissage. Un champ saisi reste ; un champ
- * vide ou encore prérempli suit le compte (ou revient au défaut).
+ * Préremplissage des feuilles IP par le compte retenu : un champ touché
+ * (saisi par l'utilisateur) reste, les autres suivent le compte ou
+ * reviennent au défaut.
  */
-export function applyPrefill(fields: MaskGateway, last: MaskGateway, account: AccountNet | null): { fields: MaskGateway; last: MaskGateway } {
+export function prefillFields(fields: MaskGateway, touched: { mask: boolean; gateway: boolean }, account: AccountNet | null): MaskGateway {
   const wanted = prefillFor(account);
-  return {
-    fields: { mask: autoFill(fields.mask, last.mask, wanted.mask), gateway: autoFill(fields.gateway, last.gateway, wanted.gateway) },
-    last: wanted,
-  };
+  return { mask: touched.mask ? fields.mask : wanted.mask, gateway: touched.gateway ? fields.gateway : wanted.gateway };
 }
 
-/** État initial d'une feuille : masque par défaut, passerelle vide, tous deux « préremplis ». */
+/** État initial d'une feuille : masque par défaut, passerelle vide. */
 export const INITIAL_PREFILL: MaskGateway = { mask: DEFAULT_MASK, gateway: '' };

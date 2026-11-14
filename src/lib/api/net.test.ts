@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  activeAddress, autoFill, createJoinSwitch, DEFAULT_MASK, joinStep, maskOf, networkOf, prefillFor, type Joined,
+  activeAddress, createJoinSwitch, derivedNetwork, DEFAULT_MASK, joinStep, maskOf, networkOf, prefillFor, type Joined,
 } from './net';
 
 test('le réseau se déduit de l’IP du PC', () => {
@@ -21,11 +21,13 @@ test('masque d’un CIDR', () => {
   expect(maskOf('nope')).toBe('');
 });
 
-test('un champ saisi n’est jamais écrasé ; vide ou prérempli, il suit le compte', () => {
-  expect(autoFill('', '', '192.168.1.1')).toBe('192.168.1.1');
-  expect(autoFill('192.168.1.1', '192.168.1.1', '10.0.0.1')).toBe('10.0.0.1');
-  expect(autoFill('192.168.1.254', '192.168.1.1', '10.0.0.1')).toBe('192.168.1.254');
-  expect(autoFill('192.168.1.254', '', '10.0.0.1')).toBe('192.168.1.254');
+test('réseau du compte : déduit de l’IP du PC tant que le champ n’a pas été touché', () => {
+  expect(derivedNetwork('192.168.1.250/24', '', false)).toBe('192.168.1.0/24');
+  expect(derivedNetwork('10.1.2.3/16', '192.168.1.0/24', false)).toBe('10.1.0.0/16');
+  // Saisi à la main (même identique à une déduction passée) : il reste.
+  expect(derivedNetwork('10.1.2.3/16', '192.168.1.0/24', true)).toBe('192.168.1.0/24');
+  // IP du PC incomplète : le champ ne bouge pas.
+  expect(derivedNetwork('10.1.2', '192.168.1.0/24', false)).toBe('192.168.1.0/24');
 });
 
 test('préremplissage : masque et passerelle du compte, sinon les valeurs par défaut', () => {
@@ -145,19 +147,19 @@ test('état du cœur au retour sur l’écran : un compte posé sur une autre in
   expect(sw.applied).toEqual({ iface: 'en1', account: 'a' });
 });
 
-test('feuilles IP : le compte remplit masque et passerelle sans écraser une saisie', async () => {
-  const { applyPrefill, INITIAL_PREFILL } = await import('./net');
+test('feuilles IP : le compte remplit masque et passerelle, jamais un champ touché', async () => {
+  const { prefillFields, INITIAL_PREFILL } = await import('./net');
   const a = { network: '10.0.0.0/16', gateway: '10.0.0.1' };
-  // Ouverture : masque par défaut et passerelle vide → valeurs du compte.
-  let r = applyPrefill(INITIAL_PREFILL, INITIAL_PREFILL, a);
-  expect(r.fields).toEqual({ mask: '255.255.0.0', gateway: '10.0.0.1' });
-  // Autre compte : les valeurs préremplies suivent.
-  r = applyPrefill(r.fields, r.last, { gateway: '192.168.1.1', pc_ip: '192.168.1.250/24' });
-  expect(r.fields).toEqual({ mask: '255.255.255.0', gateway: '192.168.1.1' });
-  // Saisie de l'utilisateur : elle reste quel que soit le compte.
-  r = applyPrefill({ mask: '255.255.255.128', gateway: '192.168.1.254' }, r.last, a);
-  expect(r.fields).toEqual({ mask: '255.255.255.128', gateway: '192.168.1.254' });
-  // Compte sans réseau : retour au défaut pour ce qui était prérempli.
-  r = applyPrefill({ mask: '255.255.0.0', gateway: '10.0.0.1' }, { mask: '255.255.0.0', gateway: '10.0.0.1' }, null);
-  expect(r.fields).toEqual(INITIAL_PREFILL);
+  const none = { mask: false, gateway: false };
+  // Ouverture : rien de touché → valeurs du compte.
+  let f = prefillFields(INITIAL_PREFILL, none, a);
+  expect(f).toEqual({ mask: '255.255.0.0', gateway: '10.0.0.1' });
+  // Autre compte : les champs non touchés suivent.
+  f = prefillFields(f, none, { gateway: '192.168.1.1', pc_ip: '192.168.1.250/24' });
+  expect(f).toEqual({ mask: '255.255.255.0', gateway: '192.168.1.1' });
+  // Champ touché, même avec la valeur d'un compte : il reste.
+  f = prefillFields({ mask: '255.255.255.0', gateway: '192.168.1.254' }, { mask: true, gateway: true }, a);
+  expect(f).toEqual({ mask: '255.255.255.0', gateway: '192.168.1.254' });
+  // Compte sans réseau : retour au défaut pour ce qui n'est pas touché.
+  expect(prefillFields({ mask: '255.255.0.0', gateway: '10.0.0.1' }, none, null)).toEqual(INITIAL_PREFILL);
 });

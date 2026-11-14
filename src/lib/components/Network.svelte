@@ -28,8 +28,8 @@
   let account = $state('');
   let switching = $state(false);
   const choices = $derived(joinable(accounts));
-  // DHCP : l'adresse actuelle de l'interface ; compte : son IP du PC.
-  const shownAddr = $derived(account ? (accounts.find((a) => a.id === account)?.pc_ip ?? '') : ifaceAddr);
+  // DHCP : l'adresse actuelle de l'interface ; compte : l'IP réellement posée.
+  const shownAddr = $derived(account ? ($joined?.account_id === account ? $joined.cidr : '') : ifaceAddr);
   const sw = createJoinSwitch({ join: joinNetwork, leave: leaveNetwork });
   let failStatus: Status | null = null;
   let error = $state('');

@@ -7,7 +7,7 @@
     passwordRequired, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
-  import { autoFill, networkOf } from '$lib/api/net';
+  import { derivedNetwork } from '$lib/api/net';
   import { clearStatusIf, status, type Status } from '$lib/stores/nav';
   import Dialog from './Dialog.svelte';
   import ImportSheet from './ImportSheet.svelte';
@@ -26,8 +26,8 @@
   let pcIp = $state('');
   let network = $state('');
   let gateway = $state('');
-  // Dernier réseau déduit de l'IP du PC : une saisie différente n'est jamais écrasée.
-  let autoNetwork = '';
+  // Réseau saisi (ou déjà enregistré) : l'IP du PC ne le change plus.
+  let networkTouched = false;
   let confirming = $state('');
   let needPassword = $state(true);
 
@@ -106,14 +106,11 @@
     pcIp = a?.pc_ip ?? '';
     network = a?.network ?? '';
     gateway = a?.gateway ?? '';
-    autoNetwork = '';
+    networkTouched = network !== '';
   }
 
   function onPcIp() {
-    const wanted = networkOf(pcIp);
-    if (!wanted) return;
-    network = autoFill(network, autoNetwork, wanted);
-    if (network === wanted) autoNetwork = wanted;
+    network = derivedNetwork(pcIp, network, networkTouched);
   }
 
   function close() {
@@ -239,7 +236,7 @@
         <label for="a-pcip">{$_('accounts.field.pc_ip')}</label>
         <input id="a-pcip" type="text" bind:value={pcIp} oninput={onPcIp} placeholder="192.168.1.250/24" inputmode="decimal" autocomplete="off" spellcheck="false" />
         <label for="a-net">{$_('accounts.field.network')}</label>
-        <input id="a-net" type="text" bind:value={network} placeholder="192.168.1.0/24" inputmode="decimal" autocomplete="off" spellcheck="false" />
+        <input id="a-net" type="text" bind:value={network} oninput={() => (networkTouched = network !== '')} placeholder="192.168.1.0/24" inputmode="decimal" autocomplete="off" spellcheck="false" />
         <label for="a-gw">{$_('accounts.field.gateway')}</label>
         <input id="a-gw" type="text" bind:value={gateway} placeholder="192.168.1.1" inputmode="decimal" autocomplete="off" spellcheck="false" />
       </div>

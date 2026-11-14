@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import type { Account } from '$lib/api/accounts';
-  import { activeAddress, applyPrefill, INITIAL_PREFILL, joined } from '$lib/api/net';
+  import { activeAddress, INITIAL_PREFILL, joined, prefillFields } from '$lib/api/net';
   import { _ } from 'svelte-i18n';
   import { interfaceDetails } from '$lib/api/core';
   import type { ActionDto } from '$lib/api/configure';
@@ -38,16 +38,12 @@
     } catch {}
   });
 
-  // Le compte retenu remplit masque et passerelle, sans écraser une saisie.
+  // Le compte retenu remplit masque et passerelle ; un champ touché (saisi) n'est jamais écrasé.
   let account = $state<Account | null>(null);
-  let lastPrefill = INITIAL_PREFILL;
+  const touched = { mask: false, gateway: false };
   $effect(() => {
     const a = account;
-    untrack(() => {
-      const r = applyPrefill({ mask, gateway }, lastPrefill, a);
-      ({ mask, gateway } = r.fields);
-      lastPrefill = r.last;
-    });
+    untrack(() => ({ mask, gateway } = prefillFields({ mask, gateway }, touched, a)));
   });
   const off = $derived(!dhcp && outsideSubnet(ip, ifaceIp, ifaceMask));
 
@@ -77,8 +73,8 @@
     {#if !dhcp}
       <label for="ip-ip">{$_('configure.ipaddr')}</label><input id="ip-ip" type="text" bind:value={ip} inputmode="decimal" autocomplete="off" />
       {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
-      <label for="ip-mask">{$_('configure.mask')}</label><input id="ip-mask" type="text" bind:value={mask} inputmode="decimal" autocomplete="off" />
-      <label for="ip-gw">{$_('configure.gateway')}</label><input id="ip-gw" type="text" bind:value={gateway} inputmode="decimal" autocomplete="off" />
+      <label for="ip-mask">{$_('configure.mask')}</label><input id="ip-mask" type="text" bind:value={mask} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />
+      <label for="ip-gw">{$_('configure.gateway')}</label><input id="ip-gw" type="text" bind:value={gateway} oninput={() => (touched.gateway = true)} inputmode="decimal" autocomplete="off" />
       <label for="ip-dns">{$_('configure.dns')}</label><input id="ip-dns" type="text" bind:value={dns} autocomplete="off" />
     {/if}
   </div>
