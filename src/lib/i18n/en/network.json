@@ -47,5 +47,6 @@
   "scanning": "Searching on {iface}, {count} camera(s)",
   "account": "Account network",
   "dhcp": "DHCP",
+  "deletedAccount": "Deleted account",
   "posing": "Setting the IP…"
 }

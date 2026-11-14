@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { writable } from 'svelte/store';
+import { joinable, type Account } from './accounts';
 
 /** Masque proposé par les feuilles IP tant qu'aucun compte n'en donne un. */
 export const DEFAULT_MASK = '255.255.255.0';
@@ -73,6 +74,34 @@ export function activeAddress(
 ): { ip: string | null; mask: string | null } {
   if (j && j.iface === iface) return { ip: j.ip, mask: j.mask };
   return { ip: details?.ip ?? null, mask: details?.subnet ?? null };
+}
+
+/** Option du sélecteur de compte de l'écran Réseau. */
+export interface AccountChoice {
+  id: string;
+  name: string;
+  /** Compte supprimé alors que son IP est encore posée. */
+  deleted: boolean;
+}
+
+/**
+ * Comptes proposés (ceux qui ont une IP du PC), plus le compte posé s'il a
+ * été supprimé entre-temps : son IP reste sur le poste, le sélecteur doit le
+ * montrer (et permettre le retour en DHCP), pas une case vide.
+ */
+export function accountChoices(list: Account[], j: Joined | null): AccountChoice[] {
+  const out = joinable(list).map((a) => ({ id: a.id, name: a.name, deleted: false }));
+  if (j && !list.some((a) => a.id === j.account_id)) out.push({ id: j.account_id, name: '', deleted: true });
+  return out;
+}
+
+/** Jetons de génération : seule la dernière attente lancée compte. */
+export function generations() {
+  let n = 0;
+  return {
+    next: () => ++n,
+    current: (g: number) => g === n,
+  };
 }
 
 /** Interface et choix du sélecteur de compte ; `account === ''` : DHCP. */

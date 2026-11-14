@@ -3,7 +3,8 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  activeAddress, createJoinSwitch, DEFAULT_MASK, joinReady, joinStep, maskOf, networkOf, prefillFor, type Joined,
+  accountChoices, activeAddress, createJoinSwitch, DEFAULT_MASK, generations, joinReady, joinStep, maskOf, networkOf, prefillFor,
+  type Joined,
 } from './net';
 
 test('le réseau se déduit de l’IP du PC', () => {
@@ -159,4 +160,28 @@ test('après une pose, le scan attend que Rust voie l’adresse sur le poste', a
   invoke.mockResolvedValue(undefined);
   await joinReady();
   expect(invoke).toHaveBeenLastCalledWith('cmd_join_ready');
+});
+
+test('une attente de pose dépassée par une autre est ignorée', () => {
+  const gen = generations();
+  const first = gen.next();
+  expect(gen.current(first)).toBe(true);
+  const second = gen.next();
+  expect(gen.current(first)).toBe(false);
+  expect(gen.current(second)).toBe(true);
+});
+
+test('compte supprimé alors que son IP est posée : il reste dans le sélecteur, marqué', () => {
+  const list = [
+    { id: 'a', name: 'A', login: 'r', pc_ip: '192.168.1.250/24' },
+    { id: 'b', name: 'B', login: 'r' },
+  ];
+  // Le compte posé existe : la liste habituelle.
+  expect(accountChoices(list, joined('en0', 'a'))).toEqual([{ id: 'a', name: 'A', deleted: false }]);
+  expect(accountChoices(list, null)).toEqual([{ id: 'a', name: 'A', deleted: false }]);
+  // Supprimé : toujours là (l'IP l'est aussi), sans nom.
+  expect(accountChoices(list, joined('en0', 'zz'))).toEqual([
+    { id: 'a', name: 'A', deleted: false },
+    { id: 'zz', name: '', deleted: true },
+  ]);
 });

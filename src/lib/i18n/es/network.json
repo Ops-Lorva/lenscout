@@ -47,5 +47,6 @@
   "scanning": "Buscando en {iface}, {count} cámara(s)",
   "account": "Red de la cuenta",
   "dhcp": "DHCP",
+  "deletedAccount": "Cuenta eliminada",
   "posing": "Asignando la IP…"
 }

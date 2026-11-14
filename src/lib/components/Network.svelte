@@ -11,9 +11,10 @@
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
   import { actionResults, resultFor } from '$lib/api/configure';
-  import { joinable } from '$lib/api/accounts';
   import { accountList, ensureAccounts } from '$lib/stores/accounts';
-  import { createJoinSwitch, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice } from '$lib/api/net';
+  import {
+    accountChoices, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice,
+  } from '$lib/api/net';
 
   const IFACE_KEY = 'lenscout.iface';
   const RESCAN_DELAYS_MS = [3000, 15000];
@@ -29,8 +30,11 @@
   let switching = $state(false);
   // L'IP du compte vient d'être posée : on attend de la voir sur le poste avant de scanner.
   let posing = $state(false);
-  // Liste partagée : un compte ajouté ou importé apparaît sans quitter l'onglet.
-  const choices = $derived(joinable($accountList ?? []));
+  // Seule la dernière attente de pose compte (une plus ancienne ne touche à rien).
+  const poses = generations();
+  // Liste partagée : un compte ajouté ou importé apparaît sans quitter l'onglet ;
+  // un compte supprimé alors que son IP est posée reste, marqué.
+  const choices = $derived($accountList ? accountChoices($accountList, $joined) : []);
   // DHCP : l'adresse actuelle de l'interface ; compte : l'IP réellement posée.
   const shownAddr = $derived(account ? ($joined?.account_id === account ? $joined.cidr : '') : ifaceAddr);
   const sw = createJoinSwitch({ join: joinNetwork, leave: leaveNetwork });
@@ -115,18 +119,25 @@
     if (r.kind === 'done' || iface !== wanted.iface || account !== r.applied.account) void scan();
   }
 
-  /** L'adresse posée est-elle sur le poste ? Sinon message clair, et pas de scan. */
+  /**
+   * L'adresse posée est-elle sur le poste ? Sinon message clair, pas de scan,
+   * et plus de caméras du réseau précédent à l'écran.
+   */
   async function ready(): Promise<boolean> {
+    const mine = poses.next();
     posing = true;
     error = '';
     try {
       await joinReady();
-      return true;
+      return poses.current(mine);
     } catch (e) {
-      error = $_(`network.${errorKey(e)}`);
+      if (poses.current(mine)) {
+        error = $_(`network.${errorKey(e)}`);
+        clear();
+      }
       return false;
     } finally {
-      posing = false;
+      if (poses.current(mine)) posing = false;
     }
   }
 
@@ -242,13 +253,13 @@
 </script>
 
 <div class="tools">
-  <select value={iface} onchange={onIface} disabled={interfaces.length === 0 || switching} aria-label={$_('common.interface.label')}>
+  <select value={iface} onchange={onIface} disabled={interfaces.length === 0 || switching || posing} aria-label={$_('common.interface.label')}>
     {#if interfaces.length === 0}<option value="">{$_('common.interface.none')}</option>{/if}
     {#each interfaces as name}<option value={name}>{name}</option>{/each}
   </select>
-  <select value={account} onchange={onAccount} disabled={!iface || switching} aria-label={$_('network.account')}>
+  <select value={account} onchange={onAccount} disabled={!iface || switching || posing} aria-label={$_('network.account')}>
     <option value="">{$_('network.dhcp')}</option>
-    {#each choices as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+    {#each choices as a (a.id)}<option value={a.id}>{a.deleted ? $_('network.deletedAccount') : a.name}</option>{/each}
   </select>
   {#if switching}<span class="spin"></span>{:else if shownAddr}<span class="iface">{shownAddr}</span>{/if}
   {#if scanning}
