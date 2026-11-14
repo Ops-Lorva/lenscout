@@ -1216,7 +1216,7 @@ mod tests {
     #[test]
     fn export_and_import_carry_exclusions() {
         let (mut src, _fx_src) = empty_book();
-        let full = with_exclusions(net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1"), "192.168.1.2-192.168.1.9");
+        let full = with_exclusions(net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1"), "192.168.1.2-9");
         src.create("Mairie", "root", pwd(PWD), full.clone()).unwrap();
         let data = src.export();
         assert!(data.contains("\"exclusions\": \"192.168.1.2-9\""));
