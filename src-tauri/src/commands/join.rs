@@ -327,13 +327,27 @@ pub async fn cmd_join_ready(state: State<'_, JoinState>) -> Result<(), String> {
         return Ok(());
     };
     let r = wait_present(&t, presence::address_present).await;
-    // L'interface qui porte l'adresse, pour le journal : un nom BSD autre que
-    // celui visé dirait que le service dupliqué l'a posée ailleurs.
-    let on = presence::interface_of(t.ip);
-    if r.is_err() || on.as_deref() != Some(t.iface.as_str()) {
-        lenscout_core::debug_log::log(&format!("pose : {} attendue sur {}, vue sur {on:?} ({r:?})", t.ip, t.iface));
-    }
+    // Journal de mise au point : où le système a mis l'adresse (sous macOS,
+    // le service dupliqué pourrait la poser sur un autre nom BSD).
+    let service = state.lock().as_ref().map(|j| j.service.clone()).unwrap_or_default();
+    // Windows : lu par PowerShell, donc hors du runtime.
+    let ip = t.ip;
+    let on = tauri::async_runtime::spawn_blocking(move || presence::interface_of(ip)).await.ok().flatten();
+    lenscout_core::debug_log::log(&ready_log_line(&t, &service, on.as_deref(), &r));
     r
+}
+
+/// Ligne de journal d'une pose : adresse, service choisi à l'écran et
+/// interface visée (`TempIp::iface` : nom BSD sous macOS, alias sous
+/// Windows), puis interface qui la porte vraiment.
+fn ready_log_line(t: &TempIp, service: &str, on: Option<&str>, r: &Result<(), String>) -> String {
+    let head = format!("pose : {}/{} via « {service} » ({})", t.ip, t.mask, t.iface);
+    match (on, r) {
+        (Some(i), _) if i == t.iface => format!("{head} : présente sur {i}"),
+        (Some(i), _) => format!("{head} : présente sur {i}, PAS sur l'interface attendue"),
+        (None, Ok(())) => format!("{head} : présente, interface non lue"),
+        (None, Err(code)) => format!("{head} : absente du poste ({code})"),
+    }
 }
 
 /// Lu après la pose ou le retrait en cours : jamais un état intermédiaire.
@@ -371,6 +385,25 @@ mod tests {
         let start = tokio::time::Instant::now();
         assert_eq!(wait_present(&t, |_| false).await, Err("pc_ip_not_present".to_string()));
         assert!(start.elapsed() <= PRESENCE_TIMEOUT);
+    }
+
+    #[test]
+    fn la_ligne_de_journal_de_la_pose_se_lit_sans_decoder() {
+        let t = temp("en0", "192.168.1.10", "255.255.255.0");
+        let ok: Result<(), String> = Ok(());
+        let late: Result<(), String> = Err("pc_ip_not_present".into());
+        assert_eq!(
+            ready_log_line(&t, "Wi-Fi", Some("en0"), &ok),
+            "pose : 192.168.1.10/255.255.255.0 via « Wi-Fi » (en0) : présente sur en0"
+        );
+        assert_eq!(
+            ready_log_line(&t, "Wi-Fi", Some("en1"), &ok),
+            "pose : 192.168.1.10/255.255.255.0 via « Wi-Fi » (en0) : présente sur en1, PAS sur l'interface attendue"
+        );
+        assert_eq!(
+            ready_log_line(&t, "Wi-Fi", None, &late),
+            "pose : 192.168.1.10/255.255.255.0 via « Wi-Fi » (en0) : absente du poste (pc_ip_not_present)"
+        );
     }
 
     fn net(pc_ip: Option<&str>) -> AccountNetwork {
