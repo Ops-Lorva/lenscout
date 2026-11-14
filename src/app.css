@@ -62,7 +62,10 @@ html, body {
 }
 
 :focus-visible { outline: 2px solid var(--act); outline-offset: 2px; border-radius: 4px; }
-input:focus-visible, select:focus-visible { outline: none; border-color: var(--act); box-shadow: 0 0 0 3px var(--act-ring); }
+/* Champs, selects et boutons : anneau ; cases et radios gardent l'outline du dessus. */
+input:not([type='checkbox']):not([type='radio']):focus-visible, select:focus-visible, .btn:focus-visible, .mini:focus-visible {
+  outline: none; border-color: var(--act); box-shadow: 0 0 0 3px var(--act-ring);
+}
 input[type='checkbox'], input[type='radio'] { accent-color: var(--act); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }

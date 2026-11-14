@@ -48,6 +48,13 @@
     try { await stopStream(); } catch {}
   }
 
+  // Ratio largeur/hauteur de l'image reçue ; 16/9 tant qu'aucune n'est décodée.
+  let ratio = $state(16 / 9);
+  function onLoad(e: Event) {
+    const img = e.currentTarget as HTMLImageElement;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) ratio = img.naturalWidth / img.naturalHeight;
+  }
+
   function fullscreen(e: MouseEvent) {
     const el = e.currentTarget as HTMLElement;
     if (document.fullscreenElement) void document.exitFullscreen();
@@ -88,17 +95,22 @@
   <!-- Sans flux, la zone reste à sa place, vide et claire, pour que la fenêtre ne saute pas. -->
   <div class="view" class:off={!src} ondblclick={fullscreen} role="presentation">
     {#if src}
-      <img {src} alt={$_('framing.image')} />
-      <!-- Grille des tiers et réticule du cadrage, par-dessus le flux. -->
-      <div class="grid"></div>
-      <div class="ret"></div>
+      <!-- Le cadre a le ratio réel de l'image : la grille des tiers et le
+           réticule tombent sur l'image, jamais sur les bandes. -->
+      <div class="frame" style:--r={ratio}>
+        <img {src} alt={$_('framing.image')} onload={onLoad} />
+        <div class="grid"></div>
+        <div class="ret"></div>
+      </div>
     {/if}
   </div>
 {/if}
 
 <style>
   .acc { display: inline-flex; align-items: center; gap: 6px; }
-  .view { display: flex; align-items: center; justify-content: center; }
-  .view img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .view { display: flex; align-items: center; justify-content: center; container-type: size; }
+  /* Largeur bornée par la zone et par la hauteur transposée via le ratio (unités de conteneur). */
+  .frame { position: relative; width: min(100%, calc(100cqh * var(--r))); aspect-ratio: var(--r); }
+  .frame img { display: block; width: 100%; height: 100%; }
   .view:fullscreen { border-radius: 0; background: #000; }
 </style>

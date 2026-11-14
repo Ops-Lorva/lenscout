@@ -9,6 +9,9 @@
 
   let accounts = $state<Account[]>([]);
   let error = $state('');
+  // Le select reste focalisable pendant le chargement (premier champ d'une
+  // feuille) ; il ne se grise que si la liste revient vide.
+  let loaded = $state(false);
 
   function onChange(e: Event) {
     accountId = (e.currentTarget as HTMLSelectElement).value;
@@ -21,6 +24,8 @@
     } catch (e) {
       error = $_(`accounts.${errorKey(e)}`);
       return;
+    } finally {
+      loaded = true;
     }
     let saved = '';
     try { saved = localStorage.getItem(ACCOUNT_KEY) ?? ''; } catch {}
@@ -29,7 +34,7 @@
 </script>
 
 <span class="picker">
-  <select {id} value={accountId} onchange={onChange} disabled={accounts.length === 0} aria-label={$_('accounts.picker')}>
+  <select {id} value={accountId} onchange={onChange} disabled={loaded && accounts.length === 0} aria-label={$_('accounts.picker')}>
     {#if accounts.length === 0 && !error}<option value="">{$_('accounts.none')}</option>{/if}
     {#each accounts as a (a.id)}<option value={a.id}>{a.name} ({a.login})</option>{/each}
   </select>

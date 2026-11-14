@@ -14,15 +14,17 @@
   const onLang = (e: Event) => setLang((e.currentTarget as HTMLSelectElement).value as Lang);
 
   async function onDebug(e: Event) {
-    const on = (e.currentTarget as HTMLInputElement).checked;
+    const input = e.currentTarget as HTMLInputElement;
+    const on = input.checked;
     error = '';
     try {
       await debugSet(on);
       debug = on;
     } catch (e) {
-      // La case revient à l'état réel.
-      debug = !on;
-      error = $_(`settings.error.${errorKey(e)}`);
+      // La case revient à l'état réel : `debug` n'a pas changé, Svelte ne
+      // retoucherait pas le DOM, donc on remet la case à la main.
+      input.checked = debug;
+      error = $_(`settings.${errorKey(e)}`);
     }
   }
 

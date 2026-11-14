@@ -7,7 +7,7 @@
   import type { Camera } from '$lib/api/types';
   import { errorKey } from '$lib/api/errors';
   import { cameraKey, cameras, clear, clearCameras, query, selection, shouldAutoScan, upsert, visibleCameras } from '$lib/stores/cameras';
-  import { framingTarget, page, status } from '$lib/stores/nav';
+  import { clearStatusIf, framingTarget, page, status, type Status } from '$lib/stores/nav';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
   import { actionResults, resultFor } from '$lib/api/configure';
@@ -108,9 +108,16 @@
   }
 
   // La barre d'état porte la recherche en cours : interface et compte de caméras.
+  // On ne retire que son propre message : un autre écran a pu poser le sien.
+  let scanStatus: Status | null = null;
   $effect(() => {
-    if (scanning) status.set({ text: $_('network.scanning', { values: { iface, count: $cameras.length } }) });
-    else status.set(null);
+    if (scanning) {
+      scanStatus = { text: $_('network.scanning', { values: { iface, count: $cameras.length } }) };
+      status.set(scanStatus);
+    } else {
+      clearStatusIf(scanStatus);
+      scanStatus = null;
+    }
   });
 
   onMount(async () => {
@@ -140,7 +147,7 @@
   onDestroy(() => {
     rescanTimers.forEach(clearTimeout);
     if (scanning) stop();
-    status.set(null);
+    clearStatusIf(scanStatus);
   });
 </script>
 

@@ -24,3 +24,6 @@ export interface Status {
   tone?: 'ok' | 'warn';
 }
 export const status = writable<Status | null>(null);
+
+/** Retire `own` de la barre s'il y est encore ; le message d'un autre écran reste. */
+export const clearStatusIf = (own: Status | null) => status.update((s) => (own !== null && s === own ? null : s));
