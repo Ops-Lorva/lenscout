@@ -65,6 +65,24 @@ export function setAddressing(read: { ip: string; addressing: Camera['addressing
   });
 }
 
+/**
+ * Activation réussie : la ligne de chaque résultat `ok` (clé MAC, sinon IP)
+ * passe tout de suite en « Activée », sans attendre un rescan. Un échec ne
+ * change rien.
+ */
+export function markActivated(results: readonly { key: string; ok: boolean; error?: unknown }[]): void {
+  const done = results.filter((r) => r.ok).map((r) => r.key);
+  if (done.length === 0) return;
+  byKey.update((m) => {
+    const next = new Map(m);
+    for (const k of done) {
+      const c = next.get(k);
+      if (c) next.set(k, { ...c, activation: 'activated' });
+    }
+    return next;
+  });
+}
+
 export function clear(): void {
   byKey.set(new Map());
   selection.set(new Set());

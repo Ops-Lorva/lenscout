@@ -98,6 +98,16 @@ impl ScanState {
         generation
     }
 
+    /// Activation réussie : la ligne `key` (MAC, sinon IP) est désormais lue
+    /// activée, à la même adresse. Une seconde activation sera refusée
+    /// (`not_new`) sans attendre un rescan. Une ligne inconnue : rien.
+    pub fn mark_activated(&self, key: &str) {
+        let mut last = self.last_seen.lock().unwrap();
+        if let Some((_, activation)) = last.states.get_mut(key) {
+            *activation = Activation::Activated;
+        }
+    }
+
     /// N'écrit que si `generation` est encore le scan en cours.
     fn record(&self, generation: u64, ev: &ScanEvent) {
         let mut last = self.last_seen.lock().unwrap();
@@ -418,6 +428,31 @@ mod tests {
         assert_eq!(state.seen().states[1], st("AC:CC:8E:12:34:56", "192.0.2.12", Activation::Activated));
         state.begin(&eth0());
         assert!(state.seen().states.is_empty(), "un nouveau scan repart de zéro");
+    }
+
+    #[test]
+    fn une_activation_reussie_est_retenue_comme_lue_au_scan() {
+        use lenscout_core::actions::SeenState;
+        let state = ScanState::default();
+        let g = state.begin(&eth0());
+        let cam = Camera {
+            ip: "192.0.2.11".parse().unwrap(),
+            mac: Some("AC:CC:8E:12:34:56".into()),
+            family: Family::Axis,
+            brand: None,
+            model: None,
+            serial: None,
+            firmware: None,
+            activation: Activation::New,
+            http_port: 80,
+            sources: vec![],
+            addressing: None,
+        };
+        state.record(g, &ScanEvent::Upsert { camera: cam });
+        state.mark_activated("AC:CC:8E:12:34:56");
+        state.mark_activated("inconnue");
+        let st = SeenState { key: "AC:CC:8E:12:34:56".into(), ip: "192.0.2.11".parse().unwrap(), activation: Activation::Activated };
+        assert_eq!(state.seen().states, vec![st]);
     }
 
     /// Un scan remplacé qui finit de se vider n'écrit pas dans le nouveau.

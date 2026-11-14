@@ -3,7 +3,7 @@
   import { activateCleartext, applyAction, canActivate, pendingAfterConfirm, pendingAfterRun, dialogAfterSelection, canAct, canChangeIp, canBatchIp, canReset, clearResults, mergeResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
-  import { cameraKey, cameras, selectedCameras } from '#lib/stores/cameras.ts';
+  import { cameraKey, cameras, markActivated, selectedCameras } from '#lib/stores/cameras.ts';
   import BatchIpDialog from './BatchIpDialog.svelte';
   import ActivateDialog from './ActivateDialog.svelte';
   import NetworkDialog from './NetworkDialog.svelte';
@@ -68,6 +68,7 @@
     try {
       const results = await applyAction(targets, accountId, action, iface);
       setResults(results);
+      if (action.kind === 'activate') markActivated(results);
       pending = pendingAfterRun(action, results, targets);
       pendingAccount = accountId;
       if (pending.length === 0) open = null;
@@ -87,7 +88,9 @@
     busy = true;
     error = '';
     try {
-      mergeResults(await activateCleartext(cam, pendingAccount, iface));
+      const done = await activateCleartext(cam, pendingAccount, iface);
+      mergeResults(done);
+      markActivated(done);
       pending = pendingAfterConfirm(pending, cam);
       if (pending.length === 0) open = null;
     } catch (e) {

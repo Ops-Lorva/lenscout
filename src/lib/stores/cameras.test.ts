@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
 import type { Camera } from '#lib/api/types.ts';
-import { cameras, clear, clearCameras, query, selectedCameras, selection, setAddressing, shouldAutoScan, upsert } from './cameras';
+import { cameras, clear, clearCameras, markActivated, query, selectedCameras, selection, setAddressing, shouldAutoScan, upsert } from './cameras';
 
 const cam = (over: Partial<Camera>): Camera => ({
   ip: '10.0.50.5',
@@ -124,4 +124,19 @@ test('l’adressage lu après le scan se pose sur la caméra de cette adresse, s
   expect(list[0]).toMatchObject({ ip: '10.0.50.11', addressing: 'dhcp', firmware: '11.2' });
   // Pas de lecture pour .12 : ce qu’on savait reste.
   expect(list[1].addressing).toBe('static');
+});
+
+test('une activation réussie passe la ligne en « Activée », un échec ne change rien', () => {
+  upsert(cam({ activation: 'new' }));
+  upsert(cam({ mac: null, ip: '10.0.50.6', activation: 'new' }));
+  upsert(cam({ mac: 'AA:BB:CC:00:00:07', ip: '10.0.50.7', activation: 'new' }));
+  markActivated([
+    { key: 'AA:BB:CC:00:00:01', ok: true, error: null },
+    { key: '10.0.50.6', ok: true, error: null },
+    { key: 'AA:BB:CC:00:00:07', ok: false, error: { code: 'auth_failed' } },
+  ]);
+  expect(get(cameras).map((c) => c.activation)).toEqual(['activated', 'activated', 'new']);
+  // Clé inconnue : rien.
+  markActivated([{ key: 'nope', ok: true, error: null }]);
+  expect(get(cameras)).toHaveLength(3);
 });

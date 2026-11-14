@@ -200,7 +200,12 @@ pub async fn cmd_apply_action(
     one_camera_for_cleartext(&action, cameras.len())?;
     let creds = credentials_for(&accounts, &account_id)?;
     let ctx = build_context(iface, &cameras, &scan, &journal.0, &join).await?;
-    Ok(apply_all(&ctx, &cameras, &creds, &action).await)
+    let results = apply_all(&ctx, &cameras, &creds, &action).await;
+    // Activée à l'instant : les actions suivantes voient l'état juste.
+    if matches!(action, Action::Activate | Action::ActivateCleartext) {
+        results.iter().filter(|r| r.ok).for_each(|r| scan.mark_activated(&r.key));
+    }
+    Ok(results)
 }
 
 /// Durée de vie d'un aperçu : passé ce délai le réseau a pu changer.
