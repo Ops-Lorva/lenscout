@@ -24,11 +24,40 @@
     "keyring": "Trousseau inaccessible",
     "io": "Fichier des comptes inaccessible",
     "internal": "Erreur interne",
-    "unknown": "Erreur"
+    "unknown": "Erreur",
+    "import_invalid": "Fichier d'import illisible"
   },
   "notice": {
     "quarantined": "Fichier des comptes illisible, mis de côté",
     "unwritable": "Fichier des comptes illisible, enregistrement impossible"
   },
-  "resecret": "Mot de passe à ressaisir"
+  "resecret": "Mot de passe à ressaisir",
+  "import": "Importer…",
+  "export": "Exporter…",
+  "exported": "{count, plural, one {# compte exporté} other {# comptes exportés}}",
+  "exportedIn": "dans {path}",
+  "imported": "{count, plural, one {# compte importé} other {# comptes importés}}",
+  "importedNone": "Import terminé : aucun compte modifié",
+  "importTitle": "{count, plural, one {Importer # compte} other {Importer # comptes}}",
+  "grp": {
+    "differs": "Déjà présents, mais différents",
+    "new": "Nouveaux",
+    "identical": "Identiques"
+  },
+  "why": {
+    "login": "identifiant différent",
+    "password": "mot de passe différent",
+    "both": "identifiant et mot de passe différents"
+  },
+  "choice": {
+    "replace": "Remplacer",
+    "keep_both": "Garder les deux",
+    "skip": "Ignorer"
+  },
+  "st": {
+    "new": "ajouté",
+    "identical": "déjà à jour"
+  },
+  "keepNote": "Garder les deux crée « {names} ».",
+  "doImport": "Importer"
 }

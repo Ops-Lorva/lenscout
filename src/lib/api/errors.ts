@@ -23,6 +23,7 @@ export const CODES = [
   'secret_missing',
   'keyring',
   'io',
+  'import_invalid',
   'internal',
 ] as const;
 

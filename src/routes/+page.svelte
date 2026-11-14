@@ -22,7 +22,7 @@
   </div>
   {#if $status}
     <div class="status" role="status">
-      {#if $status.tone}<b class={$status.tone}>{$status.text}</b>{:else}{$status.text}{/if}
+      {#if $status.tone || $status.detail}<b class={$status.tone}>{$status.text}</b>{:else}{$status.text}{/if}{#if $status.detail}{' '}{$status.detail}{/if}
     </div>
   {/if}
 </div>

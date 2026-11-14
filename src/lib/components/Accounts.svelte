@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
+  import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
-    accountsStartup, createAccount, listAccounts, noticeKey, passwordRequired, removeAccount, updateAccount,
-    type AccountEntry,
+    accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, listAccounts, noticeKey,
+    passwordRequired, removeAccount, updateAccount, type AccountEntry, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
+  import { clearStatusIf, status, type Status } from '$lib/stores/nav';
   import Dialog from './Dialog.svelte';
+  import ImportSheet from './ImportSheet.svelte';
 
   let accounts = $state<AccountEntry[]>([]);
   let error = $state('');
@@ -24,6 +27,49 @@
   const otherError = $derived(nameError ? '' : error);
   // Enregistrer reste grisé tant qu'un champ obligatoire est vide.
   const ready = $derived(name.trim() !== '' && login.trim() !== '' && (!needPassword || password !== ''));
+
+  // Import en cours : le fichier choisi et son plan (la feuille s'ouvre dessus).
+  let importing = $state<{ path: string; plan: ImportPlan } | null>(null);
+  // Message posé dans la barre d'état : retiré à la sortie de la page, sans toucher celui d'un autre écran.
+  let ownStatus: Status | null = null;
+  const say = (s: Status) => {
+    ownStatus = s;
+    status.set(s);
+  };
+
+  const filters = [{ name: 'Lenscout', extensions: [EXPORT_EXT] }];
+
+  async function doExport() {
+    error = '';
+    errorCode = '';
+    try {
+      const path = await saveFile({ defaultPath: EXPORT_NAME, filters });
+      if (!path) return;
+      const count = await exportAccounts(path);
+      say({ text: $_('accounts.exported', { values: { count } }), detail: $_('accounts.exportedIn', { values: { path } }) });
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  async function doImport() {
+    error = '';
+    errorCode = '';
+    try {
+      const path = await openFile({ multiple: false, directory: false, filters });
+      if (!path) return;
+      importing = { path, plan: await importPlan(path) };
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  async function imported(summary: ImportSummary) {
+    importing = null;
+    const count = summary.added + summary.replaced + summary.kept_both;
+    say({ text: $_(count ? 'accounts.imported' : 'accounts.importedNone', { values: { count } }) });
+    await refresh();
+  }
 
   const fail = (e: unknown) => {
     errorCode = errorKey(e);
@@ -89,6 +135,8 @@
     await refresh();
   }
 
+  onMount(() => () => clearStatusIf(ownStatus));
+
   onMount(async () => {
     try {
       const key = noticeKey(await accountsStartup());
@@ -103,6 +151,9 @@
 
 <div class="tools">
   <span class="title">{$_('common.nav.accounts')}</span>
+  <button class="btn" onclick={doImport}>{$_('accounts.import')}</button>
+  <button class="btn" onclick={doExport} disabled={accounts.length === 0}>{$_('accounts.export')}</button>
+  <span class="gap"></span>
   <button class="btn def" onclick={() => open(null)}>{$_('accounts.add')}</button>
 </div>
 
@@ -135,6 +186,10 @@
 </table>
 {#if accounts.length === 0}<div class="none">{$_('accounts.none')}</div>{/if}
 
+{#if importing}
+  <ImportSheet path={importing.path} plan={importing.plan} existing={accounts.map((a) => a.name)} onClose={() => (importing = null)} onDone={imported} />
+{/if}
+
 {#if editing !== null}
   <Dialog title={$_(editing ? 'accounts.edit' : 'accounts.add')} width={520} onClose={close}>
     <form onsubmit={(e) => { e.preventDefault(); if (ready) void save(); }}>
@@ -158,4 +213,7 @@
 
 <style>
   form { margin: 0; }
+  /* Importer / Exporter à côté du titre, Ajouter à l'autre bout. */
+  .tools .title { flex: none; margin-right: 6px; }
+  .gap { flex: 1; }
 </style>

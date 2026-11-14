@@ -24,11 +24,40 @@
     "keyring": "Llavero inaccesible",
     "io": "Archivo de cuentas inaccesible",
     "internal": "Error interno",
-    "unknown": "Error"
+    "unknown": "Error",
+    "import_invalid": "Archivo de importación ilegible"
   },
   "notice": {
     "quarantined": "Archivo de cuentas ilegible, apartado",
     "unwritable": "Archivo de cuentas ilegible, no se puede guardar"
   },
-  "resecret": "Contraseña por volver a introducir"
+  "resecret": "Contraseña por volver a introducir",
+  "import": "Importar…",
+  "export": "Exportar…",
+  "exported": "{count, plural, one {# cuenta exportada} other {# cuentas exportadas}}",
+  "exportedIn": "en {path}",
+  "imported": "{count, plural, one {# cuenta importada} other {# cuentas importadas}}",
+  "importedNone": "Importación terminada: ninguna cuenta modificada",
+  "importTitle": "{count, plural, one {Importar # cuenta} other {Importar # cuentas}}",
+  "grp": {
+    "differs": "Ya presentes, pero distintas",
+    "new": "Nuevas",
+    "identical": "Idénticas"
+  },
+  "why": {
+    "login": "usuario distinto",
+    "password": "contraseña distinta",
+    "both": "usuario y contraseña distintos"
+  },
+  "choice": {
+    "replace": "Reemplazar",
+    "keep_both": "Conservar ambas",
+    "skip": "Omitir"
+  },
+  "st": {
+    "new": "añadida",
+    "identical": "ya al día"
+  },
+  "keepNote": "Conservar ambas crea «{names}».",
+  "doImport": "Importar"
 }

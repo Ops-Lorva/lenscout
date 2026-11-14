@@ -584,6 +584,10 @@ impl AccountBook {
             }
             match choices.get(&imp.name).copied().unwrap_or(Choice::Replace) {
                 Choice::Replace => {
+                    // Un autre identifiant : le secret du trousseau n'est plus le sien.
+                    if next[i].account.login != imp.login {
+                        next[i].legacy = false;
+                    }
                     next[i].account.name = imp.name;
                     next[i].account.login = imp.login;
                     if imp.password.is_some() {
@@ -656,6 +660,8 @@ impl AccountBook {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
         let tmp = self.path.with_extension("json.tmp");
+        // Un vieux temporaire plus ouvert garderait son mode : on repart de zéro.
+        let _ = std::fs::remove_file(&tmp);
         write_private(&tmp, &json).map_err(io)?;
         std::fs::rename(&tmp, &self.path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
@@ -1031,6 +1037,7 @@ mod tests {
         let out = book.export();
         assert!(!out.contains("root-unique") && !out.contains("S3cr3t"));
         assert!(!out.contains("needs_password") && !out.contains("\"id\""));
+        assert!(!out.contains("legacy"));
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["format"], "lenscout-accounts");
         assert_eq!(v["version"], 1);
@@ -1253,6 +1260,41 @@ mod tests {
                 .expose(),
             "Autre-1"
         );
+    }
+
+    #[test]
+    fn replace_with_another_login_drops_the_legacy_marker() {
+        // Fichier d'import sans mot de passe, identifiant différent.
+        let src = Fixture::new();
+        src.write_v1(&[("s", "Mairie", "autre")]);
+        let (src_book, _) = load_or_quarantine(src.path(), src.store.clone());
+        let data = src_book.export();
+        let fx = Fixture::new();
+        fx.write_v1(&[("id-1", "Mairie", "root")]);
+        let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
+        // Fichier réécrit : le compte porte encore la marque `legacy`.
+        book.create("Gare", "admin", pwd("x")).unwrap();
+        assert!(fx.raw().contains("\"legacy\": true"));
+        let summary = book.import_apply(&data, &HashMap::new()).unwrap();
+        assert_eq!(summary.replaced, 1);
+        assert!(!fx.raw().contains("legacy"));
+        // Le trousseau ne rend pas un mot de passe à un autre identifiant.
+        fx.store.set("id-1", &pwd(PWD)).unwrap();
+        assert!(fx.book().credentials("id-1").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_temp_file_does_not_weaken_the_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fixture::new();
+        let tmp = fx.path().with_extension("json.tmp");
+        std::fs::write(&tmp, b"vieux").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut book = fx.book();
+        book.create("A", "root", pwd(PWD)).unwrap();
+        let mode = std::fs::metadata(fx.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

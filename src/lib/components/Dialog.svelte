@@ -12,10 +12,15 @@
   }: { title: string; subtitle?: string; width?: number; onClose: () => void; children: Snippet } = $props();
 
   // À l'ouverture, le clavier est dans la feuille : premier champ, sinon premier bouton.
+  // À la fermeture, il retourne à l'élément qui l'avait (s'il existe encore).
   function focusFirst(sheet: HTMLElement) {
+    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const all = [...sheet.querySelectorAll<HTMLElement>('input, select, textarea, button')];
     const usable = all.filter((el) => !(el as HTMLInputElement).disabled && el.getAttribute('type') !== 'hidden');
     (usable.find((el) => el.tagName !== 'BUTTON') ?? usable[0])?.focus();
+    return () => {
+      if (before?.isConnected) before.focus();
+    };
   }
 </script>
 

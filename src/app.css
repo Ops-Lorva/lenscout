@@ -205,5 +205,6 @@ td.st:has(.res) { height: auto; padding-top: 5px; padding-bottom: 5px; line-heig
 .settings .k { color: var(--text-2); text-align: right; padding-top: 4px; }
 .settings label { display: flex; align-items: center; gap: 7px; }
 .settings .n { color: var(--text-2); font-size: 12px; margin-top: 5px; }
+.settings .n.err { color: var(--err); }
 .settings .v { padding-top: 4px; }
 .settings .seg { justify-self: start; }

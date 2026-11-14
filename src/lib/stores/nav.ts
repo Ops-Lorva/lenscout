@@ -22,6 +22,8 @@ export const framingTarget = writable<Camera | null>(null);
 export interface Status {
   text: string;
   tone?: 'ok' | 'warn';
+  /** Complément en texte courant après le message (en gras) : où, quoi. */
+  detail?: string;
 }
 export const status = writable<Status | null>(null);
 

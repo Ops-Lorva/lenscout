@@ -112,5 +112,11 @@
   /* Largeur bornée par la zone et par la hauteur transposée via le ratio (unités de conteneur). */
   .frame { position: relative; width: min(100%, calc(100cqh * var(--r))); aspect-ratio: var(--r); }
   .frame img { display: block; width: 100%; height: 100%; }
+  /* Sans unités de conteneur (WebKit < 16) : l'image seule, centrée, sans grille. */
+  @supports not (width: 1cqh) {
+    .frame { width: 100%; align-self: stretch; aspect-ratio: auto; display: flex; align-items: center; justify-content: center; }
+    .frame img { width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
+    .frame .grid, .frame .ret { display: none; }
+  }
   .view:fullscreen { border-radius: 0; background: #000; }
 </style>

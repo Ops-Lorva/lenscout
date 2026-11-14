@@ -24,11 +24,40 @@
     "keyring": "Keychain unavailable",
     "io": "Accounts file unavailable",
     "internal": "Internal error",
-    "unknown": "Error"
+    "unknown": "Error",
+    "import_invalid": "Unreadable import file"
   },
   "notice": {
     "quarantined": "Accounts file unreadable, set aside",
     "unwritable": "Accounts file unreadable, saving unavailable"
   },
-  "resecret": "Password to re-enter"
+  "resecret": "Password to re-enter",
+  "import": "Import…",
+  "export": "Export…",
+  "exported": "{count, plural, one {# account exported} other {# accounts exported}}",
+  "exportedIn": "to {path}",
+  "imported": "{count, plural, one {# account imported} other {# accounts imported}}",
+  "importedNone": "Import finished: no account changed",
+  "importTitle": "{count, plural, one {Import # account} other {Import # accounts}}",
+  "grp": {
+    "differs": "Already present, but different",
+    "new": "New",
+    "identical": "Identical"
+  },
+  "why": {
+    "login": "different login",
+    "password": "different password",
+    "both": "different login and password"
+  },
+  "choice": {
+    "replace": "Replace",
+    "keep_both": "Keep both",
+    "skip": "Skip"
+  },
+  "st": {
+    "new": "added",
+    "identical": "already up to date"
+  },
+  "keepNote": "Keep both creates “{names}”.",
+  "doImport": "Import"
 }

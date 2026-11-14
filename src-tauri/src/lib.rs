@@ -2,7 +2,8 @@ mod commands;
 mod updater;
 
 use commands::accounts::{
-    StartupNotice, cmd_account_create, cmd_account_remove, cmd_account_update, cmd_accounts_list,
+    StartupNotice, cmd_account_create, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
+    cmd_accounts_import_plan, cmd_account_update, cmd_accounts_list,
     cmd_accounts_startup, startup_code,
 };
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
@@ -24,6 +25,7 @@ const EXIT_WAIT: Duration = Duration::from_secs(10);
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(ScanState::default())
         .manage(StreamState::default())
         .manage(PreviewStore::default())
@@ -67,6 +69,9 @@ pub fn run() {
             cmd_account_create,
             cmd_account_update,
             cmd_account_remove,
+            cmd_accounts_export,
+            cmd_accounts_import_plan,
+            cmd_accounts_import_apply,
             cmd_apply_action,
             cmd_batch_preview,
             cmd_batch_apply,

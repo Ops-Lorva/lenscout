@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Mutex;
 
-use lenscout_core::accounts::{Account, AccountBook, AccountError, Startup};
+use lenscout_core::accounts::{
+    Account, AccountBook, AccountError, Choice, ImportKind, ImportPlan, ImportSummary, Startup,
+};
 use lenscout_core::secret::Secret;
 use lenscout_core::transport::Credentials;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 /// Erreurs : codes stables (`empty_field`, `duplicate_name`, `not_found`,
@@ -49,6 +53,124 @@ pub(crate) fn accounts_list(book: &AccountBook) -> Vec<AccountEntry> {
             login: a.login,
         })
         .collect()
+}
+
+/// Un fichier d'import fait quelques ko ; au-delà, ce n'est pas le nôtre.
+const IMPORT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Plan d'import à plat pour l'écran : `kind` = `new` | `identical` | `differs`.
+/// Aucun secret.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ImportItemOut {
+    pub name: String,
+    pub kind: &'static str,
+    pub login_differs: bool,
+    pub password_differs: bool,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ImportPlanOut {
+    pub items: Vec<ImportItemOut>,
+}
+
+impl From<ImportPlan> for ImportPlanOut {
+    fn from(plan: ImportPlan) -> Self {
+        let items = plan
+            .items
+            .into_iter()
+            .map(|i| {
+                let (kind, login_differs, password_differs) = match i.kind {
+                    ImportKind::New => ("new", false, false),
+                    ImportKind::Identical => ("identical", false, false),
+                    ImportKind::Differs { login_differs, password_differs } => {
+                        ("differs", login_differs, password_differs)
+                    }
+                };
+                ImportItemOut { name: i.name, kind, login_differs, password_differs }
+            })
+            .collect();
+        Self { items }
+    }
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ImportSummaryOut {
+    pub added: usize,
+    pub identical: usize,
+    pub replaced: usize,
+    pub kept_both: usize,
+    pub skipped: usize,
+}
+
+impl From<ImportSummary> for ImportSummaryOut {
+    fn from(s: ImportSummary) -> Self {
+        Self {
+            added: s.added,
+            identical: s.identical,
+            replaced: s.replaced,
+            kept_both: s.kept_both,
+            skipped: s.skipped,
+        }
+    }
+}
+
+/// Choix du front pour un nom déjà présent qui diffère.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChoiceIn {
+    Replace,
+    KeepBoth,
+    Skip,
+}
+
+impl From<ChoiceIn> for Choice {
+    fn from(c: ChoiceIn) -> Self {
+        match c {
+            ChoiceIn::Replace => Choice::Replace,
+            ChoiceIn::KeepBoth => Choice::KeepBoth,
+            ChoiceIn::Skip => Choice::Skip,
+        }
+    }
+}
+
+/// Écriture atomique : fichier voisin puis `rename`. Rend le nombre de comptes.
+pub(crate) fn accounts_export(book: &AccountBook, path: &Path) -> Result<usize, String> {
+    let io = |_: std::io::Error| "io".to_string();
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, book.export()).map_err(io)?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io(e)
+    })?;
+    Ok(book.list().len())
+}
+
+/// Fichier absent ou inaccessible : `io` ; trop gros ou pas du texte :
+/// `import_invalid`, comme tout fichier qui n'est pas un export.
+fn read_import(path: &Path) -> Result<String, String> {
+    let meta = std::fs::metadata(path).map_err(|_| "io".to_string())?;
+    if meta.len() > IMPORT_MAX_BYTES {
+        return Err("import_invalid".to_string());
+    }
+    let bytes = std::fs::read(path).map_err(|_| "io".to_string())?;
+    String::from_utf8(bytes).map_err(|_| "import_invalid".to_string())
+}
+
+pub(crate) fn accounts_import_plan(book: &AccountBook, path: &Path) -> Result<ImportPlanOut, String> {
+    let data = read_import(path)?;
+    book.import_plan(&data).map(Into::into).map_err(code)
+}
+
+pub(crate) fn accounts_import_apply(
+    book: &mut AccountBook,
+    path: &Path,
+    choices: HashMap<String, ChoiceIn>,
+) -> Result<ImportSummaryOut, String> {
+    let data = read_import(path)?;
+    let choices: HashMap<String, Choice> = choices.into_iter().map(|(k, v)| (k, v.into())).collect();
+    book.import_apply(&data, &choices).map(Into::into).map_err(code)
 }
 
 /// Signalement unique au front d'un démarrage dégradé (`quarantined`,
@@ -149,6 +271,34 @@ pub async fn cmd_account_remove(
 ) -> Result<(), String> {
     let mut book = lock(&state)?;
     account_remove(&mut book, &id)
+}
+
+// Le chemin vient de la boîte Enregistrer / Ouvrir du plugin dialog, jamais
+// d'un champ de saisie.
+
+#[tauri::command]
+pub async fn cmd_accounts_export(path: String, state: State<'_, Mutex<AccountBook>>) -> Result<usize, String> {
+    let book = lock(&state)?;
+    accounts_export(&book, Path::new(&path))
+}
+
+#[tauri::command]
+pub async fn cmd_accounts_import_plan(
+    path: String,
+    state: State<'_, Mutex<AccountBook>>,
+) -> Result<ImportPlanOut, String> {
+    let book = lock(&state)?;
+    accounts_import_plan(&book, Path::new(&path))
+}
+
+#[tauri::command]
+pub async fn cmd_accounts_import_apply(
+    path: String,
+    choices: HashMap<String, ChoiceIn>,
+    state: State<'_, Mutex<AccountBook>>,
+) -> Result<ImportSummaryOut, String> {
+    let mut book = lock(&state)?;
+    accounts_import_apply(&mut book, Path::new(&path), choices)
 }
 
 #[cfg(test)]
@@ -268,5 +418,91 @@ mod tests {
         let upd = account_update(&mut book, &acc.id, "B", "r2", None).unwrap();
         assert_eq!((upd.name.as_str(), upd.login.as_str()), ("B", "r2"));
         assert_eq!(book.credentials(&acc.id).unwrap().password.expose(), "x");
+    }
+
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lenscout-cmd-accounts-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    #[test]
+    fn export_writes_the_sealed_file_and_counts() {
+        let mut src = book();
+        account_create(&mut src, "Mairie Arles", "root-unique", Secret::new("S3cr3t-Unique!".into())).unwrap();
+        account_create(&mut src, "Gare", "admin", Secret::new("x".into())).unwrap();
+        let path = temp_file("lenscout-comptes.lenscout");
+        assert_eq!(accounts_export(&src, &path).unwrap(), 2);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("Mairie Arles") && !raw.contains("root-unique") && !raw.contains("S3cr3t"));
+        // Pas de temporaire laissé à côté.
+        assert!(!path.with_extension("lenscout.tmp").exists());
+        // Le fichier se réimporte sur un carnet neuf.
+        let mut dst = book();
+        let summary = accounts_import_apply(&mut dst, &path, HashMap::new()).unwrap();
+        assert_eq!(summary.added, 2);
+        assert_eq!(dst.list().len(), 2);
+    }
+
+    #[test]
+    fn import_plan_has_flat_kinds_and_no_secret() {
+        let mut src = book();
+        account_create(&mut src, "Mairie Arles", "root-unique", Secret::new("S3cr3t-Unique!".into())).unwrap();
+        account_create(&mut src, "Gare", "admin", Secret::new("x".into())).unwrap();
+        let path = temp_file("a.lenscout");
+        accounts_export(&src, &path).unwrap();
+        let mut dst = book();
+        account_create(&mut dst, "Mairie Arles", "autre", Secret::new("S3cr3t-Unique!".into())).unwrap();
+        let plan = accounts_import_plan(&dst, &path).unwrap();
+        let json = serde_json::to_string(&plan).unwrap();
+        assert!(!json.contains("S3cr3t") && !json.contains("root-unique"));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let items = v["items"].as_array().unwrap();
+        let mairie = items.iter().find(|i| i["name"] == "Mairie Arles").unwrap();
+        assert_eq!(mairie["kind"], "differs");
+        assert_eq!(mairie["login_differs"], true);
+        assert_eq!(mairie["password_differs"], false);
+        let gare = items.iter().find(|i| i["name"] == "Gare").unwrap();
+        assert_eq!(gare["kind"], "new");
+    }
+
+    #[test]
+    fn choices_from_the_front_are_mapped() {
+        let choices: HashMap<String, ChoiceIn> =
+            serde_json::from_str(r#"{"A":"replace","B":"keep_both","C":"skip"}"#).unwrap();
+        let mapped: HashMap<String, Choice> = choices.into_iter().map(|(k, v)| (k, v.into())).collect();
+        assert_eq!(mapped["A"], Choice::Replace);
+        assert_eq!(mapped["B"], Choice::KeepBoth);
+        assert_eq!(mapped["C"], Choice::Skip);
+    }
+
+    #[test]
+    fn keep_both_choice_is_applied() {
+        let mut src = book();
+        account_create(&mut src, "Mairie", "root", Secret::new("a".into())).unwrap();
+        let path = temp_file("a.lenscout");
+        accounts_export(&src, &path).unwrap();
+        let mut dst = book();
+        account_create(&mut dst, "Mairie", "autre", Secret::new("b".into())).unwrap();
+        let summary =
+            accounts_import_apply(&mut dst, &path, HashMap::from([("Mairie".to_string(), ChoiceIn::KeepBoth)])).unwrap();
+        assert_eq!(summary.kept_both, 1);
+        assert!(dst.list().iter().any(|a| a.name == "Mairie 2"));
+    }
+
+    #[test]
+    fn unreadable_import_is_import_invalid_and_changes_nothing() {
+        let mut dst = book();
+        account_create(&mut dst, "A", "r", Secret::new("x".into())).unwrap();
+        let path = temp_file("junk.lenscout");
+        std::fs::write(&path, b"{\"format\":\"autre\"}").unwrap();
+        assert_eq!(accounts_import_plan(&dst, &path).unwrap_err(), "import_invalid");
+        assert_eq!(accounts_import_apply(&mut dst, &path, HashMap::new()).unwrap_err(), "import_invalid");
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(accounts_import_plan(&dst, &path).unwrap_err(), "import_invalid");
+        assert_eq!(dst.list().len(), 1);
+        // Fichier absent : erreur d'accès, pas « illisible ».
+        let gone = temp_file("absent.lenscout");
+        assert_eq!(accounts_import_plan(&dst, &gone).unwrap_err(), "io");
     }
 }
