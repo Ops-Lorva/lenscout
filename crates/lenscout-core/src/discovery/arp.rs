@@ -117,8 +117,29 @@ pub struct SystemNeighbours;
 #[async_trait]
 impl Neighbours for SystemNeighbours {
     async fn mac_of(&self, iface: &ScanInterface, ip: Ipv4Addr) -> Option<String> {
-        read_neighbours(iface).await.remove(&ip)
+        // Windows titre chaque bloc de `arp -a` par l'adresse principale de
+        // la carte, pas forcément `iface.ip` (IP d'un compte posée en alias) :
+        // l'adresse de la caméra se cherche dans toute la table.
+        #[cfg(target_os = "windows")]
+        {
+            let _ = iface;
+            let o = async_cmd("arp").arg("-a").output().await.ok()?;
+            windows_mac_of(&String::from_utf8_lossy(&o.stdout), ip)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            read_neighbours(iface).await.remove(&ip)
+        }
     }
+}
+
+/// MAC normalisée de `ip` dans la sortie de `arp -a` (Windows), sous
+/// n'importe quel en-tête d'interface.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+fn windows_mac_of(text: &str, ip: Ipv4Addr) -> Option<String> {
+    let mut map = HashMap::new();
+    parse_windows_arp(text, &mut map, None);
+    map.get(&ip.to_string()).and_then(|m| normalize_mac(m))
 }
 
 /// Arguments de `ip neigh`, restreints à l'interface choisie.
@@ -437,6 +458,21 @@ mod tests {
         parse_windows_arp(text, &mut map, Some(Ipv4Addr::new(192, 0, 2, 10)));
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("192.0.2.1").map(String::as_str), Some("11:22:33:44:55:66"));
+    }
+
+    /// Contrôle MAC d'une activation sous Windows : l'adresse de la caméra est
+    /// cherchée dans toute la table, quel que soit l'en-tête du bloc (l'IP d'un
+    /// compte posée en alias n'est pas celle qui titre le bloc de la carte).
+    #[test]
+    fn windows_la_mac_d_une_camera_se_cherche_dans_tous_les_blocs() {
+        let text = "\r\nInterface: 10.0.50.2 --- 0x5\r\n\
+                    Internet Address      Physical Address      Type\r\n\
+                    192.168.1.90          ac-cc-8e-12-34-56     dynamic\r\n\
+                    \r\nInterface: 198.51.100.5 --- 0x9\r\n\
+                    192.0.2.2             aa-bb-cc-dd-ee-ff     dynamic\r\n";
+        assert_eq!(windows_mac_of(text, Ipv4Addr::new(192, 168, 1, 90)).as_deref(), Some("AC:CC:8E:12:34:56"));
+        assert_eq!(windows_mac_of(text, Ipv4Addr::new(192, 0, 2, 2)).as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(windows_mac_of(text, Ipv4Addr::new(192, 0, 2, 3)), None);
     }
 
     #[test]
