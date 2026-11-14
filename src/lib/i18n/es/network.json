@@ -20,6 +20,7 @@
   "selectAll": "Seleccionar todo",
   "select": "Seleccionar",
   "openWeb": "Abrir la página web",
+  "macDeclared": "MAC declarada por la cámara (su número de serie), no vista en la red",
   "frame": "Encuadrar",
   "error": {
     "iface_unknown": "Interfaz desconocida",

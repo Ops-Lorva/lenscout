@@ -19,6 +19,8 @@ export interface Camera {
   http_port: number;
   sources: Source[];
   addressing?: Addressing | null;
+  /** MAC que la caméra déclare (n° de série d'une Axis vue à travers le routeur), jamais vue sur le réseau. */
+  declared_mac?: string | null;
 }
 
 export interface InterfaceDetails {

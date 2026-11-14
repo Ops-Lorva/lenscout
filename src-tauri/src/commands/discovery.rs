@@ -374,6 +374,7 @@ mod tests {
             http_port: 80,
             sources: vec![],
             addressing: None,
+            declared_mac: None,
         };
         let g = state.begin(&eth0());
         state.record(g, &ScanEvent::Done);
@@ -409,6 +410,7 @@ mod tests {
             http_port: 80,
             sources: vec![],
             addressing: None,
+            declared_mac: None,
         };
         let st = |key: &str, ip: &str, activation| SeenState { key: key.into(), ip: ip.parse().unwrap(), activation };
         let g = state.begin(&eth0());
@@ -447,6 +449,7 @@ mod tests {
             http_port: 80,
             sources: vec![],
             addressing: None,
+            declared_mac: None,
         };
         state.record(g, &ScanEvent::Upsert { camera: cam });
         state.mark_activated("AC:CC:8E:12:34:56");
@@ -585,6 +588,7 @@ mod tests {
             http_port: 80,
             sources: vec![],
             addressing: None,
+            declared_mac: None,
         };
         let creds = Credentials { login: "root".into(), password: Secret::new("x".into()) };
         let time = Action::Time(lenscout_core::vapix::TimeSettings { ntp_servers: vec![], timezone: "UTC".into() });
@@ -623,6 +627,7 @@ mod tests {
             http_port: 80,
             sources: vec![],
             addressing: None,
+            declared_mac: None,
         }
     }
 

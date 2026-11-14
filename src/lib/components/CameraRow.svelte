@@ -2,7 +2,7 @@
   import { _ } from 'svelte-i18n';
   import { resultMessage, type ActionResult } from '#lib/api/configure.ts';
   import type { Camera } from '#lib/api/types.ts';
-  import { addressingKey } from '#lib/api/discovery.ts';
+  import { addressingKey, shownMac } from '#lib/api/discovery.ts';
 
   let {
     camera,
@@ -29,6 +29,7 @@
   const text = $derived(message ? $_(message.key, { values: message.values }) : '');
   const label = $derived([camera.brand, camera.model].filter(Boolean).join(' ') || '—');
   const addressing = $derived(addressingKey(camera));
+  const mac = $derived(shownMac(camera));
 </script>
 
 <tr class:sel={selected}>
@@ -37,7 +38,7 @@
   </td>
   <td class="grow" title={label}>{label}</td>
   <td>{camera.ip}</td>
-  <td class="mac" class:dim-t={!camera.mac}>{camera.mac ?? '—'}</td>
+  <td class="mac" class:dim-t={!mac.mac} class:decl={mac.declared} title={mac.declared ? $_('network.macDeclared') : undefined}>{mac.mac ?? '—'}{#if mac.declared}<sup>*</sup>{/if}</td>
   <td class="mac ser" class:dim-t={!camera.serial} title={camera.serial ?? ''}>{camera.serial ?? '—'}</td>
   <td class:dim-t={!camera.firmware}>{camera.firmware ?? '—'}</td>
   <td class:dim-t={addressing.endsWith('.unknown')}>{$_(addressing)}</td>

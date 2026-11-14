@@ -146,6 +146,7 @@ tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--act); }
 .chk { width: 30px; padding-right: 0; }
 .chk input { display: block; margin: 0; }
 .mac { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+td.mac.decl { font-style: italic; }
 td.ser { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
 .st.new { color: var(--warn); }
 td.st:has(.res) { height: auto; padding-top: 5px; padding-bottom: 5px; line-height: 1.3; }

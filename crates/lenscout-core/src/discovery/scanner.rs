@@ -1488,6 +1488,7 @@ mod tests {
         let routed = cams.iter().rev().find(|c| c.ip == at).expect("la caméra routée est listée");
         assert_eq!((routed.family, routed.mac.as_deref()), (Family::Axis, None));
         assert_eq!(routed.serial.as_deref(), Some("ACCC8E123456"));
+        assert_eq!(routed.declared_mac.as_deref(), Some("AC:CC:8E:12:34:56"), "MAC déclarée : son n° de série");
         assert!(routed.sources.contains(&Source::Http));
         assert!(cams.iter().any(|c| c.ip == "192.0.2.21".parse::<Ipv4Addr>().unwrap()), "la couche 2 aussi");
         // Entendue par le routeur, jamais comme une annonce de couche 2.

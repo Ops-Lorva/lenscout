@@ -35,6 +35,7 @@ fn camera(ip: Ipv4Addr, family: Family, brand: &str) -> Camera {
         http_port: 80,
         sources: vec![],
         addressing: None,
+        declared_mac: None,
     }
 }
 

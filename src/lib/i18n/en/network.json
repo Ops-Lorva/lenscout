@@ -20,6 +20,7 @@
   "selectAll": "Select all",
   "select": "Select",
   "openWeb": "Open web page",
+  "macDeclared": "MAC declared by the camera (its serial number), not seen on the network",
   "frame": "Frame",
   "error": {
     "iface_unknown": "Unknown interface",

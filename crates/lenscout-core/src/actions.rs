@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::batch::{Assignment, BatchRequest};
 use crate::discovery::arp::{Neighbours, ScanInterface};
-use crate::model::{Activation, Camera, Family, Source, normalize_mac};
+use crate::model::{Activation, Camera, Family, Source, mac_from_serial, normalize_mac};
 use crate::oui::camera_brand_for_mac;
 use crate::temp_ip::{
     Elevator, TempIpError, needs_temp_ip, pick_temp_ip, reachable_with_temp_ip, read_journal, subnets_overlap,
@@ -210,12 +210,16 @@ fn scan_state(ctx: &ActionContext, cam: &Camera) -> Option<Activation> {
     ctx.seen_states.iter().find(|s| s.key == key && s.ip == cam.ip).map(|s| s.activation)
 }
 
+fn is_axis_mac(mac: &str) -> bool {
+    matches!(camera_brand_for_mac(mac), Some((Family::Axis, _)))
+}
+
 /// La MAC de couche 2 de la caméra (pas celle qu'elle annonce) est d'un OUI
 /// Axis ; si l'adresse figure sous plusieurs cartes, toutes ses MAC doivent
 /// l'être. Relève la barre face à un faux appareil, sans plus : une MAC se change.
 async fn layer2_is_axis(ctx: &ActionContext, cam: &Camera) -> bool {
     let macs = ctx.neighbours.macs_of(&ctx.iface, cam.ip).await;
-    !macs.is_empty() && macs.iter().all(|mac| matches!(camera_brand_for_mac(mac), Some((Family::Axis, _))))
+    !macs.is_empty() && macs.iter().all(|mac| is_axis_mac(mac))
 }
 
 /// Lit l'identité de la caméra à son adresse actuelle et la compare à celle
@@ -229,7 +233,9 @@ async fn layer2_is_axis(ctx: &ActionContext, cam: &Camera) -> bool {
 ///
 /// `creds` à `None` (activation) : rien du compte ne part, et un refus
 /// d'authentification dit que la caméra a déjà un compte : `not_new`.
-pub async fn verify_identity(ctx: &ActionContext, cam: &Camera, creds: Option<&Credentials>) -> Result<(), ActionError> {
+///
+/// Rend le n° de série lu, celui qui vient d'être confirmé.
+pub async fn verify_identity(ctx: &ActionContext, cam: &Camera, creds: Option<&Credentials>) -> Result<String, ActionError> {
     if cam.family != Family::Axis {
         return Err(ActionError::Unsupported);
     }
@@ -261,7 +267,7 @@ pub async fn verify_identity(ctx: &ActionContext, cam: &Camera, creds: Option<&C
         },
         (None, None) => false,
     };
-    if same { Ok(()) } else { Err(ActionError::IdentityMismatch) }
+    if same { Ok(found.to_string()) } else { Err(ActionError::IdentityMismatch) }
 }
 
 /// L'adresse vient du front : elle doit être dans le sous-réseau de l'interface
@@ -362,14 +368,15 @@ async fn apply_checked(
         return Err(ActionError::NotNew);
     }
     if on {
-        return verify_and_write(ctx, cam, creds, action).await;
+        let routed = !on_subnet(&ctx.iface, cam.ip);
+        return verify_and_write(ctx, cam, creds, action, routed).await;
     }
     let avoid: Vec<Ipv4Addr> = ctx.seen.iter().chain(&ctx.in_use).copied().collect();
     let temp = pick_temp_ip(&ctx.iface.name, cam.ip, &avoid, rand::random())
         .map_err(|_| ActionError::TempIpFailed)?;
     // L'IP temporaire couvre la vérification d'identité ET l'écriture.
     let done = with_temp_ip(ctx.elevator.as_ref(), &ctx.journal, &temp, &ctx.service, || {
-        verify_and_write(ctx, cam, creds, action)
+        verify_and_write(ctx, cam, creds, action, false)
     })
     .await;
     match done {
@@ -459,11 +466,13 @@ async fn reset_isapi(ctx: &ActionContext, cam: &Camera, creds: &Credentials, mod
     isapi::factory_reset(http, &base, creds, mode).await.map_err(|e| from_vapix(e, cam.ip))
 }
 
+/// `routed` : la caméra est jointe à travers le routeur (`routed_for`).
 async fn verify_and_write(
     ctx: &ActionContext,
     cam: &Camera,
     creds: &Credentials,
     action: &Action,
+    routed: bool,
 ) -> Result<(), ActionError> {
     let cleartext = match action {
         Action::Activate => false,
@@ -480,18 +489,25 @@ async fn verify_and_write(
             return done.map_err(|e| from_vapix(e, cam.ip));
         }
     };
-    activate_checked(ctx, cam, creds, cleartext).await
+    activate_checked(ctx, cam, creds, cleartext, routed).await
 }
 
 /// Activation : rien du compte ne part avant que tout soit vérifié.
 /// 1. identité, lue sans compte (une caméra neuve n'en a aucun : un refus
 ///    dit qu'elle n'est pas neuve) ;
-/// 2. MAC de couche 2 d'un OUI Axis ;
+/// 2. MAC de couche 2 d'un OUI Axis ; à travers le routeur, où la couche 2
+///    ne passe pas, la MAC que la caméra déclare : le n° de série relu en 1
+///    (sur Axis, c'est la MAC), s'il en a exactement la forme ;
 /// 3. état « neuve » relu à l'instant, sans compte (`needsetup=yes`) ;
 /// 4. alors seulement le mot de passe.
-async fn activate_checked(ctx: &ActionContext, cam: &Camera, creds: &Credentials, cleartext: bool) -> Result<(), ActionError> {
-    verify_identity(ctx, cam, None).await?;
-    if !layer2_is_axis(ctx, cam).await {
+async fn activate_checked(ctx: &ActionContext, cam: &Camera, creds: &Credentials, cleartext: bool, routed: bool) -> Result<(), ActionError> {
+    let serial = verify_identity(ctx, cam, None).await?;
+    let axis = if routed {
+        mac_from_serial(&serial).is_some_and(|mac| is_axis_mac(&mac))
+    } else {
+        layer2_is_axis(ctx, cam).await
+    };
+    if !axis {
         return Err(ActionError::MacNotAxis);
     }
     let (http, base) = (ctx.http.as_ref(), cam.base_url());
@@ -593,6 +609,7 @@ mod tests {
             http_port: 80,
             sources: vec![Source::Mdns],
             addressing: None,
+            declared_mac: None,
         }
     }
 
@@ -1900,6 +1917,79 @@ mod tests {
         c.seen_iface = Some("wlan0".into());
         assert_eq!(apply(&c, &routed_cam(Family::Axis), &creds(), &time()).await.error, Some(ActionError::CameraOffSubnet));
         assert!(http.requests().is_empty(), "aucun compte n'est parti");
+    }
+
+    /// Contexte routé où le dernier scan a lu la caméra routée neuve (sa clé
+    /// est son IP : elle n'a pas de MAC vue) ; table ARP vide, elle ne passe
+    /// pas le routeur.
+    fn routed_new_ctx(http: Arc<dyn CameraHttp>) -> TestCtx {
+        let (mut c, _) = routed_ctx(http, Route::Routed("192.0.2.1".parse().unwrap()));
+        c.seen_states.push(SeenState { key: "10.0.20.11".into(), ip: "10.0.20.11".parse().unwrap(), activation: Activation::New });
+        c.neighbours = Arc::new(FakeNeighbours::table(&[]));
+        c
+    }
+
+    fn routed_new_cam(serial: &str) -> Camera {
+        let mut c = routed_cam(Family::Axis);
+        c.serial = Some(serial.into());
+        c.activation = Activation::New;
+        c
+    }
+
+    fn info_with_serial(serial: &str) -> Vec<u8> {
+        String::from_utf8_lossy(INFO).replace(SERIAL, serial).into_bytes()
+    }
+
+    /// À travers le routeur, la MAC ne se lit pas en couche 2 : celle que la
+    /// caméra déclare (son n° de série, relu à l'instant sans compte) passe le
+    /// même contrôle d'OUI Axis.
+    #[tokio::test]
+    async fn routed_axis_is_activated_on_the_mac_its_serial_declares() {
+        let http = Arc::new(axis_ok());
+        let c = routed_new_ctx(http.clone());
+        let r = apply(&c, &routed_new_cam(SERIAL), &creds(), &Action::Activate).await;
+        assert!(r.ok, "{:?}", r.error);
+        let urls: Vec<String> = http.requests().into_iter().map(|r| r.url).collect();
+        assert!(urls[0].ends_with("/axis-cgi/basicdeviceinfo.cgi"), "n° de série relu d'abord : {urls:?}");
+        assert!(urls.iter().any(|u| u.ends_with("://10.0.20.11/axis-cgi/pwdgrp.cgi")), "{urls:?}");
+    }
+
+    /// N° de série absent, restreint, d'une autre forme ou d'un OUI non Axis :
+    /// rien du compte ne part.
+    #[tokio::test]
+    async fn routed_activation_is_refused_without_an_axis_serial() {
+        let no_serial = String::from_utf8_lossy(INFO).replace(&format!(r#""SerialNumber": "{SERIAL}","#), "").into_bytes();
+        assert!(!String::from_utf8_lossy(&no_serial).contains("SerialNumber"));
+        let cases: Vec<(FakeHttp, &str, ActionError)> = vec![
+            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, no_serial), SERIAL, ActionError::IdentityUnreadable),
+            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 401, ""), SERIAL, ActionError::NotNew),
+            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("ACCC8E12345")), "ACCC8E12345", ActionError::MacNotAxis),
+            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("ACCC8E12345X")), "ACCC8E12345X", ActionError::MacNotAxis),
+            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("A45E60112233")), "A45E60112233", ActionError::MacNotAxis),
+        ];
+        for (fake, serial, want) in cases {
+            let http = Arc::new(fake.on(Method::Post, "/axis-cgi/systemready.cgi", 200, NEEDSETUP_YES).on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "Created account root."));
+            let c = routed_new_ctx(http.clone());
+            for action in [Action::Activate, Action::ActivateCleartext] {
+                let r = apply(&c, &routed_new_cam(serial), &creds(), &action).await;
+                assert_eq!(r.error.as_ref(), Some(&want), "{serial}");
+            }
+            assert!(writes(&http).is_empty(), "aucun mot de passe envoyé ({serial})");
+            assert!(http.requests().iter().all(|r| r.login.is_none()));
+        }
+    }
+
+    /// Dans le sous-réseau, la MAC déclarée ne remplace jamais la couche 2.
+    #[tokio::test]
+    async fn declared_mac_does_not_replace_the_arp_table_on_the_subnet() {
+        let http = Arc::new(axis_ok());
+        let mut c = ctx(http.clone());
+        c.neighbours = Arc::new(FakeNeighbours::table(&[]));
+        let mut front = cam("192.0.2.11", Family::Axis);
+        front.declared_mac = Some(MAC.into());
+        let r = apply(&c, &front, &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::MacNotAxis));
+        assert!(writes(&http).is_empty());
     }
 
     #[tokio::test]

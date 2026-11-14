@@ -32,6 +32,12 @@ export function readAddressing(list: Camera[], accountId: string): Promise<Addre
   return invoke<AddressingRead[]>('cmd_read_addressing', { cameras, accountId });
 }
 
+/** Colonne MAC : celle vue sur le réseau, sinon celle que la caméra déclare (marquée). */
+export function shownMac(c: Camera): { mac: string | null; declared: boolean } {
+  if (c.mac) return { mac: c.mac, declared: false };
+  return c.declared_mac ? { mac: c.declared_mac, declared: true } : { mac: null, declared: false };
+}
+
 /**
  * Libellé de la colonne Adressage : la valeur lue (SADP, ou Axis avec le
  * compte), sinon DHCP pour une Axis neuve (réglage d'usine), sinon « — ».

@@ -175,6 +175,7 @@ mod tests {
             http_port: 80,
             sources: vec![],
             addressing: None,
+            declared_mac: None,
         };
         assert!(axis_only(&cam).is_ok());
         for f in [Family::Hikvision, Family::Other] {

@@ -196,6 +196,7 @@ mod tests {
             http_port: 80,
             sources: vec![Source::Mdns],
             addressing: None,
+            declared_mac: None,
         }
     }
 

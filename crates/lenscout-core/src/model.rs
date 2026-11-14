@@ -78,6 +78,13 @@ pub struct Camera {
     /// Absent des caméras renvoyées par un ancien front : inconnu.
     #[serde(default)]
     pub addressing: Option<Addressing>,
+    /// MAC que la caméra déclare elle-même, jamais vue sur le réseau : n° de
+    /// série d'une Axis entendue au balayage routé (`mac_from_serial`). Rangée
+    /// à part de `mac` : elle ne fait ni la clé de la ligne, ni le
+    /// rapprochement des observations. L'activation à travers le routeur ne
+    /// s'y fie pas non plus : elle relit le n° de série à l'instant.
+    #[serde(default)]
+    pub declared_mac: Option<String>,
 }
 
 impl Camera {
@@ -94,6 +101,7 @@ impl Camera {
             http_port: s.http_port.unwrap_or(80),
             sources: vec![s.source],
             addressing: s.addressing,
+            declared_mac: declared_mac(s),
         }
     }
 
@@ -112,6 +120,7 @@ impl Camera {
         fill(&mut self.serial, &s.serial);
         fill(&mut self.firmware, &s.firmware);
         fill(&mut self.addressing, &s.addressing);
+        fill(&mut self.declared_mac, &declared_mac(s));
         // La première marque connue reste : une autre marque sur la même MAC
         // ne fait pas passer une Axis en Hikvision (ni l'inverse).
         if let Some(f) = s.family
@@ -142,6 +151,24 @@ impl Camera {
     /// Base des appels HTTP vers la caméra.
     pub fn base_url(&self) -> String {
         self.web_url()
+    }
+}
+
+/// MAC déclarée par un n° de série Axis (qui EST la MAC) : exactement 12
+/// chiffres hexadécimaux, sans séparateur ; `None` sinon.
+pub fn mac_from_serial(serial: &str) -> Option<String> {
+    if serial.len() != 12 || !serial.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    normalize_mac(serial)
+}
+
+/// MAC que déclare une observation : n° de série d'une Axis entendue au
+/// balayage routé, seule source sans couche 2.
+fn declared_mac(s: &Sighting) -> Option<String> {
+    match (s.source, s.family, &s.serial) {
+        (Source::Http, Some(Family::Axis), Some(serial)) => mac_from_serial(serial),
+        _ => None,
     }
 }
 
@@ -193,6 +220,45 @@ mod tests {
         }
         assert_eq!(normalize_mac("ACCC8E1234"), None);
         assert_eq!(normalize_mac("ZZCC8E123456"), None);
+    }
+
+    /// Le n° de série d'une Axis est sa MAC (P4705 : `B8A44FF510EF`, MAC vue
+    /// en couche 2 `B8:A4:4F:F5:10:EF`) ; exactement 12 chiffres hexadécimaux.
+    #[test]
+    fn mac_from_serial_takes_exactly_twelve_hex_digits() {
+        assert_eq!(mac_from_serial("B8A44FF510EF").as_deref(), Some("B8:A4:4F:F5:10:EF"));
+        assert_eq!(mac_from_serial("b8a44ff510ef").as_deref(), Some("B8:A4:4F:F5:10:EF"));
+        for bad in ["B8A44FF510E", "B8A44FF510EF0", "B8:A4:4F:F5:10:EF", "B8A44FF510EG", "", "DS-2CD2143G2-I20230101AAWRJ12345678"] {
+            assert_eq!(mac_from_serial(bad), None, "{bad}");
+        }
+    }
+
+    /// Balayage routé : la MAC d'une Axis est celle qu'elle déclare (son n° de
+    /// série), rangée à part ; `mac` reste la MAC vue sur le réseau.
+    #[test]
+    fn routed_axis_declares_its_mac_apart_from_the_seen_one() {
+        let mut s = sighting(Source::Http);
+        s.family = Some(Family::Axis);
+        s.serial = Some("B8A44FF510EF".into());
+        let cam = Camera::from_sighting(&s);
+        assert_eq!(cam.declared_mac.as_deref(), Some("B8:A4:4F:F5:10:EF"));
+        assert_eq!(cam.mac, None);
+        // Ni une autre source, ni une autre marque, ni un n° de série d'une autre forme.
+        let mut mdns = s.clone();
+        mdns.source = Source::Mdns;
+        let mut hik = s.clone();
+        hik.family = Some(Family::Hikvision);
+        let mut odd = s.clone();
+        odd.serial = Some("B8A44FF510E".into());
+        for other in [mdns, hik, odd] {
+            assert_eq!(Camera::from_sighting(&other).declared_mac, None, "{other:?}");
+        }
+        // Le n° de série arrive plus tard (repli param.cgi) : la MAC déclarée suit.
+        let mut late = sighting(Source::Http);
+        late.family = Some(Family::Axis);
+        let mut cam = Camera::from_sighting(&late);
+        cam.merge(&s);
+        assert_eq!(cam.declared_mac.as_deref(), Some("B8:A4:4F:F5:10:EF"));
     }
 
     #[test]

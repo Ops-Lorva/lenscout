@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
-import { addressingKey, readAddressing } from './discovery';
+import { addressingKey, readAddressing, shownMac } from './discovery';
 import type { Camera } from './types';
 
 const cam = (over: Partial<Camera>): Camera => ({
@@ -20,6 +20,13 @@ test('adressage affiché : celui lu, DHCP d’usine pour une Axis neuve, sinon i
   expect(addressingKey(cam({ activation: 'unknown', addressing: null }))).toBe('network.addressing.unknown');
   // Une Hikvision neuve : seule la réponse SADP compte.
   expect(addressingKey(cam({ family: 'hikvision', activation: 'new' }))).toBe('network.addressing.unknown');
+});
+
+test('MAC affichée : celle vue sur le réseau, sinon celle que la caméra déclare, marquée', () => {
+  expect(shownMac(cam({ mac: 'AC:CC:8E:12:34:56' }))).toEqual({ mac: 'AC:CC:8E:12:34:56', declared: false });
+  expect(shownMac(cam({ mac: 'AC:CC:8E:12:34:56', declared_mac: 'B8:A4:4F:F5:10:EF' }))).toEqual({ mac: 'AC:CC:8E:12:34:56', declared: false });
+  expect(shownMac(cam({ sources: ['http'], declared_mac: 'B8:A4:4F:F5:10:EF' }))).toEqual({ mac: 'B8:A4:4F:F5:10:EF', declared: true });
+  expect(shownMac(cam({}))).toEqual({ mac: null, declared: false });
 });
 
 test('lecture de l’adressage : seules les Axis partent, avec le compte retenu', async () => {
