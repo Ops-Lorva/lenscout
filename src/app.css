@@ -154,6 +154,12 @@ td.st:has(.res) { height: auto; padding-top: 5px; padding-bottom: 5px; line-heig
 .res.bad { color: var(--err); }
 .ra { text-align: right; }
 .ra .mini + .mini { margin-left: 4px; }
+/* Colonne de boutons : à la taille de son contenu, jamais tronquée (un libellé
+   coupé en « … » se prend pour un menu). La colonne `grow` prend le reste et,
+   elle, se tronque. Tables sans `fixed` : seule la mise en page auto ajuste
+   une colonne à son contenu. */
+th.acts, td.acts { width: 1%; white-space: nowrap; }
+td.grow { width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* Contrôle segmenté */
 .seg { display: inline-flex; background: var(--seg); border-radius: 8px; padding: 2px; gap: 2px; }

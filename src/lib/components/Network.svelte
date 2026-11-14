@@ -299,7 +299,7 @@
 <ActionBar {iface} onDone={rescanSoon} bind:open={barOpen} />
 
 <div class="scroll">
-  <table class="fixed">
+  <table>
     <thead>
       <tr>
         <th class="chk"><input type="checkbox" checked={allSelected} onchange={toggleAll} aria-label={$_('network.selectAll')} /></th>
@@ -310,7 +310,7 @@
         <th style="width:84px">{$_('network.col.firmware')}</th>
         <th style="width:100px">{$_('network.col.addressing')}</th>
         <th style="width:112px">{$_('network.col.state')}</th>
-        <th style="width:200px"></th>
+        <th class="acts"></th>
       </tr>
     </thead>
     <tbody>

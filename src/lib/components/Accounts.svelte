@@ -198,24 +198,24 @@
 
 {#if error && editing === null}<p class="err">{$_(error)}</p>{/if}
 
-<table class="fixed">
+<table>
   <thead>
     <tr>
       <th>{$_('accounts.col.name')}</th>
       <th style="width:150px">{$_('accounts.col.login')}</th>
       <th style="width:150px">{$_('accounts.field.pc_ip')}</th>
       <th style="width:110px">{$_('accounts.field.password')}</th>
-      <th style="width:150px"></th>
+      <th class="acts"></th>
     </tr>
   </thead>
   <tbody>
     {#each accounts as a (a.id)}
       <tr>
-        <td>{a.name}</td>
+        <td class="grow" title={a.name}>{a.name}</td>
         <td>{a.login}</td>
         <td class="dim-t">{a.pc_ip ?? ''}</td>
         <td>{#if a.has_secret}••••••••{:else}<span class="warn">{$_('accounts.resecret')}</span>{/if}</td>
-        <td class="ra">
+        <td class="ra acts">
           <button class="mini" onclick={() => open(a)}>{$_('accounts.edit')}</button>
           <button class="mini" class:danger={confirming === a.id} onclick={() => remove(a)}>
             {confirming === a.id ? $_('accounts.confirmRemove') : $_('accounts.remove')}

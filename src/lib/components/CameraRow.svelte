@@ -35,7 +35,7 @@
   <td class="chk">
     <input type="checkbox" checked={selected} onchange={onToggle} aria-label={$_('network.select')} />
   </td>
-  <td>{label}</td>
+  <td class="grow" title={label}>{label}</td>
   <td>{camera.ip}</td>
   <td class="mac" class:dim-t={!camera.mac}>{camera.mac ?? '—'}</td>
   <td class="mac ser" class:dim-t={!camera.serial} title={camera.serial ?? ''}>{camera.serial ?? '—'}</td>
@@ -50,7 +50,7 @@
       <div class="res bad" title={text}>{text}</div>
     {/if}
   </td>
-  <td class="ra">
+  <td class="ra acts">
     <button class="mini" onclick={onOpenWeb}>{$_('network.openWeb')}</button>
     <button class="mini" onclick={onFrame}>{$_('network.frame')}</button>
     <span class="more">
