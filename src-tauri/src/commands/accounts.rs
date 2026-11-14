@@ -221,8 +221,10 @@ pub(crate) fn notice_code(startup: &Startup, migration_incomplete: bool) -> Opti
 
 /// Comptes de l'ancien identifiant posés à côté du carnet par la migration
 /// (les deux carnets existaient) : fusionnés par id, puis le fichier est
-/// renommé `.merged-<horodatage>`. `false` si la fusion a échoué : le
-/// fichier reste, elle sera retentée au prochain lancement.
+/// renommé `.merged-<horodatage>`. `false` (avis au démarrage) si la fusion
+/// a échoué : écriture impossible → le fichier reste, retentée au prochain
+/// lancement ; fichier illisible → mis de côté `.corrupt-<horodatage>`
+/// (jamais effacé), donc signalé une seule fois.
 pub(crate) fn absorb_old_accounts(book: &mut AccountBook, aside: &Path) -> bool {
     if !aside.exists() {
         return true;
@@ -231,9 +233,19 @@ pub(crate) fn absorb_old_accounts(book: &mut AccountBook, aside: &Path) -> bool 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut done = aside.as_os_str().to_owned();
-    done.push(format!(".merged-{stamp}"));
-    book.absorb(aside).is_ok() && std::fs::rename(aside, done).is_ok()
+    let renamed = |suffix: &str| {
+        let mut to = aside.as_os_str().to_owned();
+        to.push(format!(".{suffix}-{stamp}"));
+        std::fs::rename(aside, to).is_ok()
+    };
+    match book.absorb(aside) {
+        Ok(_) => renamed("merged"),
+        Err(AccountError::ImportInvalid) => {
+            renamed("corrupt");
+            false
+        }
+        Err(_) => false,
+    }
 }
 
 pub(crate) fn take_notice(notice: &StartupNotice) -> Option<String> {
@@ -555,10 +567,16 @@ mod tests {
             e.file_name().to_string_lossy().starts_with("accounts.json.io.lenscout.app.merged-")
         });
         assert!(kept);
-        // Illisible : gardé pour le prochain lancement, et signalé.
+        // Illisible : mis de côté (`.corrupt-*`, jamais effacé), signalé une
+        // seule fois — le lancement suivant n'a plus rien à fusionner.
         std::fs::write(&aside, b"pas du json").unwrap();
         assert!(!absorb_old_accounts(&mut book, &aside));
-        assert!(aside.exists());
+        assert!(!aside.exists());
+        let corrupt = std::fs::read_dir(&dir.0).unwrap().filter_map(|e| e.ok()).any(|e| {
+            e.file_name().to_string_lossy().starts_with("accounts.json.io.lenscout.app.corrupt-")
+        });
+        assert!(corrupt);
+        assert!(absorb_old_accounts(&mut book, &aside));
     }
 
     #[test]

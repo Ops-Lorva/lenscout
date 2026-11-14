@@ -645,8 +645,9 @@ impl AccountBook {
     /// ajouté, sous un nom libre si le sien est pris (« Nom 2 ») ; un id déjà
     /// présent garde le compte de ce carnet. Rend le nombre de comptes
     /// ajoutés. Tout ou rien : un échec d'écriture laisse le carnet intact.
+    /// Autre carnet illisible : `ImportInvalid`.
     pub fn absorb(&mut self, path: &std::path::Path) -> Result<usize, AccountError> {
-        let other = AccountBook::load(path.to_path_buf(), self.store.clone())?;
+        let other = AccountBook::load(path.to_path_buf(), self.store.clone()).map_err(|_| AccountError::ImportInvalid)?;
         let mut next = self.entries.clone();
         let mut added = 0;
         for mut entry in other.entries {
@@ -1178,6 +1179,9 @@ mod tests {
         assert_eq!(fx.book().list().len(), 3);
         // Le fichier fusionné n'est pas touché.
         assert_eq!(std::fs::read_to_string(&old).unwrap(), file.to_string());
+        // Illisible : erreur à part, pour le mettre de côté.
+        std::fs::write(&old, b"pas du json").unwrap();
+        assert!(matches!(book.absorb(&old), Err(AccountError::ImportInvalid)));
     }
 
     #[test]
