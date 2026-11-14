@@ -6,9 +6,11 @@
     batchApply, batchErrorMessage, batchFingerprint, batchPreview, orNull, outsideSubnet, splitList,
     type ActionResult, type BatchPreview,
   } from '$lib/api/configure';
+  import { firstFit, type FreeRange } from '$lib/api/freeIps';
   import type { Camera } from '$lib/api/types';
   import AccountPicker from './AccountPicker.svelte';
   import Dialog from './Dialog.svelte';
+  import FreeIps from './FreeIps.svelte';
 
   // `cams` : la sélection dans l'ordre affiché ; `others` : toutes les autres
   // caméras connues. `onApplied` reçoit les résultats par caméra.
@@ -53,6 +55,12 @@
       ifaceMask = d.subnet;
     } catch {}
   });
+
+  // La première plage assez grande pour les caméras cochées est proposée, sauf si l'IP de départ est déjà saisie.
+  function proposeStart(ranges: FreeRange[]) {
+    if (start.trim() !== '') return;
+    start = firstFit(ranges, cams.length) ?? '';
+  }
 
   function show(e: unknown) {
     const m = batchErrorMessage(e);
@@ -99,6 +107,7 @@
 <Dialog title={$_('batch.title')} width={560} {onClose}>
   <div class="form">
     <label for="b-account">{$_('accounts.picker')}</label><AccountPicker id="b-account" bind:accountId />
+    <FreeIps {iface} {ifaceIp} {ifaceMask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
     <label for="b-start">{$_('batch.start')}</label><input id="b-start" type="text" bind:value={start} inputmode="decimal" autocomplete="off" />
     {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
     <label for="b-mask">{$_('configure.mask')}</label><input id="b-mask" type="text" bind:value={mask} inputmode="decimal" autocomplete="off" />

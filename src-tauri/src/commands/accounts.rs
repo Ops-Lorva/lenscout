@@ -533,22 +533,17 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
-    #[cfg(unix)]
+    /// Indépendant de l'utilisateur (root contourne les droits) : le chemin choisi
+    /// a pour « dossier » un fichier ordinaire, le système refuse quoi qu'on soit.
     #[test]
     fn io_errors_on_the_chosen_file_have_their_own_codes() {
-        use std::os::unix::fs::PermissionsExt;
         let mut src = book();
         account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
-        let path = temp_file("d.lenscout");
-        let dir = path.parent().unwrap().to_path_buf();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let err = accounts_export(&src, &path);
-        // Un fichier illisible : droits retirés.
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(err.unwrap_err(), "file_unwritable");
+        let plain = temp_file("ordinaire");
+        std::fs::write(&plain, b"x").unwrap();
+        let path = plain.join("d.lenscout");
+        assert_eq!(accounts_export(&src, &path).unwrap_err(), "file_unwritable");
         assert!(!path.exists() && !path.with_extension("lenscout.tmp").exists());
-        accounts_export(&src, &path).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         assert_eq!(accounts_import_plan(&src, &path).unwrap_err(), "file_unreadable");
     }
 }

@@ -16,6 +16,7 @@ chacha20poly1305 = "0.10"
 bytes = "1.12.1"
 digest_auth = "0.3.1"
 dirs-next = "2.0.0"
+ping-async = "1"
 futures-util = "0.3.34"
 hickory-proto = "0.26.3"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }

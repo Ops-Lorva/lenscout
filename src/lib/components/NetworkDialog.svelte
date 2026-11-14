@@ -6,6 +6,7 @@
   import { orNull, outsideSubnet, splitList } from '$lib/api/configure';
   import AccountPicker from './AccountPicker.svelte';
   import Dialog from './Dialog.svelte';
+  import FreeIps from './FreeIps.svelte';
 
   let {
     accountId = $bindable(''),
@@ -48,7 +49,7 @@
   }
 </script>
 
-<Dialog title={$_('configure.ip')} {subtitle} {onClose}>
+<Dialog title={$_('configure.ip')} {subtitle} width={520} {onClose}>
   <div class="form">
     <label for="ip-account">{$_('accounts.picker')}</label><AccountPicker id="ip-account" bind:accountId />
     <label for="ip-mode">{$_('configure.mode')}</label>
@@ -56,6 +57,8 @@
       <option value={false}>{$_('configure.static')}</option>
       <option value={true}>{$_('configure.dhcp')}</option>
     </select>
+    <!-- Au-dessus du champ : on choisit une plage, le champ se remplit. -->
+    <FreeIps {iface} {ifaceIp} {ifaceMask} value={ip} hidden={dhcp} onPick={(a) => (ip = a)} />
     {#if !dhcp}
       <label for="ip-ip">{$_('configure.ipaddr')}</label><input id="ip-ip" type="text" bind:value={ip} inputmode="decimal" autocomplete="off" />
       {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}

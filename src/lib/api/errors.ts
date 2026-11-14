@@ -26,6 +26,7 @@ export const CODES = [
   'import_invalid',
   'file_unwritable',
   'file_unreadable',
+  'ping_unavailable',
   'internal',
 ] as const;
 

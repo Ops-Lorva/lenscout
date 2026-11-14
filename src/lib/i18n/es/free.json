@@ -1,0 +1,15 @@
+{
+  "title": "Direcciones libres",
+  "rescan": "Reescanear",
+  "scanning": "Escaneo en curso",
+  "none": "Ninguna dirección libre encontrada",
+  "truncated": "Red demasiado grande: solo se escanean las {n} direcciones más cercanas al equipo.",
+  "note": "Una dirección que no responde puede pertenecer a un equipo apagado.",
+  "error": {
+    "iface_unknown": "Interfaz desconocida",
+    "iface_no_ipv4": "Interfaz sin dirección IPv4",
+    "internal": "Error interno",
+    "unknown": "Error",
+    "ping_unavailable": "No se puede hacer ping desde este equipo"
+  }
+}

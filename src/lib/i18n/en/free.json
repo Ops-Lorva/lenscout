@@ -1,0 +1,15 @@
+{
+  "title": "Free addresses",
+  "rescan": "Rescan",
+  "scanning": "Scanning",
+  "none": "No free address found",
+  "truncated": "Network too large: only the {n} addresses closest to this computer are scanned.",
+  "note": "An address that does not answer may belong to a powered-off device.",
+  "error": {
+    "iface_unknown": "Unknown interface",
+    "iface_no_ipv4": "Interface has no IPv4 address",
+    "internal": "Internal error",
+    "unknown": "Error",
+    "ping_unavailable": "Ping is not possible from this computer"
+  }
+}

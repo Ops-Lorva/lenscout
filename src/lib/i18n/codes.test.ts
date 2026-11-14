@@ -55,6 +55,7 @@ const shown: Record<string, string[]> = {
   accounts: codesIn(accounts),
   network: codesIn(rust('src-tauri/src/commands/discovery.rs') + rust('src-tauri/src/commands/app.rs')),
   framing: [...new Set([...codesIn(rust('src-tauri/src/commands/stream.rs')), ...credentials, ...lock])].sort(),
+  free: codesIn(rust('src-tauri/src/commands/free_ips.rs')),
   configure: [...new Set([...codesIn(rust('src-tauri/src/commands/configure.rs')), ...credentials, ...lock, ...front])].sort(),
 };
 
@@ -88,6 +89,7 @@ describe('codes d’erreur Rust ↔ clés i18n', () => {
     expect(credentials).toEqual(['keyring', 'not_found', 'secret_missing']);
     expect(reasons).toContain('gateway_is_ip');
     expect(batchCodes).toContain('ip_in_use');
+    expect(shown.free).toContain('ping_unavailable');
     expect(actionKeys).toContain('elevation.refused');
     expect(front).toEqual(['no_cameras', 'no_cameras']);
   });

@@ -1,0 +1,15 @@
+{
+  "title": "Adresses libres",
+  "rescan": "Rebalayer",
+  "scanning": "Balayage en cours",
+  "none": "Aucune adresse libre trouvée",
+  "truncated": "Réseau trop grand : seules les {n} adresses proches du poste sont balayées.",
+  "note": "Une adresse qui ne répond pas peut appartenir à un appareil éteint.",
+  "error": {
+    "iface_unknown": "Interface inconnue",
+    "iface_no_ipv4": "Interface sans adresse IPv4",
+    "internal": "Erreur interne",
+    "unknown": "Erreur",
+    "ping_unavailable": "Ping impossible depuis ce poste"
+  }
+}

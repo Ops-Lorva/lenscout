@@ -10,6 +10,7 @@ use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_bat
 use commands::stream::{StreamState, cmd_stream_ack, cmd_stream_start, cmd_stream_stop};
 use commands::update::{cmd_apply_update, cmd_check_update};
 use commands::app::{cmd_app_version, cmd_debug_get, cmd_debug_set, cmd_interface_details, cmd_list_interfaces};
+use commands::free_ips::{FreeIpsState, cmd_free_ips, cmd_free_ips_cancel};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_scan_start};
 use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
 use lenscout_core::permissions::set_data_dir;
@@ -28,6 +29,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(ScanState::default())
         .manage(StreamState::default())
+        .manage(FreeIpsState::default())
         .manage(PreviewStore::default())
         .setup(|app| {
             // Installeurs laissés par une mise à jour précédente.
@@ -57,6 +59,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd_app_version,
+            cmd_free_ips,
+            cmd_free_ips_cancel,
             cmd_list_interfaces,
             cmd_interface_details,
             cmd_debug_get,
