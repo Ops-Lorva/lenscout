@@ -263,9 +263,16 @@ pub(crate) fn account_update(
 
 /// Mot de passe montré dans la fiche Modifier. Sérialisé tel quel pour le
 /// front, jamais affiché par `Debug` (journaux).
-#[derive(Serialize)]
-#[serde(transparent)]
-pub struct RevealedPassword(String);
+/// Effacé de la mémoire après l'envoi (c'est un `Secret`).
+pub struct RevealedPassword(Secret);
+
+impl Serialize for RevealedPassword {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.0.expose())
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for RevealedPassword {}
 
 impl std::fmt::Debug for RevealedPassword {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -275,7 +282,7 @@ impl std::fmt::Debug for RevealedPassword {
 
 /// `None` : compte à ressaisir (champ vide dans la fiche).
 pub(crate) fn account_password(book: &AccountBook, id: &str) -> Result<Option<RevealedPassword>, String> {
-    Ok(book.password(id).map_err(code)?.map(|p| RevealedPassword(p.expose().to_string())))
+    Ok(book.password(id).map_err(code)?.map(RevealedPassword))
 }
 
 pub(crate) fn account_remove(book: &mut AccountBook, id: &str) -> Result<(), String> {
@@ -423,6 +430,8 @@ mod tests {
     fn password_is_revealed_for_one_account_only_never_in_debug() {
         let (mut book, _g_book) = book();
         let acc = account_create(&mut book, "A", "r", Secret::new("Unique-Pw-9".into()), no_net()).unwrap();
+        fn wiped<T: zeroize::ZeroizeOnDrop>() {}
+        wiped::<RevealedPassword>();
         let shown = account_password(&book, &acc.id).unwrap().unwrap();
         assert_eq!(serde_json::to_value(&shown).unwrap(), "Unique-Pw-9");
         assert!(!format!("{shown:?}").contains("Unique"));

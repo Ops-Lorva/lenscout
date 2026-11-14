@@ -31,6 +31,8 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = "0.7.20"
 uuid = { version = "1.29.2", features = ["v4"] }
+# Mots de passe effacés de la mémoire à leur libération (`Secret`).
+zeroize = "1.9.1"
 
 [target.'cfg(unix)'.dependencies]
 # getuid → getpwuid : le nom d'utilisateur de la règle sudoers (macOS) ;

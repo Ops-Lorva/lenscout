@@ -4,9 +4,18 @@ use serde::{Deserialize, Deserializer};
 
 /// Mot de passe. Pas de `Serialize` : il ne peut donc pas finir dans un
 /// fichier, une réponse de commande ou un journal par accident. `Debug` et
-/// `Display` n'affichent jamais la valeur.
+/// `Display` n'affichent jamais la valeur. Effacé de la mémoire à sa
+/// libération.
 #[derive(Clone)]
 pub struct Secret(String);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for Secret {}
 
 impl Secret {
     pub fn new(value: String) -> Self {
@@ -45,5 +54,11 @@ mod tests {
         let s = Secret::new("S3cr3t-Unique!".into());
         assert!(!format!("{s:?} {s}").contains("S3cr3t"));
         assert_eq!(s.expose(), "S3cr3t-Unique!");
+    }
+
+    #[test]
+    fn secret_is_wiped_when_dropped() {
+        fn wiped<T: zeroize::ZeroizeOnDrop>() {}
+        wiped::<Secret>();
     }
 }
