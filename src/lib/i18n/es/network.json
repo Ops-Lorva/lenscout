@@ -32,6 +32,7 @@
     "local_network_denied": "Acceso a la red local denegado",
     "not_found": "Cuenta no encontrada",
     "account_no_pc_ip": "Esta cuenta no tiene IP del PC",
+    "pc_ip_prefix_unsupported": "Prefijo de la IP del PC no aceptado (de /8 a /30): edite la cuenta",
     "already_in_network": "La interfaz ya está en esta red",
     "pc_ip_in_use": "La IP del PC ya está en uso en la red",
     "elevation_refused": "Permisos de administrador denegados",

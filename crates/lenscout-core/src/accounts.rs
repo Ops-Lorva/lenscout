@@ -136,17 +136,22 @@ impl AccountNetwork {
             .any(|(mine, theirs)| theirs.is_some() && theirs != mine)
     }
 
-    /// Les champs présents dans `imported` remplacent les miens, les autres restent.
+    /// Les champs présents dans `imported` remplacent les miens, les autres
+    /// restent — sauf si le mélange ne passe plus `validated` (anciens réseau
+    /// ou passerelle hors de la nouvelle IP) : alors le réseau du fichier
+    /// seul, champs absents vides. Le résultat est toujours valide.
     fn merge(&mut self, imported: AccountNetwork) {
+        let mut merged = self.clone();
         for (mine, theirs) in [
-            (&mut self.pc_ip, imported.pc_ip),
-            (&mut self.network, imported.network),
-            (&mut self.gateway, imported.gateway),
+            (&mut merged.pc_ip, &imported.pc_ip),
+            (&mut merged.network, &imported.network),
+            (&mut merged.gateway, &imported.gateway),
         ] {
             if theirs.is_some() {
-                *mine = theirs;
+                *mine = theirs.clone();
             }
         }
+        *self = merged.validated().unwrap_or(imported);
     }
 
     /// Lecture du carnet : un champ qui n'est pas une chaîne est ignoré
@@ -1102,6 +1107,21 @@ mod tests {
         assert_eq!(dst.list()[0].net, net("192.168.1.240/24", "192.168.1.0/24", "192.168.1.1"));
         // Les seuls champs présents sont identiques : rien ne diffère.
         assert_eq!(dst.import_plan(&data).unwrap().items[0].kind, ImportKind::Identical);
+    }
+
+    #[test]
+    fn partial_import_never_keeps_an_incoherent_network() {
+        let (mut src, _fx_src) = empty_book();
+        src.create("Mairie", "root", pwd(PWD), net("10.0.0.250/24", "", "")).unwrap();
+        let data = src.export();
+        let (mut dst, _fx_dst) = empty_book();
+        dst.create("Mairie", "root", pwd(PWD), net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1"))
+            .unwrap();
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        // Réseau et passerelle anciens hors du réseau de la nouvelle IP : ceux du fichier (vides).
+        let got = dst.list()[0].net.clone();
+        assert_eq!(got, net("10.0.0.250/24", "", ""));
+        assert_eq!(got.validated().unwrap(), got);
     }
 
     #[test]

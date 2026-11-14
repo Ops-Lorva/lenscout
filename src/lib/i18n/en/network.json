@@ -32,6 +32,7 @@
     "local_network_denied": "Local network access denied",
     "not_found": "Account not found",
     "account_no_pc_ip": "This account has no PC IP",
+    "pc_ip_prefix_unsupported": "PC IP prefix not accepted (/8 to /30): edit the account",
     "already_in_network": "The interface is already on this network",
     "pc_ip_in_use": "The PC IP is already used on the network",
     "elevation_refused": "Administrator rights denied",

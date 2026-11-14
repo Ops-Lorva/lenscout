@@ -33,6 +33,7 @@ export const CODES = [
   'pc_ip_outside_network',
   'gateway_outside_network',
   'account_no_pc_ip',
+  'pc_ip_prefix_unsupported',
   'already_in_network',
   'pc_ip_in_use',
   'network_overlaps_other_iface',

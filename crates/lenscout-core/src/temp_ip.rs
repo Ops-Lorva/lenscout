@@ -90,6 +90,10 @@ pub enum TempIpError {
     /// Le verrou est tenu par une autre instance de l'app.
     #[error("IP temporaire en cours dans une autre instance")]
     Busy,
+    /// Changement d'adresse en une invite (Windows) : l'adresse précédente
+    /// n'a pas pu être retirée, la nouvelle n'a pas été posée.
+    #[error("l'adresse précédente est restée en place")]
+    NotRemoved,
 }
 
 /// La caméra est-elle hors du sous-réseau de l'interface du poste ?
@@ -319,25 +323,29 @@ impl Elevator for SystemElevator {
 /// macOS : le service dupliqué « Lenscout » porte un routeur (son adresse) ;
 /// il ne doit jamais devenir le service principal, sinon la route par défaut
 /// changerait. Après la pose, l'ordre des services est réécrit avec lui en
-/// dernier. `listing` = sortie de `networksetup -listallnetworkservices`
-/// lue AVANT la pose (première ligne d'explication, `*` = désactivé).
-/// Liste vide ou illisible : `cmds` inchangé.
+/// dernier. `listing` = sortie de `networksetup -listnetworkserviceorder`
+/// (l'ordre réel, celui que `-ordernetworkservices` réécrit) lue AVANT la
+/// pose : `(1) Wi-Fi`, `(*) …` = désactivé, lignes `(Hardware Port: …)`.
+/// Ordre illisible : erreur, la pose n'a pas lieu (jamais de service
+/// « Lenscout » laissé à une place inconnue).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn with_reorder(mut cmds: Vec<Vec<String>>, listing: &str) -> Vec<Vec<String>> {
+pub(crate) fn with_reorder(mut cmds: Vec<Vec<String>>, listing: &str) -> Result<Vec<Vec<String>>, TempIpError> {
     let services: Vec<&str> = listing
         .lines()
-        .filter(|l| !l.starts_with("An asterisk"))
-        .map(|l| l.trim().trim_start_matches('*'))
-        .filter(|l| !l.is_empty() && *l != MACOS_SERVICE)
+        .filter_map(|l| {
+            let (rank, name) = l.strip_prefix('(')?.split_once(") ")?;
+            (rank == "*" || (!rank.is_empty() && rank.bytes().all(|b| b.is_ascii_digit()))).then_some(name.trim())
+        })
+        .filter(|name| !name.is_empty() && *name != MACOS_SERVICE)
         .collect();
     if services.is_empty() {
-        return cmds;
+        return Err(TempIpError::Failed("ordre des services réseau illisible".into()));
     }
     let mut order = vec!["-ordernetworkservices".to_string()];
     order.extend(services.iter().map(|s| s.to_string()));
     order.push(MACOS_SERVICE.to_string());
     cmds.push(order);
-    cmds
+    Ok(cmds)
 }
 
 fn is_add(plan: &ElevatedPlan) -> bool {
@@ -354,11 +362,11 @@ mod system {
     use crate::permissions::{applescript_shell, has_permissions, install_permissions};
     use crate::proc::sync_cmd;
 
-    /// Services réseau du poste, lus sans droits.
+    /// Ordre des services réseau du poste, lu sans droits.
     fn listing() -> String {
         sync_cmd("/usr/sbin/networksetup")
             .env("LC_ALL", "C")
-            .arg("-listallnetworkservices")
+            .arg("-listnetworkserviceorder")
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default()
@@ -384,8 +392,9 @@ mod system {
             return Err(TempIpError::Invalid("plan d'un autre système".into()));
         };
         // Une pose remet le service « Lenscout » en dernier (jamais principal).
-        // Un échec de cet ordre fait échouer la pose, qui est alors retirée.
-        let cmds = &if is_add(plan) { with_reorder(cmds.clone(), &listing()) } else { cmds.clone() };
+        // Ordre illisible ou échec de cet ordre : la pose échoue, et
+        // l'appelant retire ce qui aurait été fait.
+        let cmds = &if is_add(plan) { with_reorder(cmds.clone(), &listing())? } else { cmds.clone() };
         let removal = cmds.iter().any(|a| a.first().is_some_and(|x| x == "-removenetworkservice"));
         let gone = |err: &str| removal && err.contains("not a recognized network service");
         // Règle absente ou différente de l'attendue : une invite pour la
@@ -431,9 +440,22 @@ mod system {
     }
 }
 
+/// Windows : erreur d'un script élevé terminé en échec. `exit 3` =
+/// `NotRemoved` (voir `switch_plan`).
+#[cfg(any(target_os = "windows", test))]
+fn windows_error(code: Option<i32>, stderr: &str) -> TempIpError {
+    if code == Some(3) {
+        return TempIpError::NotRemoved;
+    }
+    if stderr.contains("canceled") || stderr.contains("annul") {
+        return TempIpError::ElevationRefused;
+    }
+    TempIpError::Failed(if stderr.is_empty() { format!("code {}", code.unwrap_or(-1)) } else { stderr.to_string() })
+}
+
 #[cfg(target_os = "windows")]
 mod system {
-    use super::{ElevatedPlan, TempIpError, elevated_launcher};
+    use super::{ElevatedPlan, TempIpError, elevated_launcher, windows_error};
     use crate::proc::sync_cmd;
 
     /// Repris de LanProbe `run_elevated_bat`, sans fichier : une invite UAC
@@ -449,15 +471,7 @@ mod system {
         if out.status.success() {
             return Ok(());
         }
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        if stderr.contains("canceled") || stderr.contains("annul") {
-            return Err(TempIpError::ElevationRefused);
-        }
-        Err(TempIpError::Failed(if stderr.is_empty() {
-            format!("code {}", out.status.code().unwrap_or(-1))
-        } else {
-            stderr
-        }))
+        Err(windows_error(out.status.code(), String::from_utf8_lossy(&out.stderr).trim()))
     }
 }
 
@@ -694,7 +708,8 @@ impl HeldTempIp {
 pub fn switch_plan(os: OsKind, a: &TempIp, b: &TempIp, service_b: &str) -> Result<Option<ElevatedPlan>, TempIpError> {
     Ok(match (remove_plan(os, a, &a.iface)?, add_plan(os, b, service_b)?) {
         (ElevatedPlan::PowerShell(remove), ElevatedPlan::PowerShell(add)) => {
-            let remove = remove.strip_suffix("exit 0\n").unwrap_or(&remove).to_string();
+            // A encore là : `exit 3` (→ `NotRemoved`), B n'est pas posée.
+            let remove = remove.strip_suffix("exit 0\n").unwrap_or(&remove).replace("{ exit 1 }", "{ exit 3 }");
             let add = add.strip_prefix("$ErrorActionPreference = 'Stop'\n").unwrap_or(&add);
             Some(ElevatedPlan::PowerShell(remove + add))
         }
@@ -754,10 +769,11 @@ async fn switch_held_on(
             }
             match elev.run(&plan) {
                 Ok(()) => return Ok(to_b(held)),
-                Err(TempIpError::ElevationRefused) => {
-                    // Rien n'a été exécuté : A reste, le journal aussi.
+                Err(e @ (TempIpError::ElevationRefused | TempIpError::NotRemoved)) => {
+                    // Refus : rien n'a été exécuté. Retrait impossible : B
+                    // n'a pas été posée. A reste, le journal aussi.
                     let _ = write_journal(journal, &held.t);
-                    return Err(SwitchFailure::Kept(Box::new(held), TempIpError::ElevationRefused));
+                    return Err(SwitchFailure::Kept(Box::new(held), e));
                 }
                 Err(e) => {
                     let _ = elev.run(&remove_b);
@@ -785,12 +801,14 @@ async fn switch_held_on(
     restore(os, elev, journal, held, failed_b)
 }
 
-/// B n'a pas pu être posée après le retrait de A : on repose A.
+/// B n'a pas pu être posée après le retrait de A : on repose A. Échec :
+/// retrait au mieux d'une remise à moitié faite (comme `hold_temp_ip`).
 fn restore(os: OsKind, elev: &dyn Elevator, journal: &Path, held: HeldTempIp, why: TempIpError) -> Result<HeldTempIp, SwitchFailure> {
     let _ = write_journal(journal, &held.t);
     match add_plan(os, &held.t, &held.service).map(|add| elev.run(&add)) {
         Ok(Ok(())) => Err(SwitchFailure::Restored(Box::new(held), why)),
         _ => {
+            let _ = elev.run(&held.remove);
             remove_journal(journal);
             Err(SwitchFailure::Lost(why))
         }
@@ -1422,6 +1440,9 @@ mod tests {
         let add = script.find("add address name=\"eth0\" address=10.20.0.250 mask=255.255.0.0").unwrap();
         assert!(del < check && check < add, "A retirée et vérifiée avant de poser B");
         assert_eq!(script.matches("exit 0").count(), 1);
+        // A encore là : code dédié, B jamais posée.
+        assert!(script[check..add].contains("{ exit 3 }"), "{script}");
+        assert!(!script.contains("{ exit 1 }"));
         let Some(ElevatedPlan::Nmcli(cmds)) = switch_plan(OsKind::Linux, &a, &b, "eth0").unwrap() else {
             panic!("nmcli attendu");
         };
@@ -1477,11 +1498,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn combined_switch_where_a_could_not_be_removed_keeps_a() {
+        let (elev, j, r) = switching(OsKind::Windows, vec![Err(TempIpError::NotRemoved)]).await;
+        let Err(SwitchFailure::Kept(held, TempIpError::NotRemoved)) = r else { panic!("{r:?}") };
+        assert_eq!(held.temp(), &joined());
+        // Ni retrait de B ni remise de A : rien n'a bougé.
+        assert_eq!(elev.plans().len(), 1);
+        assert_eq!(read_journal(&j).unwrap(), Some(joined()));
+    }
+
+    #[test]
+    fn windows_exit_codes() {
+        assert_eq!(windows_error(Some(3), ""), TempIpError::NotRemoved);
+        assert_eq!(windows_error(Some(1), "The operation was canceled by the user."), TempIpError::ElevationRefused);
+        assert_eq!(windows_error(Some(1), ""), TempIpError::Failed("code 1".into()));
+        assert_eq!(windows_error(None, "boom"), TempIpError::Failed("boom".into()));
+    }
+
+    #[tokio::test]
     async fn switch_that_cannot_restore_a_is_lost_and_frees_everything() {
         let fail = || Err(TempIpError::Failed("x".into()));
         let (elev, j, r) = switching(OsKind::Linux, vec![fail(), fail(), fail()]).await;
         assert!(matches!(r, Err(SwitchFailure::Lost(TempIpError::Failed(_)))), "{r:?}");
         assert!(!j.exists());
+        // Une remise de A ratée à moitié est retirée (service macOS orphelin).
+        assert_eq!(elev.plans().last(), Some(&remove_plan(OsKind::Linux, &joined(), "eth0").unwrap()));
         assert_eq!(with_temp_ip(&elev, &j, &tmp("eth0"), "eth0", || async { 1 }).await, Ok(1));
     }
 
@@ -1518,16 +1559,27 @@ mod tests {
 
     #[test]
     fn macos_reorder_puts_the_duplicated_service_last() {
-        let listing = "An asterisk (*) denotes that a network service is disabled.\nUSB 10/100/1000 LAN\n*Thunderbolt Bridge\nLenscout\nWi-Fi\n";
+        // Sortie de `networksetup -listnetworkserviceorder` : l'ordre réel.
+        let listing = "An asterisk (*) denotes that a network service is disabled.\n\
+            (1) USB 10/100/1000 LAN\n(Hardware Port: USB 10/100/1000 LAN, Device: en7)\n\n\
+            (*) Thunderbolt Bridge\n(Hardware Port: Thunderbolt Bridge, Device: bridge0)\n\n\
+            (2) Lenscout\n(Hardware Port: USB 10/100/1000 LAN, Device: en7)\n\n\
+            (3) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n";
         let cmds = vec![args(&["-duplicatenetworkservice", "USB 10/100/1000 LAN", "Lenscout"])];
-        let out = with_reorder(cmds.clone(), listing);
+        let out = with_reorder(cmds.clone(), listing).unwrap();
         assert_eq!(out[0], cmds[0]);
         assert_eq!(
             out[1],
             args(&["-ordernetworkservices", "USB 10/100/1000 LAN", "Thunderbolt Bridge", "Wi-Fi", "Lenscout"])
         );
-        // Liste illisible : pas de réordonnancement inventé.
-        assert_eq!(with_reorder(cmds.clone(), ""), cmds);
+    }
+
+    #[test]
+    fn macos_unreadable_service_order_fails_the_add() {
+        let cmds = vec![args(&["-duplicatenetworkservice", "Wi-Fi", "Lenscout"])];
+        for listing in ["", "An asterisk (*) denotes that a network service is disabled.\n", "** Error: x\n"] {
+            assert!(matches!(with_reorder(cmds.clone(), listing), Err(TempIpError::Failed(_))), "{listing:?}");
+        }
     }
 
 

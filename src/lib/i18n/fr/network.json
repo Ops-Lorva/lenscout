@@ -32,6 +32,7 @@
     "local_network_denied": "Accès au réseau local refusé",
     "not_found": "Compte introuvable",
     "account_no_pc_ip": "Ce compte n'a pas d'IP du PC",
+    "pc_ip_prefix_unsupported": "Préfixe de l'IP du PC non accepté (de /8 à /30) : modifiez le compte",
     "already_in_network": "L'interface est déjà dans ce réseau",
     "pc_ip_in_use": "L'IP du PC est déjà utilisée sur le réseau",
     "elevation_refused": "Droits administrateur refusés",

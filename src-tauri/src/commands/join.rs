@@ -105,13 +105,16 @@ pub(crate) fn join_inputs(
     let Some((temp, primary)) = current else {
         return (fresh, others);
     };
-    let primary_for = |i: ScanInterface| if i.name == temp.iface { primary.clone() } else { i };
+    // Relue à chaque pose ; la relevée à la pose précédente ne sert que si
+    // la lecture rend l'adresse posée (bail DHCP changé entre-temps : la
+    // nouvelle adresse principale compte).
+    let primary_for = |i: ScanInterface| if i.name == temp.iface && i.ip == temp.ip { primary.clone() } else { i };
     let base = primary_for(fresh);
     let mut seen = vec![base.name.clone()];
     let others = others
         .into_iter()
-        .filter(|i| i.ip != temp.ip)
         .map(primary_for)
+        .filter(|i| i.ip != temp.ip)
         .filter(|i| {
             let new = !seen.contains(&i.name);
             seen.push(i.name.clone());
@@ -123,6 +126,7 @@ pub(crate) fn join_inputs(
 
 /// L'adresse à poser pour le compte sur `iface` (adresse principale), les
 /// autres interfaces actives étant `others`. Codes : `account_no_pc_ip`,
+/// `pc_ip_prefix_unsupported` (compte d'avant les bornes /8 à /30),
 /// `already_in_network` (l'interface est déjà dans ce réseau),
 /// `network_overlaps_other_iface` (le réseau du compte recouvre celui d'une
 /// autre interface : le poste ne saurait plus par où joindre ces adresses).
@@ -131,8 +135,10 @@ pub(crate) fn join_target(net: &AccountNetwork, iface: &ScanInterface, others: &
     let (ip, prefix) = pc_ip
         .split_once('/')
         .and_then(|(ip, p)| Some((ip.parse::<Ipv4Addr>().ok()?, p.parse::<u32>().ok()?)))
-        .filter(|(_, p)| (8..=30).contains(p))
         .ok_or("account_no_pc_ip")?;
+    if !(8..=30).contains(&prefix) {
+        return Err("pc_ip_prefix_unsupported".into());
+    }
     let mask = Ipv4Addr::from(!0u32 << (32 - prefix));
     if !needs_temp_ip(iface.ip, iface.mask, ip) || !needs_temp_ip(ip, mask, iface.ip) {
         return Err("already_in_network".into());
@@ -163,14 +169,15 @@ fn kept_code(e: TempIpError) -> String {
 /// L'interface d'une adresse posée a disparu (adaptateur USB débranché) :
 /// sous Linux l'adresse est partie avec elle, il n'y a rien à retirer.
 /// Ailleurs on tente le retrait normal (le service macOS, lui, survit).
+/// Présence, pas état du lien : câble débranché, l'adresse est toujours là.
 async fn interface_gone(service: &str) -> bool {
-    if !cfg!(target_os = "linux") {
-        return false;
-    }
-    let name = service.to_string();
-    tauri::async_runtime::spawn_blocking(move || !list_interfaces_up().contains(&name))
-        .await
-        .unwrap_or(false)
+    cfg!(target_os = "linux") && interface_gone_under(std::path::Path::new("/sys/class/net"), service)
+}
+
+/// `name` absent de `sys_net` (`/sys/class/net`). Nom douteux : `false`.
+fn interface_gone_under(sys_net: &std::path::Path, name: &str) -> bool {
+    let plain = !name.is_empty() && name != "." && name != ".." && !name.contains('/');
+    plain && !sys_net.join(name).exists()
 }
 
 /// Retire l'adresse posée, s'il y en a une. Échec ou refus : elle reste
@@ -193,7 +200,8 @@ async fn release_current(state: &JoinState) -> Result<(), String> {
     }
 }
 
-/// Erreurs : codes stables (`not_found`, `account_no_pc_ip`, `iface_unknown`,
+/// Erreurs : codes stables (`not_found`, `account_no_pc_ip`,
+/// `pc_ip_prefix_unsupported`, `iface_unknown`,
 /// `iface_no_ipv4`, `already_in_network`, `network_overlaps_other_iface`,
 /// `pc_ip_in_use`, `elevation_refused`, `temp_ip_busy`, `temp_ip_failed`,
 /// `temp_ip_left`, `join_lost`, `internal`), traduits par le front.
@@ -329,8 +337,16 @@ mod tests {
     #[test]
     fn account_without_pc_ip_cannot_join() {
         let i = en0("10.0.0.5", "255.255.0.0");
-        for bad in [None, Some("x"), Some("192.168.1.250/31"), Some("10.0.0.250/7")] {
+        for bad in [None, Some("x"), Some("192.168.1.250")] {
             assert_eq!(join_target(&net(bad), &i, &[]).unwrap_err(), "account_no_pc_ip", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn old_account_with_a_prefix_out_of_bounds_has_its_own_code() {
+        let i = en0("10.0.0.5", "255.255.0.0");
+        for bad in ["192.168.1.250/31", "10.0.0.250/7", "192.168.1.250/32", "192.168.1.250/0"] {
+            assert_eq!(join_target(&net(Some(bad)), &i, &[]).unwrap_err(), "pc_ip_prefix_unsupported", "{bad}");
         }
     }
 
@@ -384,9 +400,35 @@ mod tests {
         let posed_en0 = en0("192.168.1.250", "255.255.255.0");
         let (base, others) = join_inputs(fresh_en1.clone(), vec![posed_en0], Some((&a, &primary)));
         assert_eq!(base, fresh_en1);
-        assert!(others.is_empty(), "l'adresse posée sur en0 est écartée");
+        assert_eq!(others, vec![primary.clone()], "en0 compte par son adresse principale, jamais la posée");
         let (_, others) = join_inputs(fresh_en1, vec![primary.clone()], Some((&a, &primary)));
         assert_eq!(others, vec![primary]);
+    }
+
+    #[test]
+    fn primary_is_read_again_at_each_switch() {
+        // Le bail DHCP d'en0 a changé depuis la pose : l'adresse relue sert,
+        // la relevée à la pose seulement si la lecture rend l'adresse posée.
+        let a = temp("en0", "192.168.1.250", "255.255.255.0");
+        let at_pose = en0("10.0.0.5", "255.255.255.0");
+        let now = en0("10.0.0.77", "255.255.255.0");
+        let (base, _) = join_inputs(now.clone(), vec![], Some((&a, &at_pose)));
+        assert_eq!(base, now);
+        let (_, others) = join_inputs(iface("en1", "172.16.0.9", "255.255.255.0"), vec![now.clone()], Some((&a, &at_pose)));
+        assert_eq!(others, vec![now]);
+    }
+
+    #[test]
+    fn unplugged_interface_is_gone_but_a_cable_out_is_not() {
+        let sys = lenscout_core::testing::TmpDir::new("lenscout-join");
+        std::fs::create_dir(sys.join("enx001122")).unwrap();
+        // Présente (câble débranché ou non) : on tente le retrait normal.
+        assert!(!interface_gone_under(&sys, "enx001122"));
+        assert!(interface_gone_under(&sys, "enx334455"));
+        // Nom douteux : jamais « disparue » (le retrait normal est tenté).
+        for bad in ["", ".", "..", "a/b"] {
+            assert!(!interface_gone_under(&sys, bad), "{bad}");
+        }
     }
 
     #[test]

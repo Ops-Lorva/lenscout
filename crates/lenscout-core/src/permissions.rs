@@ -5,8 +5,9 @@
 //!
 //! Adaptations :
 //! - chemin `/etc/sudoers.d/lenscout` ;
-//! - règle restreinte à l'utilisateur courant et aux trois commandes que
-//!   Lenscout lance (service « Lenscout » seulement) — LanProbe ouvrait tout
+//! - règle restreinte à l'utilisateur courant et aux quatre commandes que
+//!   Lenscout lance (service « Lenscout » seulement ; le réordonnancement doit
+//!   finir par lui) — LanProbe ouvrait tout
 //!   `networksetup` au groupe `%admin` ;
 //! - écrite par `printf '%s\n'` (LanProbe la passait comme format à
 //!   `printf`, où `%a` de `%admin` est une conversion), vérifiée par
@@ -36,7 +37,7 @@ pub(crate) fn sudoers_rule(user: &str) -> Result<String, TempIpError> {
     }
     Ok(format!(
         "{user} ALL=(root) NOPASSWD: /usr/sbin/networksetup -duplicatenetworkservice * Lenscout, \
-         /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout, /usr/sbin/networksetup -ordernetworkservices *"
+         /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout, /usr/sbin/networksetup -ordernetworkservices * Lenscout"
     ))
 }
 
@@ -197,7 +198,7 @@ mod tests {
     fn sudoers_rule_is_scoped_to_the_user_and_the_lenscout_service() {
         assert_eq!(
             sudoers_rule("alice").unwrap(),
-            "alice ALL=(root) NOPASSWD: /usr/sbin/networksetup -duplicatenetworkservice * Lenscout, /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout, /usr/sbin/networksetup -ordernetworkservices *"
+            "alice ALL=(root) NOPASSWD: /usr/sbin/networksetup -duplicatenetworkservice * Lenscout, /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout, /usr/sbin/networksetup -ordernetworkservices * Lenscout"
         );
         assert!(sudoers_rule("_svc.x-1").is_ok());
     }
