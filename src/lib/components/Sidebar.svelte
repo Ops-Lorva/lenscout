@@ -22,6 +22,15 @@
 
 <!-- Réglages en pied de barre, séparé des onglets (comme macOS / VS Code). -->
 <nav class="sidebar">
+  <!-- Logo D3 « Repère » (docs/logo) : cône en currentColor, point en couleur d'action → suit le thème. -->
+  <div class="brand">
+    <svg class="logo" viewBox="222 286 516 516" aria-hidden="true">
+      <defs><clipPath id="sb-logo-gap"><path clip-rule="evenodd" d="M 0 0 H 1024 V 1024 H 0 Z M 168 692 a 164 164 0 1 0 328 0 a 164 164 0 1 0 -328 0 Z" /></clipPath></defs>
+      <g clip-path="url(#sb-logo-gap)"><path d="M 332 692 L 345.1 316.2 A 376 376 0 0 1 707.8 678.9 Z" fill="currentColor" stroke="currentColor" stroke-width="48" stroke-linejoin="round" /></g>
+      <circle cx="332" cy="692" r="104" fill="var(--act)" />
+    </svg>
+    <span>LenScout</span>
+  </div>
   {#each items.filter((i) => i.id !== 'settings') as item}{@render entry(item)}{/each}
   <div class="bottom">
     {#each items.filter((i) => i.id === 'settings') as item}{@render entry(item)}{/each}
@@ -34,6 +43,8 @@
     background: var(--side); border-right: 1px solid var(--line);
     padding: 12px 10px; display: flex; flex-direction: column; gap: 2px;
   }
+  .brand { display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 10px; margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--text); }
+  .logo { width: 20px; height: 20px; flex: none; color: var(--text-2); }
   .bottom { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
   .item {
     display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 10px;
