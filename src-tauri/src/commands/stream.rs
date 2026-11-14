@@ -11,12 +11,15 @@ use lenscout_core::identify::{IdentifyError, identify};
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use lenscout_core::mjpeg::{run_stream, stream_url};
 use lenscout_core::model::Camera;
+use lenscout_core::presence;
+use lenscout_core::temp_ip::TempIp;
 use lenscout_core::transport::{CameraHttp, Credentials, NetError};
 use tauri::State;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio_util::sync::CancellationToken;
 
 use super::accounts::credentials_for;
+use super::join::JoinState;
 
 /// Délai d'établissement de la connexion ; le flux, lui, n'a pas de durée.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -128,8 +131,10 @@ pub async fn cmd_identify_camera(
     ip: String,
     account_id: String,
     accounts: State<'_, Mutex<AccountBook>>,
+    join: State<'_, JoinState>,
 ) -> Result<Camera, String> {
-    let ifaces = tauri::async_runtime::spawn_blocking(active_interfaces)
+    let held = join.temp();
+    let ifaces = tauri::async_runtime::spawn_blocking(move || guard_interfaces_now(held))
         .await
         .map_err(|_| "internal".to_string())?;
     let http = ReqwestCameraHttp::new(HTTP_TIMEOUT);
@@ -204,6 +209,28 @@ fn active_interfaces() -> Vec<ScanInterface> {
         .collect()
 }
 
+/// Les adresses vues par la garde de sous-réseau : celles des interfaces
+/// actives, toutes celles du poste (une carte en porte deux pendant la pose
+/// d'un compte ; les détails système n'en rendent qu'une), et celle que
+/// Lenscout tient, même si l'énumération l'a manquée. Sans boucle locale ni
+/// doublon.
+pub(crate) fn guard_interfaces(active: &[ScanInterface], local: &[ScanInterface], held: Option<&TempIp>) -> Vec<ScanInterface> {
+    let held = held.map(|t| ScanInterface { name: t.iface.clone(), ip: t.ip, mask: t.mask });
+    let mut out: Vec<ScanInterface> = Vec::new();
+    for i in active.iter().chain(local).chain(held.as_ref()) {
+        if !i.ip.is_loopback() && !out.iter().any(|o| o.ip == i.ip) {
+            out.push(i.clone());
+        }
+    }
+    out
+}
+
+/// `guard_interfaces` sur l'état réel du poste (bloquant : à lancer hors du
+/// runtime).
+fn guard_interfaces_now(held: Option<TempIp>) -> Vec<ScanInterface> {
+    guard_interfaces(&active_interfaces(), &presence::local_addresses(), held.as_ref())
+}
+
 /// Démarre le flux et ne rend la main qu'à sa fin : `Ok` à l'arrêt (ou au
 /// remplacement par un autre flux), un code stable sinon. Les images partent
 /// en octets bruts sur le canal ; le mot de passe ne quitte jamais Rust.
@@ -214,12 +241,14 @@ pub async fn cmd_stream_start(
     on_frame: Channel<InvokeResponseBody>,
     accounts: State<'_, Mutex<AccountBook>>,
     stream: State<'_, StreamState>,
+    join: State<'_, JoinState>,
 ) -> Result<(), String> {
     // Avant tout await : un stop reçu pendant les étapes suivantes annule ce jeton.
     let run = stream.replace();
     let id = run.id;
     let prepared = async {
-        let ifaces = tauri::async_runtime::spawn_blocking(active_interfaces)
+        let held = join.temp();
+        let ifaces = tauri::async_runtime::spawn_blocking(move || guard_interfaces_now(held))
             .await
             .map_err(|_| "internal".to_string())?;
         let creds = credentials_for(&accounts, &account_id)?;
@@ -363,6 +392,34 @@ mod tests {
         assert_eq!(identify_guarded(&other, "192.0.2.20", &[iface()], || Ok(creds())).await.err().as_deref(), Some("not_a_camera"));
         // Compte introuvable : le code du compte remonte.
         assert_eq!(identify_guarded(&other, "192.0.2.20", &[iface()], || Err("not_found".into())).await.err().as_deref(), Some("not_found"));
+    }
+
+    fn si(name: &str, ip: &str, mask: &str) -> ScanInterface {
+        ScanInterface { name: name.into(), ip: ip.parse().unwrap(), mask: mask.parse().unwrap() }
+    }
+
+    #[test]
+    fn la_garde_voit_toutes_les_adresses_du_poste_et_celle_du_compte() {
+        let m = "255.255.255.0";
+        // Détails système : une seule adresse par carte (la principale sous
+        // macOS, l'une ou l'autre ailleurs).
+        let active = [si("en0", "10.0.8.235", m)];
+        let local = [si("en0", "10.0.8.235", m), si("en0", "192.168.1.10", m), si("lo0", "127.0.0.1", "255.0.0.0")];
+        let held = TempIp { iface: "en0".into(), ip: "192.168.1.10".parse().unwrap(), mask: m.parse().unwrap() };
+        let got = guard_interfaces(&active, &local, Some(&held));
+        let ips: Vec<String> = got.iter().map(|i| i.ip.to_string()).collect();
+        assert_eq!(ips, ["10.0.8.235", "192.168.1.10"]);
+        // Les deux réseaux sont cadrables pendant la pose.
+        for ip in ["10.0.8.64", "192.168.1.64"] {
+            assert!(guarded_url(&cam(ip, Family::Axis), &got).is_ok(), "{ip}");
+        }
+        // Énumération ratée : l'adresse tenue par Lenscout compte quand même.
+        let got = guard_interfaces(&active, &[], Some(&held));
+        assert!(guarded_url(&cam("192.168.1.64", Family::Axis), &got).is_ok());
+        // Rien de posé : les adresses du poste, sans la boucle locale.
+        let got = guard_interfaces(&[], &local, None);
+        assert_eq!(got.len(), 2);
+        assert!(guarded_url(&cam("127.0.0.2", Family::Axis), &got).is_err());
     }
 
     #[test]

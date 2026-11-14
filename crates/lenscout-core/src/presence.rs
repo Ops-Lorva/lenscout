@@ -9,6 +9,7 @@
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::time::Duration;
 
+use crate::discovery::arp::ScanInterface;
 use crate::transport::NetError;
 
 /// L'adresse est-elle utilisable par le poste ? Le test est celui dont les
@@ -32,38 +33,81 @@ pub async fn wait_until(mut check: impl FnMut() -> bool, timeout: Duration, ever
     }
 }
 
-/// Nom de l'interface qui porte `ip` (`getifaddrs`), pour le journal : le
-/// service dupliqué de macOS peut la faire apparaître sous un autre nom BSD.
-#[cfg(unix)]
+/// Nom de l'interface qui porte `ip`, pour le journal : le service dupliqué
+/// de macOS peut la faire apparaître sous un autre nom BSD.
 pub fn interface_of(ip: Ipv4Addr) -> Option<String> {
+    local_addresses().into_iter().find(|a| a.ip == ip).map(|a| a.name)
+}
+
+/// Toutes les adresses IPv4 du poste, avec leur masque : une carte peut en
+/// porter plusieurs (l'adresse principale et celle d'un compte). Nom = nom
+/// BSD / ifname (macOS, Linux), alias d'interface (Windows).
+#[cfg(unix)]
+pub fn local_addresses() -> Vec<ScanInterface> {
+    fn v4(sa: *const libc::sockaddr) -> Option<Ipv4Addr> {
+        // SAFETY : `sa` vient de `getifaddrs` ; lu seulement s'il est non nul
+        // et de famille AF_INET, donc un `sockaddr_in`.
+        unsafe {
+            if sa.is_null() || i32::from((*sa).sa_family) != libc::AF_INET {
+                return None;
+            }
+            let sin = &*(sa as *const libc::sockaddr_in);
+            Some(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)))
+        }
+    }
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    let mut out = Vec::new();
     // SAFETY : `getifaddrs` remplit `head` ; la liste est parcourue en lecture
     // puis rendue par `freeifaddrs`, une seule fois.
     unsafe {
         if libc::getifaddrs(&mut head) != 0 {
-            return None;
+            return out;
         }
-        let mut found = None;
         let mut cur = head;
         while !cur.is_null() {
             let a = &*cur;
-            if !a.ifa_addr.is_null() && i32::from((*a.ifa_addr).sa_family) == libc::AF_INET {
-                let sin = &*(a.ifa_addr as *const libc::sockaddr_in);
-                if Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)) == ip {
-                    found = Some(std::ffi::CStr::from_ptr(a.ifa_name).to_string_lossy().into_owned());
-                    break;
-                }
+            if let (Some(ip), Some(mask)) = (v4(a.ifa_addr), v4(a.ifa_netmask)) {
+                let name = std::ffi::CStr::from_ptr(a.ifa_name).to_string_lossy().into_owned();
+                out.push(ScanInterface { name, ip, mask });
             }
             cur = a.ifa_next;
         }
         libc::freeifaddrs(head);
-        found
     }
+    out
 }
 
-#[cfg(not(unix))]
-pub fn interface_of(_ip: Ipv4Addr) -> Option<String> {
-    None
+/// Windows : une ligne `alias|adresse|longueur de préfixe` par adresse.
+#[cfg(target_os = "windows")]
+pub fn local_addresses() -> Vec<ScanInterface> {
+    const SCRIPT: &str = r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
+Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { "$($_.InterfaceAlias)|$($_.IPAddress)|$($_.PrefixLength)" }"#;
+    crate::proc::sync_cmd("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .output()
+        .map(|o| parse_windows_addresses(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default()
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+pub fn local_addresses() -> Vec<ScanInterface> {
+    Vec::new()
+}
+
+/// Sortie du script de `local_addresses` (Windows) ; les lignes mal formées
+/// sont ignorées.
+#[cfg(any(target_os = "windows", test))]
+fn parse_windows_addresses(text: &str) -> Vec<ScanInterface> {
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.trim().rsplitn(3, '|');
+            let prefix: u32 = f.next()?.parse().ok().filter(|p| *p <= 32)?;
+            let ip: Ipv4Addr = f.next()?.parse().ok()?;
+            let name = f.next().filter(|n| !n.is_empty())?.to_string();
+            let mask = Ipv4Addr::from(u32::MAX.checked_shl(32 - prefix).unwrap_or(0));
+            Some(ScanInterface { name, ip, mask })
+        })
+        .collect()
 }
 
 /// Code d'erreur d'un scan dont tous les envois ont été refusés.
@@ -116,6 +160,30 @@ mod tests {
         let lo = interface_of(Ipv4Addr::LOCALHOST).unwrap();
         assert!(lo.starts_with("lo"), "{lo}");
         assert_eq!(interface_of(Ipv4Addr::new(192, 0, 2, 123)), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn every_ipv4_address_of_the_machine_is_listed_with_its_mask() {
+        let all = local_addresses();
+        let lo = all.iter().find(|a| a.ip == Ipv4Addr::LOCALHOST).expect("127.0.0.1");
+        assert!(lo.name.starts_with("lo"), "{}", lo.name);
+        assert_eq!(lo.mask, Ipv4Addr::new(255, 0, 0, 0));
+    }
+
+    #[test]
+    fn windows_addresses_are_read_one_per_line() {
+        let text = "Wi-Fi|10.0.8.235|24\r\nWi-Fi|192.168.1.10|24\r\nCâble|172.16.0.2|16\r\n|x|\r\nWi-Fi|10.0.0|24\r\nWi-Fi|10.0.0.9|33\r\n";
+        let got = parse_windows_addresses(text);
+        let want = [
+            ("Wi-Fi", "10.0.8.235", "255.255.255.0"),
+            ("Wi-Fi", "192.168.1.10", "255.255.255.0"),
+            ("Câble", "172.16.0.2", "255.255.0.0"),
+        ];
+        assert_eq!(got.len(), want.len(), "{got:?}");
+        for (g, (n, ip, mask)) in got.iter().zip(want) {
+            assert_eq!((g.name.as_str(), g.ip, g.mask), (n, ip.parse().unwrap(), mask.parse().unwrap()));
+        }
     }
 
     #[tokio::test(start_paused = true)]
