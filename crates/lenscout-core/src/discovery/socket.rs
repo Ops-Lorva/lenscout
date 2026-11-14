@@ -15,6 +15,8 @@ pub struct UdpDatagram {
     /// Groupes multicast : socket d'envoi lié à l'adresse du scan (voir
     /// `open_multicast`). `None` : on envoie par `socket`.
     sender: Option<UdpSocket>,
+    /// Repli de `sender` déjà journalisé (une ligne par socket, pas par envoi).
+    fallback_logged: std::sync::atomic::AtomicBool,
 }
 
 impl UdpDatagram {
@@ -27,9 +29,22 @@ impl UdpDatagram {
 #[async_trait]
 impl Datagram for UdpDatagram {
     async fn send_to(&self, buf: &[u8], dest: SocketAddr) -> Result<(), NetError> {
-        self.sender
-            .as_ref()
-            .unwrap_or(&self.socket)
+        if let Some(sender) = &self.sender {
+            match sender.send_to(buf, dest).await {
+                Ok(_) => return Ok(()),
+                // Refusé depuis l'adresse du scan : on envoie quand même, par
+                // le socket d'écoute (source = adresse principale).
+                Err(e) => {
+                    if !self.fallback_logged.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        crate::debug_log::log(&format!(
+                            "envoi vers {dest} refusé depuis {:?} ({e}) : repli sur le socket d'écoute",
+                            sender.local_addr().ok()
+                        ));
+                    }
+                }
+            }
+        }
+        self.socket
             .send_to(buf, dest)
             .await
             .map(|_| ())
@@ -130,7 +145,7 @@ pub fn open_ephemeral(iface: &ScanInterface) -> std::io::Result<UdpDatagram> {
 }
 
 fn finish(socket: Socket) -> std::io::Result<UdpDatagram> {
-    Ok(UdpDatagram { socket: UdpSocket::from_std(socket.into())?, sender: None })
+    Ok(UdpDatagram { socket: UdpSocket::from_std(socket.into())?, sender: None, fallback_logged: Default::default() })
 }
 
 #[cfg(test)]
@@ -210,6 +225,19 @@ mod tests {
         let got = tokio::time::timeout(std::time::Duration::from_secs(2), dg.recv_from(&mut buf)).await;
         let (n, _) = got.expect("réponse unicast perdue").unwrap();
         assert_eq!(&buf[..n], b"r");
+    }
+
+    /// Envoi refusé depuis l'adresse du scan (macOS : EHOSTUNREACH depuis
+    /// l'alias) : repli sur le socket d'écoute plutôt qu'aucun envoi. Ici le
+    /// socket d'envoi est lié à la boucle locale, qui ne joint pas 192.0.2.1.
+    #[tokio::test]
+    async fn a_refused_send_from_the_scan_address_falls_back() {
+        let listen = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await.unwrap();
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let dest: SocketAddr = (Ipv4Addr::new(192, 0, 2, 1), 9).into();
+        assert!(sender.send_to(b"x", dest).await.is_err(), "boucle locale vers l'extérieur");
+        let dg = UdpDatagram { socket: listen, sender: Some(sender), fallback_logged: Default::default() };
+        dg.send_to(b"x", dest).await.unwrap();
     }
 
     #[tokio::test]
