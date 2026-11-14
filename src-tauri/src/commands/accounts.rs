@@ -7,7 +7,7 @@ use serde::Serialize;
 use tauri::State;
 
 /// Erreurs : codes stables (`empty_field`, `duplicate_name`, `not_found`,
-/// `secret_missing`, `keyring`, `io`), traduits par le front. Le message de
+/// `secret_missing`, `keyring`, `io`, `import_invalid`), traduits par le front. Le message de
 /// l'OS n'est pas renvoyé.
 fn code(e: AccountError) -> String {
     match e {
@@ -17,6 +17,7 @@ fn code(e: AccountError) -> String {
         AccountError::SecretMissing => "secret_missing",
         AccountError::Keyring(_) => "keyring",
         AccountError::Io(_) => "io",
+        AccountError::ImportInvalid => "import_invalid",
     }
     .to_string()
 }
@@ -191,18 +192,23 @@ mod tests {
 
     #[test]
     fn list_flags_accounts_without_secret() {
+        // Ancien format dont le trousseau a perdu un secret.
         let store = Arc::new(MemoryStore::default());
         let path = std::env::temp_dir()
             .join(format!("lenscout-cmd-accounts-{}", uuid_like()))
             .join("accounts.json");
-        let mut book = AccountBook::load(path, store.clone()).unwrap();
-        let ok = account_create(&mut book, "A", "r", Secret::new("x".into())).unwrap();
-        let lost = account_create(&mut book, "B", "r", Secret::new("x".into())).unwrap();
-        store.delete(&lost.id).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"[{"id":"ok","name":"A","login":"r"},{"id":"lost","name":"B","login":"r"}]"#,
+        )
+        .unwrap();
+        store.set("ok", &Secret::new("x".into())).unwrap();
+        let book = AccountBook::load(path, store).unwrap();
         let entries = accounts_list(&book);
         let flag = |id: &str| entries.iter().find(|e| e.id == id).unwrap().has_secret;
-        assert!(flag(&ok.id));
-        assert!(!flag(&lost.id));
+        assert!(flag("ok"));
+        assert!(!flag("lost"));
         let json = serde_json::to_string(&entries).unwrap();
         assert!(json.contains("\"has_secret\":false"));
     }
@@ -247,15 +253,12 @@ mod tests {
         let path = std::env::temp_dir()
             .join(format!("lenscout-cmd-accounts-{}", uuid_like()))
             .join("accounts.json");
-        let mut book = AccountBook::load(path.clone(), store).unwrap();
-        let acc = account_create(&mut book, "A", "r", Secret::new("x".into())).unwrap();
-        // Même fichier, autre trousseau : le cas d'un accounts.json copié ailleurs.
-        let other = Mutex::new(AccountBook::load(path, Arc::new(MemoryStore::default())).unwrap());
-        assert_eq!(
-            credentials_for(&other, &acc.id).unwrap_err(),
-            "secret_missing"
-        );
-        assert_eq!(credentials_for(&other, "nope").unwrap_err(), "not_found");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"[{"id":"a","name":"A","login":"r"}]"#).unwrap();
+        // Trousseau sans le secret : compte repris « à ressaisir ».
+        let book = Mutex::new(AccountBook::load(path, store).unwrap());
+        assert_eq!(credentials_for(&book, "a").unwrap_err(), "secret_missing");
+        assert_eq!(credentials_for(&book, "nope").unwrap_err(), "not_found");
     }
 
     #[test]

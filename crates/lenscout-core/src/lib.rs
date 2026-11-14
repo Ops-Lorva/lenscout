@@ -16,6 +16,7 @@ pub mod model;
 pub mod oui;
 pub mod permissions;
 pub mod proc;
+pub mod seal;
 pub mod secret;
 pub mod temp_ip;
 pub mod transport;
