@@ -78,6 +78,7 @@ pub struct ImportItemOut {
     pub login_differs: bool,
     pub password_differs: bool,
     pub network_differs: bool,
+    pub gateway_dropped: bool,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -98,7 +99,14 @@ impl From<ImportPlan> for ImportPlanOut {
                         ("differs", login_differs, password_differs, network_differs)
                     }
                 };
-                ImportItemOut { name: i.name, kind, login_differs, password_differs, network_differs }
+                ImportItemOut {
+                    name: i.name,
+                    kind,
+                    login_differs,
+                    password_differs,
+                    network_differs,
+                    gateway_dropped: i.gateway_dropped,
+                }
             })
             .collect();
         Self { items }
@@ -434,6 +442,7 @@ mod tests {
         let plan = serde_json::to_value(accounts_import_plan(&dst, &path).unwrap()).unwrap();
         assert_eq!(plan["items"][0]["kind"], "differs");
         assert_eq!(plan["items"][0]["network_differs"], true);
+        assert_eq!(plan["items"][0]["gateway_dropped"], false);
         assert_eq!(plan["items"][0]["login_differs"], false);
     }
 

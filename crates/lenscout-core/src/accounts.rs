@@ -121,6 +121,19 @@ impl AccountNetwork {
         })
     }
 
+    /// Import : comme `validated`, mais une passerelle incohérente (ancien
+    /// réseau saisi à la main, hors de celui de l'IP du PC) est écartée au
+    /// lieu de faire refuser le fichier. `true` quand elle l'a été.
+    fn validated_for_import(&self) -> Result<(AccountNetwork, bool), AccountError> {
+        match self.validated() {
+            Err(AccountError::InvalidGateway | AccountError::GatewayOutsideNetwork) => {
+                let without = AccountNetwork { gateway: None, ..self.clone() };
+                Ok((without.validated()?, true))
+            }
+            r => r.map(|n| (n, false)),
+        }
+    }
+
     fn fields(&self) -> [&Option<String>; 3] {
         [&self.pc_ip, &self.network, &self.gateway]
     }
@@ -397,6 +410,8 @@ pub enum ImportKind {
 pub struct ImportItem {
     pub name: String,
     pub kind: ImportKind,
+    /// Passerelle du fichier écartée : hors du réseau de l'IP du PC.
+    pub gateway_dropped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -427,6 +442,7 @@ struct Imported {
     login: String,
     password: Option<Secret>,
     net: AccountNetwork,
+    gateway_dropped: bool,
 }
 
 /// Écriture atomique d'un fichier lisible par l'utilisateur seul (0600 sous
@@ -482,9 +498,9 @@ fn parse_import(data: &str) -> Result<Vec<Imported>, AccountError> {
         if name.is_empty() || login.is_empty() {
             return Err(invalid());
         }
-        let net = AccountNetwork::read_from(a)
+        let (net, gateway_dropped) = AccountNetwork::read_from(a)
             .ok_or_else(invalid)?
-            .validated()
+            .validated_for_import()
             .map_err(|_| invalid())?;
         if out
             .iter()
@@ -497,6 +513,7 @@ fn parse_import(data: &str) -> Result<Vec<Imported>, AccountError> {
             login,
             password: password.filter(|p| !p.expose().is_empty()),
             net,
+            gateway_dropped,
         });
     }
     Ok(out)
@@ -769,6 +786,7 @@ impl AccountBook {
                     None => ImportKind::New,
                     Some(i) => classify(&self.entries[i], &imp),
                 },
+                gateway_dropped: imp.gateway_dropped,
                 name: imp.name,
             })
             .collect();
@@ -1098,6 +1116,42 @@ mod tests {
         .to_string();
         book.import_apply(&only, &HashMap::new()).unwrap();
         assert_eq!(book.list()[1].net, no_net());
+    }
+
+    #[test]
+    fn an_incoherent_gateway_is_dropped_never_the_file() {
+        // Ancien export : passerelle valable pour le réseau d'alors (/22),
+        // hors du réseau recalculé depuis l'IP du PC (/24).
+        let file = serde_json::json!({
+            "format": "lenscout-accounts", "version": 1,
+            "accounts": [
+                {"name": "Mairie", "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes()),
+                 "pc_ip": "192.168.1.250/24", "network": "192.168.0.0/22", "gateway": "192.168.0.1"},
+                {"name": "Gare", "login": seal::seal(b"root"), "pc_ip": "10.1.0.250/16", "gateway": "10.1.0.1"},
+            ],
+        })
+        .to_string();
+        let (mut book, _fx) = empty_book();
+        let plan = book.import_plan(&file).unwrap();
+        assert_eq!(
+            plan.items.iter().map(|i| (i.name.as_str(), i.gateway_dropped)).collect::<Vec<_>>(),
+            [("Mairie", true), ("Gare", false)]
+        );
+        book.import_apply(&file, &HashMap::new()).unwrap();
+        assert_eq!(book.list()[0].net, net("192.168.1.250/24", "192.168.1.0/24", ""));
+        assert_eq!(book.list()[1].net, net("10.1.0.250/16", "10.1.0.0/16", "10.1.0.1"));
+
+        // Même compte chargé tel quel depuis le carnet puis réexporté.
+        let fx = Fixture::new();
+        let stored = serde_json::json!({"version": 2, "accounts": [
+            {"id": "1", "name": "Mairie", "pc_ip": "192.168.1.250/24", "gateway": "192.168.0.1",
+             "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes())},
+        ]});
+        std::fs::write(fx.path(), stored.to_string()).unwrap();
+        let (loaded, _) = load_or_quarantine(fx.path(), fx.store.clone());
+        let (other, _fx2) = empty_book();
+        let plan = other.import_plan(&loaded.export()).unwrap();
+        assert!(plan.items[0].gateway_dropped);
     }
 
     #[test]

@@ -73,7 +73,7 @@
     <div class="grp">{$_('accounts.grp.new')}</div>
     <div class="list">
       {#each groups.added as i (i.name)}
-        <div class="it"><div class="who">{i.name}</div><span class="st new">{$_('accounts.st.new')}</span></div>
+        <div class="it"><div class="who">{i.name}{#if why(i)}<div class="why">{why(i)}</div>{/if}</div><span class="st new">{$_('accounts.st.new')}</span></div>
       {/each}
     </div>
   {/if}
@@ -81,7 +81,7 @@
     <div class="grp">{$_('accounts.grp.identical')}</div>
     <div class="list">
       {#each groups.identical as i (i.name)}
-        <div class="it"><div class="who">{i.name}</div><span class="st">{$_('accounts.st.identical')}</span></div>
+        <div class="it"><div class="who">{i.name}{#if why(i)}<div class="why">{why(i)}</div>{/if}</div><span class="st">{$_('accounts.st.identical')}</span></div>
       {/each}
     </div>
   {/if}

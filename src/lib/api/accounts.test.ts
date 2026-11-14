@@ -48,10 +48,10 @@ test('le signalement de démarrage a son libellé, un code inconnu est ignoré',
 
 const plan: ImportPlan = {
   items: [
-    { name: 'Mairie Arles', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
-    { name: 'Client Dupont', kind: 'differs', login_differs: false, password_differs: true, network_differs: false },
-    { name: 'Gare', kind: 'new', login_differs: false, password_differs: false, network_differs: false },
-    { name: 'Usine', kind: 'identical', login_differs: false, password_differs: false, network_differs: false },
+    { name: 'Mairie Arles', kind: 'differs', login_differs: true, password_differs: false, network_differs: false, gateway_dropped: false },
+    { name: 'Client Dupont', kind: 'differs', login_differs: false, password_differs: true, network_differs: false, gateway_dropped: false },
+    { name: 'Gare', kind: 'new', login_differs: false, password_differs: false, network_differs: false, gateway_dropped: false },
+    { name: 'Usine', kind: 'identical', login_differs: false, password_differs: false, network_differs: false, gateway_dropped: false },
   ],
 };
 
@@ -101,9 +101,9 @@ test('le code import_invalid a son libellé', () => {
 test('« Garder les deux » évite aussi tous les noms du fichier et du carnet', () => {
   const file: ImportPlan = {
     items: [
-      { name: 'X', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
-      { name: 'X 2', kind: 'new', login_differs: false, password_differs: false, network_differs: false },
-      { name: 'Y', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
+      { name: 'X', kind: 'differs', login_differs: true, password_differs: false, network_differs: false, gateway_dropped: false },
+      { name: 'X 2', kind: 'new', login_differs: false, password_differs: false, network_differs: false, gateway_dropped: false },
+      { name: 'Y', kind: 'differs', login_differs: true, password_differs: false, network_differs: false, gateway_dropped: false },
     ],
   };
   const choices = { X: 'keep_both', Y: 'replace' } as const;
@@ -115,10 +115,10 @@ test('« Garder les deux » évite aussi tous les noms du fichier et du carnet',
 test('« Garder les deux » compare les noms sans tenir compte de la casse, comme le core', () => {
   const file: ImportPlan = {
     items: [
-      { name: 'cam', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
-      { name: 'CAM 2', kind: 'new', login_differs: false, password_differs: false, network_differs: false },
-      { name: 'Nvr', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
-      { name: 'nvr', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
+      { name: 'cam', kind: 'differs', login_differs: true, password_differs: false, network_differs: false, gateway_dropped: false },
+      { name: 'CAM 2', kind: 'new', login_differs: false, password_differs: false, network_differs: false, gateway_dropped: false },
+      { name: 'Nvr', kind: 'differs', login_differs: true, password_differs: false, network_differs: false, gateway_dropped: false },
+      { name: 'nvr', kind: 'differs', login_differs: true, password_differs: false, network_differs: false, gateway_dropped: false },
     ],
   };
   const both = { cam: 'keep_both', Nvr: 'keep_both', nvr: 'keep_both' } as const;
@@ -150,11 +150,18 @@ test('champs réseau : vides → null, transmis à la création et à la modific
 
 test('ce qui diffère à l’import, réseau compris', () => {
   const item = (l: boolean, p: boolean, n: boolean) =>
-    ({ name: 'X', kind: 'differs', login_differs: l, password_differs: p, network_differs: n }) as const;
+    ({ name: 'X', kind: 'differs', login_differs: l, password_differs: p, network_differs: n, gateway_dropped: false }) as const;
   expect(whyKeys(item(true, true, false))).toEqual(['both']);
   expect(whyKeys(item(true, false, true))).toEqual(['login', 'network']);
   expect(whyKeys(item(false, false, true))).toEqual(['network']);
   expect(whyKeys(item(false, true, false))).toEqual(['password']);
+});
+
+test('passerelle écartée à l’import : dite pour tout compte, nouveau ou non', () => {
+  const base = { name: 'X', login_differs: false, password_differs: false, network_differs: false, gateway_dropped: true };
+  expect(whyKeys({ ...base, kind: 'new' })).toEqual(['gateway_dropped']);
+  expect(whyKeys({ ...base, kind: 'identical' })).toEqual(['gateway_dropped']);
+  expect(whyKeys({ ...base, kind: 'differs', login_differs: true })).toEqual(['login', 'gateway_dropped']);
 });
 
 test('le sélecteur de réseau ne propose que les comptes qui ont une IP du PC', () => {

@@ -56,7 +56,8 @@
     "login": "usuario distinto",
     "password": "contraseña distinta",
     "both": "usuario y contraseña distintos",
-    "network": "red diferente"
+    "network": "red diferente",
+    "gateway_dropped": "puerta de enlace fuera de la red de la IP del PC, descartada"
   },
   "choice": {
     "replace": "Reemplazar",

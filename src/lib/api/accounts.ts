@@ -63,15 +63,19 @@ export interface ImportItem {
   login_differs: boolean;
   password_differs: boolean;
   network_differs: boolean;
+  /** Passerelle du fichier écartée : hors du réseau de l'IP du PC. */
+  gateway_dropped: boolean;
 }
 
-/** Clés i18n (sous `accounts.why.`) de ce qui diffère, dans l'ordre. */
+/** Clés i18n (sous `accounts.why.`) de ce qui diffère, dans l'ordre, puis
+ * la passerelle écartée (tout compte, nouveau ou identique compris). */
 export function whyKeys(i: ImportItem): string[] {
   const keys: string[] = [];
   if (i.login_differs && i.password_differs) keys.push('both');
   else if (i.login_differs) keys.push('login');
   else if (i.password_differs) keys.push('password');
   if (i.network_differs) keys.push('network');
+  if (i.gateway_dropped) keys.push('gateway_dropped');
   return keys;
 }
 

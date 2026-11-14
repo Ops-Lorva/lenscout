@@ -56,7 +56,8 @@
     "login": "different login",
     "password": "different password",
     "both": "different login and password",
-    "network": "different network"
+    "network": "different network",
+    "gateway_dropped": "gateway outside the PC IP network, dropped"
   },
   "choice": {
     "replace": "Replace",

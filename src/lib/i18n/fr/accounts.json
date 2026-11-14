@@ -56,7 +56,8 @@
     "login": "identifiant différent",
     "password": "mot de passe différent",
     "both": "identifiant et mot de passe différents",
-    "network": "réseau différent"
+    "network": "réseau différent",
+    "gateway_dropped": "passerelle hors du réseau de l'IP du PC, écartée"
   },
   "choice": {
     "replace": "Remplacer",
