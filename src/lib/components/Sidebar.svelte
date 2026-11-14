@@ -23,7 +23,7 @@
 <!-- Réglages en pied de barre, séparé des onglets (comme macOS / VS Code). -->
 <nav class="sidebar">
   {#each items.filter((i) => i.id !== 'settings') as item}{@render entry(item)}{/each}
-  <div class="foot">
+  <div class="bottom">
     {#each items.filter((i) => i.id === 'settings') as item}{@render entry(item)}{/each}
   </div>
 </nav>
@@ -34,7 +34,7 @@
     background: var(--side); border-right: 1px solid var(--line);
     padding: 12px 10px; display: flex; flex-direction: column; gap: 2px;
   }
-  .foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+  .bottom { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
   .item {
     display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 10px;
     border: 0; border-radius: 7px; background: transparent; color: var(--text);
