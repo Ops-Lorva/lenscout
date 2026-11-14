@@ -39,7 +39,7 @@
       await tick();
       void play();
     } catch (e) {
-      error = $_(`framing.${errorKey(e)}`);
+      error = `framing.${errorKey(e)}`;
     } finally {
       identifying = false;
     }
@@ -55,7 +55,7 @@
         if (mine === generation) presenter.push(buf);
       });
     } catch (e) {
-      if (mine === generation) error = $_(`framing.${errorKey(e)}`);
+      if (mine === generation) error = `framing.${errorKey(e)}`;
     }
     if (mine === generation) {
       playing = false;
@@ -141,7 +141,7 @@
     {/if}
   {/if}
 </div>
-{#if error}<p class="err">{error}</p>{/if}
+{#if error}<p class="err">{$_(error)}</p>{/if}
 {#if !cam}
   <div class="none">{$_('framing.none')}</div>
 {:else}

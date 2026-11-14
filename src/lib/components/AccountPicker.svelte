@@ -46,7 +46,7 @@
     try {
       await ensureAccounts();
     } catch (e) {
-      error = $_(`accounts.${errorKey(e)}`);
+      error = `accounts.${errorKey(e)}`;
     }
   });
 </script>
@@ -56,7 +56,7 @@
     {#if accounts.length === 0 && !error}<option value="">{$_('accounts.none')}</option>{/if}
     {#each accounts as a (a.id)}<option value={a.id}>{a.name} ({a.login})</option>{/each}
   </select>
-  {#if error}<span class="err">{error}</span>{/if}
+  {#if error}<span class="err">{$_(error)}</span>{/if}
 </span>
 
 <style>

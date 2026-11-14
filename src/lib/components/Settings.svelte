@@ -24,7 +24,7 @@
       // La case revient à l'état réel : `debug` n'a pas changé, Svelte ne
       // retoucherait pas le DOM, donc on remet la case à la main.
       input.checked = debug;
-      error = $_(`settings.${errorKey(e)}`);
+      error = `settings.${errorKey(e)}`;
     }
   }
 
@@ -55,7 +55,7 @@
   <div>
     <label><input type="checkbox" checked={debug} onchange={onDebug} /> <span>{$_('settings.diaglog')}</span></label>
     <div class="n">{$_('settings.diagNote')}</div>
-    {#if error}<div class="n err">{error}</div>{/if}
+    {#if error}<div class="n err">{$_(error)}</div>{/if}
   </div>
 
   <span class="k">{$_('settings.version')}</span>

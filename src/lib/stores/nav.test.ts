@@ -12,12 +12,12 @@ test('initialPage lit le fragment, sinon Réseau', () => {
 });
 
 test('clearStatusIf n’efface que le message qu’on a posé soi-même', () => {
-  const scan: Status = { text: 'Recherche sur en0' };
+  const scan: Status = { text: { key: 'network.scanning', values: { iface: 'en0', count: 0 } } };
   status.set(scan);
   clearStatusIf(scan);
   expect(get(status)).toBeNull();
 
-  const other: Status = { text: '4 comptes exportés', tone: 'ok' };
+  const other: Status = { text: { key: 'accounts.exported', values: { count: 4 } }, tone: 'ok' };
   status.set(other);
   clearStatusIf(scan);
   expect(get(status)).toBe(other);

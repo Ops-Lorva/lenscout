@@ -37,7 +37,7 @@
   let gateway = $state('');
   let dns = $state('');
   let busy = $state(false);
-  let error = $state('');
+  let error = $state<{ key: string; values?: Record<string, string | number> } | null>(null);
   // L'aperçu garde l'empreinte des champs et de la sélection qui l'ont produit.
   let preview = $state<{ data: BatchPreview; fingerprint: string } | null>(null);
 
@@ -75,12 +75,12 @@
 
   function show(e: unknown) {
     const m = batchErrorMessage(e);
-    error = $_(m.key, { values: m.values });
+    error = m;
   }
 
   async function runPreview() {
     busy = true;
-    error = '';
+    error = null;
     preview = null;
     const fp = fingerprint;
     try {
@@ -101,7 +101,7 @@
   async function runApply() {
     if (!shown) return;
     busy = true;
-    error = '';
+    error = null;
     const id = shown.id;
     // L'identifiant ne sert qu'une fois : l'aperçu part, quoi qu'il arrive.
     preview = null;
@@ -149,7 +149,7 @@
     </div>
   {/if}
   <div class="foot">
-    <span class="sum" class:e={!!error}>{error}</span>
+    <span class="sum" class:e={!!error}>{error ? $_(error.key, { values: error.values }) : ''}</span>
     <button class="btn" onclick={onClose}>{$_('configure.cancel')}</button>
     <button class="btn" onclick={runPreview} disabled={!ready}>{$_('batch.preview')}</button>
     <button class="btn def" onclick={runApply} disabled={busy || !accountId || !shown}>

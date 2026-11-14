@@ -59,7 +59,7 @@
       if (!chosen) return;
       const path = withExtension(chosen);
       const count = await exportAccounts(path);
-      say({ text: $_('accounts.exported', { values: { count } }), detail: $_('accounts.exportedIn', { values: { path } }) });
+      say({ text: { key: 'accounts.exported', values: { count } }, detail: { key: 'accounts.exportedIn', values: { path } } });
     } catch (e) {
       fail(e);
     }
@@ -80,13 +80,13 @@
   async function imported(summary: ImportSummary) {
     importing = null;
     const count = summary.added + summary.replaced + summary.kept_both;
-    say({ text: $_(count ? 'accounts.imported' : 'accounts.importedNone', { values: { count } }) });
+    say({ text: { key: count ? 'accounts.imported' : 'accounts.importedNone', values: { count } } });
     await refresh();
   }
 
   const fail = (e: unknown) => {
     errorCode = errorKey(e);
-    error = $_(`accounts.${errorCode}`);
+    error = `accounts.${errorCode}`;
   };
 
   async function refresh() {
@@ -180,7 +180,7 @@
       const key = noticeKey(await accountsStartup());
       if (key) {
         errorCode = key;
-        error = $_(`accounts.${key}`);
+        error = `accounts.${key}`;
       }
     } catch {}
     await refresh();
@@ -195,7 +195,7 @@
   <button class="btn def" onclick={() => open(null)}>{$_('accounts.add')}</button>
 </div>
 
-{#if error && editing === null}<p class="err">{error}</p>{/if}
+{#if error && editing === null}<p class="err">{$_(error)}</p>{/if}
 
 <table>
   <thead>
@@ -236,7 +236,7 @@
       <div class="form">
         <label for="a-name">{$_('accounts.field.name')}</label>
         <input id="a-name" type="text" bind:value={name} autocomplete="off" aria-invalid={nameError ? 'true' : undefined} />
-        {#if nameError}<span class="note bad">{nameError}</span>{/if}
+        {#if nameError}<span class="note bad">{$_(nameError)}</span>{/if}
         <label for="a-login">{$_('accounts.field.login')}</label>
         <input id="a-login" type="text" bind:value={login} autocomplete="off" />
         <label for="a-password">{$_('accounts.field.password')}</label>
@@ -260,7 +260,7 @@
         <input id="a-gw" type="text" bind:value={gateway} placeholder="192.168.1.1" inputmode="decimal" autocomplete="off" spellcheck="false" />
       </div>
       <div class="foot">
-        <span class="sum" class:e={!!otherError}>{otherError}</span>
+        <span class="sum" class:e={!!otherError}>{otherError ? $_(otherError) : ''}</span>
         <button class="btn" type="button" onclick={close}>{$_('accounts.cancel')}</button>
         <button class="btn def" type="submit" disabled={!ready}>{$_('accounts.save')}</button>
       </div>

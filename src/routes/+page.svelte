@@ -6,6 +6,7 @@
   import Settings from '$lib/components/Settings.svelte';
   import UpdateBanner from '$lib/components/UpdateBanner.svelte';
   import { page, status } from '$lib/stores/nav';
+  import { _ } from 'svelte-i18n';
 </script>
 
 <div class="app">
@@ -23,7 +24,7 @@
   </div>
   {#if $status}
     <div class="status" role="status">
-      {#if $status.tone || $status.detail}<b class={$status.tone}>{$status.text}</b>{:else}{$status.text}{/if}{#if $status.detail}{' '}{$status.detail}{/if}
+      {#if $status.tone || $status.detail}<b class={$status.tone}>{$_($status.text.key, { values: $status.text.values })}</b>{:else}{$_($status.text.key, { values: $status.text.values })}{/if}{#if $status.detail}{' '}{$_($status.detail.key, { values: $status.detail.values })}{/if}
     </div>
   {/if}
 </div>

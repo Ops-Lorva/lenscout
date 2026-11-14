@@ -54,7 +54,7 @@
       if (action.kind === 'network_dhcp' || action.kind === 'network_static') onDone();
     } catch (e) {
       open = null;
-      error = $_(`configure.${errorKey(e)}`);
+      error = `configure.${errorKey(e)}`;
     } finally {
       busy = false;
     }
@@ -69,7 +69,7 @@
     <button class="btn" disabled={!allowed} onclick={() => (open = 'time')}>{$_('configure.time')}</button>
     <span class="count">{$_('configure.cameras', { values: { count: cams.length } })}</span>
     {#if busy}<span class="spin" aria-label={$_('configure.busy')}></span>{/if}
-    {#if error}<span class="err inline">{error}</span>{/if}
+    {#if error}<span class="err inline">{$_(error)}</span>{/if}
   </div>
 {/if}
 

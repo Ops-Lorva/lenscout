@@ -19,11 +19,17 @@ export const framingTarget = writable<Camera | null>(null);
  * Barre d'état en bas de la fenêtre : ce qui concerne le poste, pas une
  * caméra (recherche en cours, IP temporaire). `null` : pas de barre.
  */
+/** Message traduit au rendu, pas à la création : il suit un changement de langue. */
+export interface Msg {
+  key: string;
+  values?: Record<string, string | number>;
+}
+
 export interface Status {
-  text: string;
+  text: Msg;
   tone?: 'ok' | 'warn';
   /** Complément en texte courant après le message (en gras) : où, quoi. */
-  detail?: string;
+  detail?: Msg;
 }
 export const status = writable<Status | null>(null);
 

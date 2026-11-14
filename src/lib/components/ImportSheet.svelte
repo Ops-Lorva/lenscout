@@ -47,7 +47,7 @@
     try {
       onDone(await applyImport(path, choices));
     } catch (e) {
-      error = $_(`accounts.${errorKey(e)}`);
+      error = `accounts.${errorKey(e)}`;
     } finally {
       busy = false;
     }
@@ -86,7 +86,7 @@
     </div>
   {/if}
   <div class="foot">
-    <span class="sum" class:e={!!error}>{error || keepNote}</span>
+    <span class="sum" class:e={!!error}>{error ? $_(error) : keepNote}</span>
     <button class="btn" type="button" onclick={onClose}>{$_('accounts.cancel')}</button>
     <button class="btn def" type="button" onclick={run} disabled={busy}>{$_('accounts.doImport')}</button>
   </div>

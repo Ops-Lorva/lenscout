@@ -78,7 +78,7 @@
         if (e.kind === 'upsert') upsert(e.camera);
       });
     } catch (e) {
-      if (mine === run) error = $_(`network.${errorKey(e)}`);
+      if (mine === run) error = `network.${errorKey(e)}`;
     } finally {
       if (mine === run) scanning = false;
     }
@@ -107,7 +107,7 @@
       try { j = await joinedNetwork(); } catch {}
       sw.init(r.applied.iface, j);
       joined.set(j);
-      failStatus = { text: $_(`network.${errorKey(r.code)}`), tone: 'warn' };
+      failStatus = { text: { key: `network.${errorKey(r.code)}` }, tone: 'warn' };
       status.set(failStatus);
     } else if (r.kind === 'done') {
       joined.set(r.applied.account ? (r.joined ?? $joined) : null);
@@ -138,7 +138,7 @@
       return poses.current(mine);
     } catch (e) {
       if (poses.current(mine)) {
-        error = $_(`network.${errorKey(e)}`);
+        error = `network.${errorKey(e)}`;
         clear();
       }
       return false;
@@ -180,7 +180,7 @@
     try {
       await openCameraWeb(c.ip, c.http_port);
     } catch (e) {
-      error = $_(`network.${errorKey(e)}`);
+      error = `network.${errorKey(e)}`;
     }
   }
 
@@ -199,7 +199,7 @@
   });
   $effect(() => {
     if (scanning && visible) {
-      scanStatus = { text: $_('network.scanning', { values: { iface, count: $cameras.length } }) };
+      scanStatus = { text: { key: 'network.scanning', values: { iface, count: $cameras.length } } };
       status.set(scanStatus);
     } else {
       clearStatusIf(scanStatus);
@@ -211,7 +211,7 @@
     try {
       interfaces = await listInterfaces();
     } catch (e) {
-      error = $_(`network.${errorKey(e)}`);
+      error = `network.${errorKey(e)}`;
       return;
     }
     let saved = '';
@@ -278,7 +278,7 @@
   <input type="search" bind:value={$query} placeholder={$_('network.search')} aria-label={$_('network.search')} />
 </div>
 
-{#if error}<p class="err">{error}</p>{/if}
+{#if error}<p class="err">{$_(error)}</p>{/if}
 
 <ActionBar {iface} onDone={rescanSoon} />
 
