@@ -4,7 +4,7 @@
   import type { Camera } from '#lib/api/types.ts';
   import { cameraName } from '#lib/api/discovery.ts';
   import { errorKey } from '#lib/api/errors.ts';
-  import { cameraKey, cameras, markActivated, selectedCameras } from '#lib/stores/cameras.ts';
+  import { cameraKey, cameras, markActivated, markAddressing, selectedCameras } from '#lib/stores/cameras.ts';
   import BatchIpDialog from './BatchIpDialog.svelte';
   import ActivateDialog from './ActivateDialog.svelte';
   import NetworkDialog from './NetworkDialog.svelte';
@@ -50,6 +50,7 @@
   function batchDone(results: ActionResult[]) {
     clearResults();
     setResults(results);
+    markAddressing(results, 'static');
     open = null;
     onDone('batch');
   }
@@ -70,6 +71,9 @@
       const results = await applyAction(targets, accountId, action, iface);
       setResults(results);
       if (action.kind === 'activate') markActivated(results);
+      // L'adressage posé se voit tout de suite, sans attendre une lecture.
+      if (action.kind === 'network_static') markAddressing(results, 'static', Object.fromEntries(targets.map((c) => [cameraKey(c), action.ip])));
+      if (action.kind === 'network_dhcp') markAddressing(results, 'dhcp');
       pending = pendingAfterRun(action, results, targets);
       pendingAccount = accountId;
       if (pending.length === 0) open = null;

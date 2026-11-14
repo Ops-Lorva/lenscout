@@ -10,6 +10,14 @@ const ipValue = (ip: string): number =>
 
 const byKey = writable<Map<string, Camera>>(new Map());
 
+/**
+ * Adressage posé par LenScout (IP fixe, DHCP), par clé de caméra : le scan
+ * ne le dit pas, et sans compte retenu (ou à travers le routeur) rien ne le
+ * relit ; la ligne le garde donc d'un rescan à l'autre, jusqu'à ce qu'une
+ * lecture avec le compte dise autre chose.
+ */
+const posed = new Map<string, NonNullable<Camera['addressing']>>();
+
 /** Triée par IP numérique croissante : 10.0.50.9 avant 10.0.50.10. */
 export const cameras: Readable<Camera[]> = derived(byKey, (m) =>
   [...m.values()].sort((a, b) => ipValue(a.ip) - ipValue(b.ip)),
@@ -47,7 +55,8 @@ export function upsert(c: Camera): void {
         return new Set(sel).add(c.mac!);
       });
     }
-    next.set(cameraKey(c), c);
+    const known = c.addressing ?? posed.get(cameraKey(c));
+    next.set(cameraKey(c), known ? { ...c, addressing: known } : c);
     return next;
   });
 }
@@ -59,7 +68,10 @@ export function setAddressing(read: { ip: string; addressing: Camera['addressing
     const next = new Map(m);
     for (const [k, c] of next) {
       const r = read.find((x) => x.ip === c.ip);
-      if (r) next.set(k, { ...c, addressing: r.addressing });
+      if (r) {
+        next.set(k, { ...c, addressing: r.addressing });
+        posed.delete(k);
+      }
     }
     return next;
   });
@@ -78,6 +90,30 @@ export function markActivated(results: readonly { key: string; ok: boolean; erro
     for (const k of done) {
       const c = next.get(k);
       if (c) next.set(k, { ...c, activation: 'activated' });
+    }
+    return next;
+  });
+}
+
+/**
+ * Changement d'adresse réussi : la ligne de chaque résultat `ok` prend
+ * `addressing` sans attendre une lecture, comme `markActivated`. `moved` :
+ * nouvelle IP par clé ; une caméra sans MAC (clé = IP) la retrouve au rescan
+ * sous sa nouvelle adresse.
+ */
+export function markAddressing(
+  results: readonly { key: string; ok: boolean; error?: unknown }[],
+  addressing: NonNullable<Camera['addressing']>,
+  moved: Record<string, string> = {},
+): void {
+  const done = results.filter((r) => r.ok).map((r) => r.key);
+  if (done.length === 0) return;
+  byKey.update((m) => {
+    const next = new Map(m);
+    for (const k of done) {
+      const c = next.get(k);
+      if (c) next.set(k, { ...c, addressing });
+      posed.set(c?.mac ?? moved[k] ?? k, addressing);
     }
     return next;
   });

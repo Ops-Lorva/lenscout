@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
 import type { Camera } from '#lib/api/types.ts';
-import { cameras, clear, clearCameras, markActivated, query, selectedCameras, selection, setAddressing, shouldAutoScan, upsert } from './cameras';
+import { cameras, clear, clearCameras, markActivated, markAddressing, query, selectedCameras, selection, setAddressing, shouldAutoScan, upsert } from './cameras';
 
 const cam = (over: Partial<Camera>): Camera => ({
   ip: '10.0.50.5',
@@ -139,4 +139,39 @@ test('une activation réussie passe la ligne en « Activée », un échec ne cha
   // Clé inconnue : rien.
   markActivated([{ key: 'nope', ok: true, error: null }]);
   expect(get(cameras)).toHaveLength(3);
+});
+
+test('une IP posée par LenScout passe la ligne en « IP fixe » tout de suite, et le reste au rescan', () => {
+  upsert(cam({ ip: '10.0.60.5', mac: 'AA:BB:CC:00:01:05' }));
+  upsert(cam({ ip: '10.0.60.6', mac: 'AA:BB:CC:00:01:06' }));
+  markAddressing(
+    [
+      { key: 'AA:BB:CC:00:01:05', ok: true, error: null },
+      { key: 'AA:BB:CC:00:01:06', ok: false, error: { code: 'auth_failed' } },
+    ],
+    'static',
+  );
+  expect(get(cameras).map((c) => c.addressing ?? null)).toEqual(['static', null]);
+  // Le rescan qui suit ne sait pas l'adressage : ce qu'on a posé reste.
+  clearCameras();
+  upsert(cam({ ip: '10.0.60.50', mac: 'AA:BB:CC:00:01:05' }));
+  expect(get(cameras)[0].addressing).toBe('static');
+  // Une lecture avec le compte fait foi.
+  setAddressing([{ ip: '10.0.60.50', addressing: 'dhcp' }]);
+  clearCameras();
+  upsert(cam({ ip: '10.0.60.50', mac: 'AA:BB:CC:00:01:05' }));
+  expect(get(cameras)[0].addressing ?? null).toBeNull();
+});
+
+test('passage en DHCP : la ligne prend « DHCP » ; une caméra sans MAC suit sa nouvelle IP', () => {
+  upsert(cam({ ip: '10.0.61.5', mac: 'AA:BB:CC:00:02:05', addressing: 'static' }));
+  markAddressing([{ key: 'AA:BB:CC:00:02:05', ok: true, error: null }], 'dhcp');
+  expect(get(cameras)[0].addressing).toBe('dhcp');
+  // Vue à travers le routeur : la clé est l'IP, elle change avec elle.
+  upsert(cam({ ip: '10.0.62.11', mac: null }));
+  markAddressing([{ key: '10.0.62.11', ok: true, error: null }], 'static', { '10.0.62.11': '10.0.62.40' });
+  expect(get(cameras).find((c) => c.ip === '10.0.62.11')?.addressing).toBe('static');
+  clearCameras();
+  upsert(cam({ ip: '10.0.62.40', mac: null }));
+  expect(get(cameras)[0].addressing).toBe('static');
 });

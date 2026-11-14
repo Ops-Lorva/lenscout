@@ -292,13 +292,17 @@ const ADDRESSING_PARALLEL: usize = 8;
 
 /// Les Axis dont on peut lire l'adressage avec le compte : activées selon le
 /// dernier scan (état tenu par Rust, pas celui du front), entendues depuis
-/// leur adresse, et seules sur cette adresse (sinon on ne saurait pas qui
-/// répond). Le compte ne part vers rien d'autre.
+/// leur adresse ou au balayage du réseau routé (adresse privée seulement,
+/// comme `routed_allowed`), et seules sur cette adresse (sinon on ne saurait
+/// pas qui répond). Le compte ne part vers rien d'autre.
 fn addressing_targets(cameras: &[Camera], seen: &SeenSnapshot) -> Vec<(Ipv4Addr, String)> {
     let shared = |ip: Ipv4Addr| seen.states.iter().filter(|s| s.ip == ip).count() > 1;
+    // Une caméra du réseau routé n'a pas de MAC (la couche 2 ne passe pas le
+    // routeur) : sa clé de ligne est son IP, son état est retenu sous elle.
+    let heard = |ip: Ipv4Addr| seen.ips.contains(&ip) || (ip.is_private() && seen.routed.contains(&ip));
     cameras
         .iter()
-        .filter(|c| c.family == Family::Axis && seen.ips.contains(&c.ip) && !shared(c.ip))
+        .filter(|c| c.family == Family::Axis && heard(c.ip) && !shared(c.ip))
         .filter(|c| {
             let key = row_key(c);
             seen.states.iter().any(|s| s.key == key && s.ip == c.ip && s.activation == Activation::Activated)
@@ -704,5 +708,28 @@ mod tests {
         let all = [a.clone(), menteuse, muette, partage1, partage2, hik];
         let got = addressing_targets(&all, &state.seen());
         assert_eq!(got, vec![("10.0.50.11".parse().unwrap(), "http://10.0.50.11".to_string())]);
+    }
+
+    /// Une Axis trouvée par le balayage routé (autre sous-réseau, sans MAC :
+    /// clé de ligne = son IP) est lue elle aussi, une fois lue activée ; une
+    /// adresse publique, jamais.
+    #[test]
+    fn la_lecture_dhcp_vise_aussi_une_axis_trouvee_a_travers_le_routeur() {
+        let state = ScanState::default();
+        let g = state.begin(&eth0());
+        let mut routee = axis("10.0.20.11", "x", Activation::Activated);
+        routee.mac = None;
+        routee.sources = vec![lenscout_core::model::Source::Http];
+        let mut neuve = routee.clone();
+        neuve.ip = "10.0.20.12".parse().unwrap();
+        neuve.activation = Activation::New;
+        let mut publique = routee.clone();
+        publique.ip = "198.51.100.7".parse().unwrap();
+        for c in [&routee, &neuve, &publique] {
+            state.record(g, &ScanEvent::HeardRouted { ip: c.ip });
+            state.record(g, &ScanEvent::Upsert { camera: c.clone() });
+        }
+        let got = addressing_targets(&[routee, neuve, publique], &state.seen());
+        assert_eq!(got, vec![("10.0.20.11".parse().unwrap(), "http://10.0.20.11".to_string())]);
     }
 }
