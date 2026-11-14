@@ -95,6 +95,7 @@ async fn build_context(
     let targets: Vec<Ipv4Addr> = cameras.iter().map(|c| c.ip).collect();
     // Dans le réseau d'un compte : l'adresse posée fait l'interface.
     let held = join.temp();
+    let account_network = held.is_some();
     let (scan_iface, any_off_subnet, other_ifaces) = tauri::async_runtime::spawn_blocking(move || {
         let up = list_interfaces_up();
         if !up.contains(&iface) {
@@ -140,6 +141,7 @@ async fn build_context(
         sadp,
         in_use,
         other_ifaces,
+        account_network,
     })
 }
 

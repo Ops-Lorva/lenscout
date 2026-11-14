@@ -88,6 +88,10 @@ pub enum ActionError {
     /// Une autre instance de Lenscout tient l'IP temporaire.
     #[error("IP temporaire déjà en cours")]
     TempIpBusy,
+    /// L'IP d'un compte est posée sur le poste (écran Réseau) : elle tient
+    /// l'IP temporaire. Revenir sur DHCP pour joindre cette caméra.
+    #[error("réseau d'un compte en cours")]
+    AccountNetworkActive,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -122,6 +126,9 @@ pub struct ActionContext {
     pub in_use: Vec<Ipv4Addr>,
     /// Les autres interfaces actives du poste.
     pub other_ifaces: Vec<ScanInterface>,
+    /// Une IP de compte est posée (« Se mettre dans ce réseau ») : elle
+    /// tient le verrou de l'IP temporaire.
+    pub account_network: bool,
 }
 
 /// Erreur d'un appel VAPIX → code affiché. `ip` n'est que celle de la caméra visée.
@@ -246,6 +253,9 @@ async fn apply_checked(
     }
     if !off_subnet_allowed(ctx, cam.ip) {
         return Err(ActionError::CameraOffSubnet);
+    }
+    if ctx.account_network {
+        return Err(ActionError::AccountNetworkActive);
     }
     let avoid: Vec<Ipv4Addr> = ctx.seen.iter().chain(&ctx.in_use).copied().collect();
     let temp = pick_temp_ip(&ctx.iface.name, cam.ip, &avoid, rand::random())
@@ -438,6 +448,7 @@ mod tests {
             sadp: None,
             in_use: vec![],
             other_ifaces: vec![],
+            account_network: false,
         };
         TestCtx { c, _journal: journal }
     }
@@ -1113,6 +1124,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_network_on_the_computer_has_its_own_code() {
+        // L'IP d'un compte est posée (« réseau du compte ») : pas d'IP
+        // temporaire, et pas le message d'une autre fenêtre.
+        let http = Arc::new(axis_ok());
+        let mut c = ctx_with(http.clone(), Arc::new(PanicElevator), vec![ll_cam().ip]);
+        c.account_network = true;
+        let r = apply(&c, &ll_cam(), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::AccountNetworkActive));
+        assert!(http.requests().is_empty());
+    }
+
+    #[tokio::test]
     async fn temp_ip_left_on_the_computer_is_reported() {
         let elev = Arc::new(FakeElevator::replying(vec![Ok(()), Err(TempIpError::Failed("netsh".into()))]));
         let c = ctx_with(Arc::new(axis_ok()), elev, vec![ll_cam().ip]);
@@ -1150,6 +1173,7 @@ mod tests {
             ActionError::TempIpFailed,
             ActionError::TempIpLeft { ip },
             ActionError::TempIpBusy,
+            ActionError::AccountNetworkActive,
         ];
         for e in all {
             let json = serde_json::to_string(&e).unwrap();

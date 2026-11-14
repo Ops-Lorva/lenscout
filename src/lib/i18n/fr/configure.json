@@ -39,7 +39,8 @@
     "http_status": "Statut HTTP {status}",
     "auth_insecure": "Authentification Basic refusée en HTTP",
     "bad_reply": "Réponse illisible",
-    "keyring": "Trousseau inaccessible"
+    "keyring": "Trousseau inaccessible",
+    "account_network_active": "IP d'un compte posée sur le poste : revenir sur DHCP pour joindre cette caméra"
   },
   "off_subnet": "Hors du sous-réseau de {iface}",
   "invalid": {

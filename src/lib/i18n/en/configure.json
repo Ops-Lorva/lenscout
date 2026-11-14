@@ -39,7 +39,8 @@
     "http_status": "HTTP status {status}",
     "auth_insecure": "Basic authentication refused over HTTP",
     "bad_reply": "Unreadable reply",
-    "keyring": "Keychain unavailable"
+    "keyring": "Keychain unavailable",
+    "account_network_active": "An account IP is set on this computer: switch back to DHCP to reach this camera"
   },
   "off_subnet": "Outside the subnet of {iface}",
   "invalid": {

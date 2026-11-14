@@ -335,6 +335,7 @@ mod tests {
             sadp: None,
             in_use: vec![],
             other_ifaces: vec![],
+            account_network: false,
         };
         let cam = Camera {
             ip: "10.66.66.66".parse().unwrap(),

@@ -36,7 +36,7 @@ pub(crate) fn sudoers_rule(user: &str) -> Result<String, TempIpError> {
     }
     Ok(format!(
         "{user} ALL=(root) NOPASSWD: /usr/sbin/networksetup -duplicatenetworkservice * Lenscout, \
-         /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout"
+         /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout, /usr/sbin/networksetup -ordernetworkservices *"
     ))
 }
 
@@ -197,7 +197,7 @@ mod tests {
     fn sudoers_rule_is_scoped_to_the_user_and_the_lenscout_service() {
         assert_eq!(
             sudoers_rule("alice").unwrap(),
-            "alice ALL=(root) NOPASSWD: /usr/sbin/networksetup -duplicatenetworkservice * Lenscout, /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout"
+            "alice ALL=(root) NOPASSWD: /usr/sbin/networksetup -duplicatenetworkservice * Lenscout, /usr/sbin/networksetup -setmanual Lenscout *, /usr/sbin/networksetup -removenetworkservice Lenscout, /usr/sbin/networksetup -ordernetworkservices *"
         );
         assert!(sudoers_rule("_svc.x-1").is_ok());
     }

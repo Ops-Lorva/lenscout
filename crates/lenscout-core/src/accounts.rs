@@ -54,6 +54,13 @@ fn is_host(ip: Ipv4Addr, prefix: u8) -> bool {
     prefix >= 31 || (ip & !mask != 0 && ip | mask != u32::MAX)
 }
 
+/// Adresse d'un appareil : ni 0.x, ni boucle locale, ni multicast, ni
+/// réservée (240/4, diffusion comprise).
+fn unicast(ip: Ipv4Addr) -> bool {
+    let first = ip.octets()[0];
+    first != 0 && !ip.is_loopback() && first < 224
+}
+
 /// Réseau `(adresse de réseau, préfixe)` contenant-il `ip` ?
 fn contains(net: (Ipv4Addr, u8), ip: Ipv4Addr) -> bool {
     let mask = mask_bits(net.1);
@@ -76,7 +83,8 @@ impl AccountNetwork {
             None => None,
             Some(s) => {
                 let (ip, prefix) = parse_cidr(s).ok_or(AccountError::InvalidPcIp)?;
-                if !is_host(ip, prefix) {
+                // /8 à /30 : un réseau de site, avec de la place pour les caméras.
+                if !(8..=30).contains(&prefix) || !unicast(ip) || !is_host(ip, prefix) {
                     return Err(AccountError::InvalidPcIp);
                 }
                 Some((ip, prefix))
@@ -96,7 +104,7 @@ impl AccountNetwork {
         }
         if let Some(g) = &gateway {
             let g: Ipv4Addr = g.parse().map_err(|_| AccountError::InvalidGateway)?;
-            if pc.is_some_and(|(ip, _)| ip == g) {
+            if !unicast(g) || pc.is_some_and(|(ip, _)| ip == g) {
                 return Err(AccountError::InvalidGateway);
             }
             if let Some(scope) = net.or(pc) {
@@ -115,8 +123,41 @@ impl AccountNetwork {
         })
     }
 
-    fn is_empty(&self) -> bool {
-        self.pc_ip.is_none() && self.network.is_none() && self.gateway.is_none()
+    fn fields(&self) -> [&Option<String>; 3] {
+        [&self.pc_ip, &self.network, &self.gateway]
+    }
+
+    /// Un champ présent dans `imported` diffère-t-il ? Un champ absent du
+    /// fichier ne compte pas : il ne vide jamais celui du carnet.
+    fn differs_from(&self, imported: &AccountNetwork) -> bool {
+        self.fields()
+            .into_iter()
+            .zip(imported.fields())
+            .any(|(mine, theirs)| theirs.is_some() && theirs != mine)
+    }
+
+    /// Les champs présents dans `imported` remplacent les miens, les autres restent.
+    fn merge(&mut self, imported: AccountNetwork) {
+        for (mine, theirs) in [
+            (&mut self.pc_ip, imported.pc_ip),
+            (&mut self.network, imported.network),
+            (&mut self.gateway, imported.gateway),
+        ] {
+            if theirs.is_some() {
+                *mine = theirs;
+            }
+        }
+    }
+
+    /// Lecture du carnet : un champ qui n'est pas une chaîne est ignoré
+    /// (jamais un carnet perdu pour un champ facultatif).
+    fn read_lenient(a: &serde_json::Value) -> AccountNetwork {
+        let field = |key: &str| a.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        AccountNetwork {
+            pc_ip: field("pc_ip"),
+            network: field("network"),
+            gateway: field("gateway"),
+        }
     }
 
     /// Champs présents ajoutés à un objet JSON (fichier, export).
@@ -462,7 +503,7 @@ fn classify(existing: &Entry, imported: &Imported) -> ImportKind {
         .as_ref()
         .is_some_and(|p| Some(p.expose()) != existing.password.as_ref().map(Secret::expose));
     // De même, un import sans champs réseau ne vide pas ceux du carnet.
-    let network_differs = !imported.net.is_empty() && imported.net != existing.account.net;
+    let network_differs = existing.account.net.differs_from(&imported.net);
     if login_differs || password_differs || network_differs {
         ImportKind::Differs {
             login_differs,
@@ -552,8 +593,7 @@ impl AccountBook {
                     id: field("id")?,
                     name: field("name")?,
                     login: text("login")?,
-                    net: AccountNetwork::read_from(a)
-                        .ok_or_else(|| io("champs réseau illisibles".into()))?,
+                    net: AccountNetwork::read_lenient(a),
                 },
                 password: Some(Secret::new(text("password")?)).filter(|p| !p.expose().is_empty()),
                 legacy: a["legacy"] == true,
@@ -763,9 +803,7 @@ impl AccountBook {
                     }
                     next[i].account.name = imp.name;
                     next[i].account.login = imp.login;
-                    if !imp.net.is_empty() {
-                        next[i].account.net = imp.net;
-                    }
+                    next[i].account.net.merge(imp.net);
                     if imp.password.is_some() {
                         next[i].password = imp.password;
                         next[i].legacy = false;
@@ -1016,6 +1054,54 @@ mod tests {
         ));
         assert!(net("192.168.1.250/24", "", "192.168.1.1").validated().is_ok());
         assert!(net("", "", "10.0.0.1").validated().is_ok());
+    }
+
+    #[test]
+    fn pc_ip_prefix_is_bounded_and_addresses_are_unicast() {
+        let err = |n: AccountNetwork| n.validated().unwrap_err();
+        for bad in ["10.0.0.250/7", "192.168.1.250/31", "192.168.1.250/32", "0.0.0.1/8", "224.0.0.5/24", "127.0.0.5/8", "255.255.255.254/30"] {
+            assert!(matches!(err(net(bad, "", "")), AccountError::InvalidPcIp), "{bad}");
+        }
+        for ok in ["10.0.0.250/8", "192.168.1.250/30"] {
+            assert!(net(ok, "", "").validated().is_ok(), "{ok}");
+        }
+        for bad in ["0.0.0.0", "255.255.255.255", "224.0.0.1", "127.0.0.1"] {
+            assert!(matches!(err(net("", "", bad)), AccountError::InvalidGateway), "{bad}");
+        }
+    }
+
+    #[test]
+    fn non_text_network_field_is_ignored_on_load() {
+        let fx = Fixture::new();
+        let file = serde_json::json!({"version": 2, "accounts": [{
+            "id": "1", "name": "A", "pc_ip": 42, "network": {"x": 1}, "gateway": "192.168.1.1",
+            "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes()),
+        }]});
+        std::fs::write(fx.path(), file.to_string()).unwrap();
+        let (book, startup) = load_or_quarantine(fx.path(), fx.store.clone());
+        assert!(matches!(startup, Startup::Clean));
+        assert_eq!(book.list()[0].net, net("", "", "192.168.1.1"));
+        assert_eq!(book.credentials("1").unwrap().password.expose(), PWD);
+    }
+
+    #[test]
+    fn partial_import_replaces_only_the_fields_it_carries() {
+        let (mut src, _fx_src) = empty_book();
+        src.create("Mairie", "root", pwd(PWD), net("192.168.1.240/24", "", ""))
+            .unwrap();
+        let data = src.export();
+        let (mut dst, _fx_dst) = empty_book();
+        dst.create("Mairie", "root", pwd(PWD), net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1"))
+            .unwrap();
+        let plan = dst.import_plan(&data).unwrap();
+        assert_eq!(
+            plan.items[0].kind,
+            ImportKind::Differs { login_differs: false, password_differs: false, network_differs: true }
+        );
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        assert_eq!(dst.list()[0].net, net("192.168.1.240/24", "192.168.1.0/24", "192.168.1.1"));
+        // Les seuls champs présents sont identiques : rien ne diffère.
+        assert_eq!(dst.import_plan(&data).unwrap().items[0].kind, ImportKind::Identical);
     }
 
     #[test]

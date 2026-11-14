@@ -37,7 +37,9 @@
     "elevation_refused": "Administrator rights denied",
     "temp_ip_busy": "Temporary IP already in use by another LenScout window",
     "temp_ip_failed": "Could not add the account IP to this computer",
-    "temp_ip_left": "The account IP is still on this computer; it will be removed on exit"
+    "temp_ip_left": "The account IP is still on this computer; it will be removed on exit",
+    "network_overlaps_other_iface": "This network is already used by another interface of this computer",
+    "join_lost": "The new IP could not be added and the previous one could not be restored: no account IP is left on this computer"
   },
   "scanning": "Searching on {iface}, {count} camera(s)",
   "account": "Account network",

@@ -37,7 +37,9 @@
     "elevation_refused": "Permisos de administrador denegados",
     "temp_ip_busy": "IP temporal ya en uso por otra ventana de LenScout",
     "temp_ip_failed": "No se pudo añadir la IP de la cuenta al equipo",
-    "temp_ip_left": "La IP de la cuenta sigue en el equipo; se quitará al cerrar"
+    "temp_ip_left": "La IP de la cuenta sigue en el equipo; se quitará al cerrar",
+    "network_overlaps_other_iface": "Esta red ya es la de otra interfaz del equipo",
+    "join_lost": "No se pudo añadir la nueva IP ni restablecer la anterior: ya no queda ninguna IP de cuenta en el equipo"
   },
   "scanning": "Buscando en {iface}, {count} cámara(s)",
   "account": "Red de la cuenta",

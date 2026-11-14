@@ -37,7 +37,9 @@
     "elevation_refused": "Droits administrateur refusés",
     "temp_ip_busy": "IP temporaire déjà en cours dans une autre fenêtre de LenScout",
     "temp_ip_failed": "Impossible de poser l'IP du compte sur le poste",
-    "temp_ip_left": "L'IP du compte est restée sur le poste ; elle sera retirée à la fermeture"
+    "temp_ip_left": "L'IP du compte est restée sur le poste ; elle sera retirée à la fermeture",
+    "network_overlaps_other_iface": "Ce réseau est déjà celui d'une autre interface du poste",
+    "join_lost": "La nouvelle IP n'a pas pu être posée et l'ancienne n'a pas pu être remise : plus aucune IP de compte sur le poste"
   },
   "scanning": "Recherche sur {iface}, {count} caméra(s)",
   "account": "Réseau du compte",

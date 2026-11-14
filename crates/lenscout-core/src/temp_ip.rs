@@ -316,6 +316,30 @@ impl Elevator for SystemElevator {
     }
 }
 
+/// macOS : le service dupliqué « Lenscout » porte un routeur (son adresse) ;
+/// il ne doit jamais devenir le service principal, sinon la route par défaut
+/// changerait. Après la pose, l'ordre des services est réécrit avec lui en
+/// dernier. `listing` = sortie de `networksetup -listallnetworkservices`
+/// lue AVANT la pose (première ligne d'explication, `*` = désactivé).
+/// Liste vide ou illisible : `cmds` inchangé.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn with_reorder(mut cmds: Vec<Vec<String>>, listing: &str) -> Vec<Vec<String>> {
+    let services: Vec<&str> = listing
+        .lines()
+        .filter(|l| !l.starts_with("An asterisk"))
+        .map(|l| l.trim().trim_start_matches('*'))
+        .filter(|l| !l.is_empty() && *l != MACOS_SERVICE)
+        .collect();
+    if services.is_empty() {
+        return cmds;
+    }
+    let mut order = vec!["-ordernetworkservices".to_string()];
+    order.extend(services.iter().map(|s| s.to_string()));
+    order.push(MACOS_SERVICE.to_string());
+    cmds.push(order);
+    cmds
+}
+
 fn is_add(plan: &ElevatedPlan) -> bool {
     match plan {
         ElevatedPlan::Networksetup(c) => c.iter().any(|a| a.first().is_some_and(|x| x == "-duplicatenetworkservice")),
@@ -326,9 +350,19 @@ fn is_add(plan: &ElevatedPlan) -> bool {
 
 #[cfg(target_os = "macos")]
 mod system {
-    use super::{ElevatedPlan, TempIpError, networksetup_shell};
+    use super::{ElevatedPlan, TempIpError, is_add, networksetup_shell, with_reorder};
     use crate::permissions::{applescript_shell, has_permissions, install_permissions};
     use crate::proc::sync_cmd;
+
+    /// Services réseau du poste, lus sans droits.
+    fn listing() -> String {
+        sync_cmd("/usr/sbin/networksetup")
+            .env("LC_ALL", "C")
+            .arg("-listallnetworkservices")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    }
 
     fn refused(stderr: &str) -> bool {
         stderr.contains("-128") || stderr.contains("User cancel")
@@ -349,6 +383,9 @@ mod system {
         let ElevatedPlan::Networksetup(cmds) = plan else {
             return Err(TempIpError::Invalid("plan d'un autre système".into()));
         };
+        // Une pose remet le service « Lenscout » en dernier (jamais principal).
+        // Un échec de cet ordre fait échouer la pose, qui est alors retirée.
+        let cmds = &if is_add(plan) { with_reorder(cmds.clone(), &listing()) } else { cmds.clone() };
         let removal = cmds.iter().any(|a| a.first().is_some_and(|x| x == "-removenetworkservice"));
         let gone = |err: &str| removal && err.contains("not a recognized network service");
         // Règle absente ou différente de l'attendue : une invite pour la
@@ -620,6 +657,8 @@ where
 #[derive(Debug)]
 pub struct HeldTempIp {
     t: TempIp,
+    /// Service d'origine (macOS) : sert à reposer l'adresse.
+    service: String,
     remove: ElevatedPlan,
     journal: PathBuf,
     // Relâché à la destruction (ou à la mort du processus).
@@ -631,12 +670,130 @@ impl HeldTempIp {
         &self.t
     }
 
-    /// Retire l'adresse. Échec : le journal reste pour le nettoyage suivant.
-    pub fn release(self, elev: &dyn Elevator) -> Result<(), TempIpError> {
-        elev.run(&self.remove)?;
+    /// Retire l'adresse. Échec (ou refus) : rien n'a changé, l'adresse
+    /// tenue est rendue avec l'erreur, journal et verrou compris.
+    pub fn release(self, elev: &dyn Elevator) -> Result<(), (Box<HeldTempIp>, TempIpError)> {
+        if let Err(e) = elev.run(&self.remove) {
+            return Err((Box::new(self), e));
+        }
         // Journal retiré avant le verrou (`_lock` part avec `self`).
         remove_journal(&self.journal);
         Ok(())
+    }
+
+    /// L'interface a disparu (adaptateur débranché) : l'adresse est partie
+    /// avec elle. Journal et verrou sont lâchés sans rien exécuter.
+    pub fn abandon(self) {
+        remove_journal(&self.journal);
+    }
+}
+
+/// Plan unique « retirer A puis poser B » (une seule invite) : Windows et
+/// Linux. macOS : `None`, le service dupliqué se retire puis se recrée en
+/// deux temps. Le script Windows s'arrête si A est encore là.
+pub fn switch_plan(os: OsKind, a: &TempIp, b: &TempIp, service_b: &str) -> Result<Option<ElevatedPlan>, TempIpError> {
+    Ok(match (remove_plan(os, a, &a.iface)?, add_plan(os, b, service_b)?) {
+        (ElevatedPlan::PowerShell(remove), ElevatedPlan::PowerShell(add)) => {
+            let remove = remove.strip_suffix("exit 0\n").unwrap_or(&remove).to_string();
+            let add = add.strip_prefix("$ErrorActionPreference = 'Stop'\n").unwrap_or(&add);
+            Some(ElevatedPlan::PowerShell(remove + add))
+        }
+        (ElevatedPlan::Nmcli(mut remove), ElevatedPlan::Nmcli(add)) => {
+            remove.extend(add);
+            Some(ElevatedPlan::Nmcli(remove))
+        }
+        _ => None,
+    })
+}
+
+/// Issue d'un changement A → B qui n'a pas abouti.
+#[derive(Debug)]
+pub enum SwitchFailure {
+    /// Rien n'a changé : A est toujours posée (refus, retrait impossible).
+    Kept(Box<HeldTempIp>, TempIpError),
+    /// A était retirée, B n'a pas pu être posée, A a été reposée.
+    Restored(Box<HeldTempIp>, TempIpError),
+    /// Ni B ni A : plus rien n'est posé ni tenu.
+    Lost(TempIpError),
+}
+
+/// Remplace l'adresse tenue A par B, sans jamais laisser croire à un état
+/// faux : voir `SwitchFailure`. Le journal porte B avant toute pose de B,
+/// A dès qu'elle est reposée.
+pub async fn switch_held(
+    elev: &dyn Elevator,
+    journal: &Path,
+    held: HeldTempIp,
+    b: &TempIp,
+    service_b: &str,
+) -> Result<HeldTempIp, SwitchFailure> {
+    switch_held_on(OsKind::current(), elev, journal, held, b, service_b).await
+}
+
+async fn switch_held_on(
+    os: OsKind,
+    elev: &dyn Elevator,
+    journal: &Path,
+    held: HeldTempIp,
+    b: &TempIp,
+    service_b: &str,
+) -> Result<HeldTempIp, SwitchFailure> {
+    let (add_b, remove_b) = match (add_plan(os, b, service_b), remove_plan(os, b, service_b)) {
+        (Ok(add), Ok(remove)) => (add, remove),
+        (Err(e), _) | (_, Err(e)) => return Err(SwitchFailure::Kept(Box::new(held), e)),
+    };
+    let combined = match switch_plan(os, &held.t, b, service_b) {
+        Ok(plan) => plan,
+        Err(e) => return Err(SwitchFailure::Kept(Box::new(held), e)),
+    };
+    let to_b = |held: HeldTempIp| HeldTempIp { t: b.clone(), service: service_b.to_string(), remove: remove_b.clone(), ..held };
+    let failed_b = match combined {
+        Some(plan) => {
+            if let Err(e) = write_journal(journal, b) {
+                return Err(SwitchFailure::Kept(Box::new(held), e));
+            }
+            match elev.run(&plan) {
+                Ok(()) => return Ok(to_b(held)),
+                Err(TempIpError::ElevationRefused) => {
+                    // Rien n'a été exécuté : A reste, le journal aussi.
+                    let _ = write_journal(journal, &held.t);
+                    return Err(SwitchFailure::Kept(Box::new(held), TempIpError::ElevationRefused));
+                }
+                Err(e) => {
+                    let _ = elev.run(&remove_b);
+                    e
+                }
+            }
+        }
+        None => {
+            if let Err(e) = elev.run(&held.remove) {
+                return Err(SwitchFailure::Kept(Box::new(held), e));
+            }
+            if let Err(e) = write_journal(journal, b) {
+                return restore(os, elev, journal, held, e);
+            }
+            match elev.run(&add_b) {
+                Ok(()) => return Ok(to_b(held)),
+                Err(TempIpError::ElevationRefused) => TempIpError::ElevationRefused,
+                Err(e) => {
+                    let _ = elev.run(&remove_b);
+                    e
+                }
+            }
+        }
+    };
+    restore(os, elev, journal, held, failed_b)
+}
+
+/// B n'a pas pu être posée après le retrait de A : on repose A.
+fn restore(os: OsKind, elev: &dyn Elevator, journal: &Path, held: HeldTempIp, why: TempIpError) -> Result<HeldTempIp, SwitchFailure> {
+    let _ = write_journal(journal, &held.t);
+    match add_plan(os, &held.t, &held.service).map(|add| elev.run(&add)) {
+        Ok(Ok(())) => Err(SwitchFailure::Restored(Box::new(held), why)),
+        _ => {
+            remove_journal(journal);
+            Err(SwitchFailure::Lost(why))
+        }
     }
 }
 
@@ -663,7 +820,7 @@ pub async fn hold_temp_ip(elev: &dyn Elevator, journal: &Path, t: &TempIp, servi
             return Err(e);
         }
     }
-    Ok(HeldTempIp { t: t.clone(), remove, journal: journal.to_path_buf(), _lock: lock })
+    Ok(HeldTempIp { t: t.clone(), service: service.to_string(), remove, journal: journal.to_path_buf(), _lock: lock })
 }
 
 /// L'interface vue par le scan, les actions et les adresses libres : celle
@@ -1226,10 +1383,153 @@ mod tests {
         let elev = FakeElevator::replying(vec![Ok(()), Err(TempIpError::Failed("x".into()))]);
         let (j, t) = (journal(), joined());
         let held = hold_temp_ip(&elev, &j, &t, "eth0").await.unwrap();
-        assert!(held.release(&elev).is_err());
+        let (held, err) = held.release(&elev).unwrap_err();
+        assert_eq!(err, TempIpError::Failed("x".into()));
+        // L'adresse reste tenue : journal et verrou gardés.
+        assert_eq!(held.temp(), &t);
         assert_eq!(read_journal(&j).unwrap(), Some(t.clone()));
-        assert_eq!(cleanup_leftover(&elev, &j), Ok(Some(t)));
+        let r = with_temp_ip(&elev, &j, &tmp("eth0"), "eth0", || async { unreachable!() }).await;
+        assert_eq!(r, Err(TempIpError::Busy));
+        held.release(&elev).unwrap();
+        assert!(!j.exists());
     }
+
+    #[tokio::test]
+    async fn abandon_drops_journal_and_lock_without_elevation() {
+        // Interface disparue (adaptateur USB débranché) : rien à retirer.
+        let (elev, j, t) = (FakeElevator::new(), journal(), joined());
+        let held = hold_temp_ip(&elev, &j, &t, "eth0").await.unwrap();
+        held.abandon();
+        assert!(!j.exists());
+        assert_eq!(elev.plans().len(), 1, "aucun retrait élevé");
+        assert_eq!(with_temp_ip(&elev, &j, &tmp("eth0"), "eth0", || async { 4 }).await, Ok(4));
+    }
+
+    // ---- Changement de compte : retirer A, poser B ----
+
+    fn other() -> TempIp {
+        TempIp { iface: "eth0".into(), ip: ip("10.20.0.250"), mask: ip("255.255.0.0") }
+    }
+
+    #[test]
+    fn switch_plan_is_one_elevation_on_windows_and_linux() {
+        let (a, b) = (joined(), other());
+        let Some(ElevatedPlan::PowerShell(script)) = switch_plan(OsKind::Windows, &a, &b, "eth0").unwrap() else {
+            panic!("un seul script PowerShell attendu");
+        };
+        let del = script.find("delete address name=\"eth0\" address=192.168.1.250").unwrap();
+        let check = script.find("if (Get-NetIPAddress -IPAddress 192.168.1.250").unwrap();
+        let add = script.find("add address name=\"eth0\" address=10.20.0.250 mask=255.255.0.0").unwrap();
+        assert!(del < check && check < add, "A retirée et vérifiée avant de poser B");
+        assert_eq!(script.matches("exit 0").count(), 1);
+        let Some(ElevatedPlan::Nmcli(cmds)) = switch_plan(OsKind::Linux, &a, &b, "eth0").unwrap() else {
+            panic!("nmcli attendu");
+        };
+        assert_eq!(cmds[0].last().unwrap(), "192.168.1.250/24");
+        assert_eq!(cmds[0][3], "-ipv4.addresses");
+        assert_eq!(cmds[1][3], "+ipv4.addresses");
+        assert_eq!(cmds[1].last().unwrap(), "10.20.0.250/16");
+        // macOS : deux temps (service dupliqué à recréer).
+        assert_eq!(switch_plan(OsKind::Macos, &a, &b, "Ethernet").unwrap(), None);
+    }
+
+    async fn switching(os: OsKind, replies: Vec<Result<(), TempIpError>>) -> (FakeElevator, crate::testing::UncreatedFile, Result<HeldTempIp, SwitchFailure>) {
+        let (j, a) = (journal(), joined());
+        let setup = FakeElevator::new();
+        let held = hold_temp_ip(&setup, &j, &a, "eth0").await.unwrap();
+        let elev = FakeElevator::replying(replies);
+        let r = switch_held_on(os, &elev, &j, held, &other(), "eth0").await;
+        (elev, j, r)
+    }
+
+    #[tokio::test]
+    async fn combined_switch_poses_b() {
+        let (elev, j, r) = switching(OsKind::Linux, vec![]).await;
+        assert_eq!(r.unwrap().temp(), &other());
+        assert_eq!(elev.plans(), vec![switch_plan(OsKind::Linux, &joined(), &other(), "eth0").unwrap().unwrap()]);
+        assert_eq!(read_journal(&j).unwrap(), Some(other()));
+    }
+
+    #[tokio::test]
+    async fn combined_switch_refused_keeps_a() {
+        let (elev, j, r) = switching(OsKind::Linux, vec![Err(TempIpError::ElevationRefused)]).await;
+        let Err(SwitchFailure::Kept(held, TempIpError::ElevationRefused)) = r else { panic!("{r:?}") };
+        assert_eq!(held.temp(), &joined());
+        assert_eq!(elev.plans().len(), 1);
+        assert_eq!(read_journal(&j).unwrap(), Some(joined()));
+    }
+
+    #[tokio::test]
+    async fn combined_switch_failure_restores_a() {
+        let (elev, j, r) = switching(OsKind::Linux, vec![Err(TempIpError::Failed("b".into()))]).await;
+        let Err(SwitchFailure::Restored(held, TempIpError::Failed(_))) = r else { panic!("{r:?}") };
+        assert_eq!(held.temp(), &joined());
+        let os = OsKind::Linux;
+        assert_eq!(
+            elev.plans(),
+            vec![
+                switch_plan(os, &joined(), &other(), "eth0").unwrap().unwrap(),
+                remove_plan(os, &other(), "eth0").unwrap(),
+                add_plan(os, &joined(), "eth0").unwrap(),
+            ]
+        );
+        assert_eq!(read_journal(&j).unwrap(), Some(joined()));
+    }
+
+    #[tokio::test]
+    async fn switch_that_cannot_restore_a_is_lost_and_frees_everything() {
+        let fail = || Err(TempIpError::Failed("x".into()));
+        let (elev, j, r) = switching(OsKind::Linux, vec![fail(), fail(), fail()]).await;
+        assert!(matches!(r, Err(SwitchFailure::Lost(TempIpError::Failed(_)))), "{r:?}");
+        assert!(!j.exists());
+        assert_eq!(with_temp_ip(&elev, &j, &tmp("eth0"), "eth0", || async { 1 }).await, Ok(1));
+    }
+
+    #[tokio::test]
+    async fn sequential_switch_refused_removal_keeps_a() {
+        let (elev, j, r) = switching(OsKind::Macos, vec![Err(TempIpError::ElevationRefused)]).await;
+        assert!(matches!(r, Err(SwitchFailure::Kept(_, TempIpError::ElevationRefused))), "{r:?}");
+        // Le retrait de A est celui de sa pose (système courant).
+        assert_eq!(elev.plans(), vec![remove_plan(os(), &joined(), "eth0").unwrap()]);
+        assert_eq!(read_journal(&j).unwrap(), Some(joined()));
+    }
+
+    #[tokio::test]
+    async fn sequential_switch_poses_b_after_removing_a() {
+        let os = OsKind::Macos;
+        let (elev, j, r) = switching(os, vec![]).await;
+        assert_eq!(r.unwrap().temp(), &other());
+        assert_eq!(elev.plans(), vec![remove_plan(OsKind::current(), &joined(), "eth0").unwrap(), add_plan(os, &other(), "eth0").unwrap()]);
+        assert_eq!(read_journal(&j).unwrap(), Some(other()));
+    }
+
+    #[tokio::test]
+    async fn sequential_switch_refused_add_puts_a_back() {
+        let os = OsKind::Macos;
+        let (elev, j, r) = switching(os, vec![Ok(()), Err(TempIpError::ElevationRefused)]).await;
+        assert!(matches!(r, Err(SwitchFailure::Restored(_, TempIpError::ElevationRefused))), "{r:?}");
+        // Refus : rien à retirer de B.
+        assert_eq!(
+            elev.plans(),
+            vec![remove_plan(OsKind::current(), &joined(), "eth0").unwrap(), add_plan(os, &other(), "eth0").unwrap(), add_plan(os, &joined(), "eth0").unwrap()]
+        );
+        assert_eq!(read_journal(&j).unwrap(), Some(joined()));
+    }
+
+    #[test]
+    fn macos_reorder_puts_the_duplicated_service_last() {
+        let listing = "An asterisk (*) denotes that a network service is disabled.\nUSB 10/100/1000 LAN\n*Thunderbolt Bridge\nLenscout\nWi-Fi\n";
+        let cmds = vec![args(&["-duplicatenetworkservice", "USB 10/100/1000 LAN", "Lenscout"])];
+        let out = with_reorder(cmds.clone(), listing);
+        assert_eq!(out[0], cmds[0]);
+        assert_eq!(
+            out[1],
+            args(&["-ordernetworkservices", "USB 10/100/1000 LAN", "Thunderbolt Bridge", "Wi-Fi", "Lenscout"])
+        );
+        // Liste illisible : pas de réordonnancement inventé.
+        assert_eq!(with_reorder(cmds.clone(), ""), cmds);
+    }
+
 
     #[test]
     fn joined_scope_replaces_the_interface_address() {
