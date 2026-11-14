@@ -33,10 +33,20 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Credentials {
     pub login: String,
     pub password: Secret,
+}
+
+// Ni l'identifiant ni le mot de passe ne sortent dans un journal.
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("login", &"***")
+            .field("password", &self.password)
+            .finish()
+    }
 }
 
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, NetError>> + Send>>;

@@ -11,11 +11,22 @@ use crate::transport::Credentials;
 
 /// Métadonnées d'un compte. Le mot de passe n'y figure pas : il vit dans le
 /// carnet, scellé dans le fichier (voir `seal`).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct Account {
     pub id: String,
     pub name: String,
     pub login: String,
+}
+
+// L'identifiant est scellé dans le fichier : il n'apparaît pas non plus dans les journaux.
+impl fmt::Debug for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Account")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("login", &"***")
+            .finish()
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -124,11 +135,16 @@ struct Entry {
     account: Account,
     // Absent : compte à ressaisir (« Mot de passe à ressaisir »).
     password: Option<Secret>,
+    // Repris de l'ancien format sans son secret : on le redemande au trousseau
+    // à chaque lancement tant que le compte n'a pas de mot de passe.
+    legacy: bool,
 }
 
 pub struct AccountBook {
     path: PathBuf,
     entries: Vec<Entry>,
+    // Ancien trousseau : repris au chargement, vidé du compte à la suppression.
+    store: Arc<dyn SecretStore>,
     // Carnet en mémoire seule : toute écriture échoue (voir `load_or_quarantine`).
     read_only: bool,
 }
@@ -147,7 +163,7 @@ pub enum Startup {
 /// écrasé : on le renomme (jamais supprimé) et on repart d'un carnet vide.
 /// Si même le renommage échoue, le carnet reste en mémoire seule.
 pub fn load_or_quarantine(path: PathBuf, store: Arc<dyn SecretStore>) -> (AccountBook, Startup) {
-    if let Ok(book) = AccountBook::load(path.clone(), store) {
+    if let Ok(book) = AccountBook::load(path.clone(), store.clone()) {
         return (book, Startup::Clean);
     }
     let stamp = std::time::SystemTime::now()
@@ -160,6 +176,7 @@ pub fn load_or_quarantine(path: PathBuf, store: Arc<dyn SecretStore>) -> (Accoun
     let mut book = AccountBook {
         path: path.clone(),
         entries: Vec::new(),
+        store,
         read_only: false,
     };
     if std::fs::rename(&path, &moved).is_ok() {
@@ -174,7 +191,7 @@ impl fmt::Debug for AccountBook {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AccountBook")
             .field("path", &self.path)
-            .field("accounts", &self.list())
+            .field("accounts", &self.entries.len())
             .finish_non_exhaustive()
     }
 }
@@ -226,6 +243,19 @@ struct Imported {
     password: Option<Secret>,
 }
 
+/// Crée le fichier lisible par l'utilisateur seul (0600) sous Unix.
+fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(data)
+}
+
 const EXPORT_FORMAT: &str = "lenscout-accounts";
 
 fn open_text(sealed: &str) -> Option<String> {
@@ -249,6 +279,12 @@ fn parse_import(data: &str) -> Result<Vec<Imported>, AccountError> {
             )),
         };
         if name.is_empty() || login.is_empty() {
+            return Err(invalid());
+        }
+        if out
+            .iter()
+            .any(|o: &Imported| o.name.to_lowercase() == name.to_lowercase())
+        {
             return Err(invalid());
         }
         out.push(Imported {
@@ -296,6 +332,7 @@ impl AccountBook {
         let mut book = AccountBook {
             path,
             entries: Vec::new(),
+            store,
             read_only: false,
         };
         let raw = match std::fs::read(&book.path) {
@@ -303,17 +340,25 @@ impl AccountBook {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(book),
             Err(e) => return Err(io(e.to_string())),
         };
-        let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| io(e.to_string()))?;
+        // Messages fixes : un message de serde peut citer le contenu du fichier.
+        let v: serde_json::Value =
+            serde_json::from_slice(&raw).map_err(|_| io("JSON illisible".into()))?;
         if v.is_array() {
-            let legacy: Vec<Account> = serde_json::from_value(v).map_err(|e| io(e.to_string()))?;
+            let legacy: Vec<Account> =
+                serde_json::from_value(v).map_err(|_| io("ancien format illisible".into()))?;
             let mut complete = true;
             for account in legacy {
-                let password = store
+                let password = book
+                    .store
                     .get(&account.id)
                     .ok()
                     .filter(|p| !p.expose().is_empty());
                 complete &= password.is_some();
-                book.entries.push(Entry { account, password });
+                book.entries.push(Entry {
+                    legacy: password.is_none(),
+                    account,
+                    password,
+                });
             }
             if complete {
                 // Réécriture ratée (dossier en lecture seule) : on garde le carnet en mémoire.
@@ -324,6 +369,7 @@ impl AccountBook {
         if v["version"] != 2 {
             return Err(io("version de fichier inconnue".into()));
         }
+        let mut recovered = false;
         for a in v["accounts"]
             .as_array()
             .ok_or_else(|| io("comptes absents".into()))?
@@ -340,14 +386,29 @@ impl AccountBook {
                     .map(str::to_string)
                     .ok_or_else(|| io(format!("{key} absent")))
             };
-            book.entries.push(Entry {
+            let mut entry = Entry {
                 account: Account {
                     id: field("id")?,
                     name: field("name")?,
                     login: text("login")?,
                 },
                 password: Some(Secret::new(text("password")?)).filter(|p| !p.expose().is_empty()),
-            });
+                legacy: a["legacy"] == true,
+            };
+            // Compte repris sans secret : le trousseau a peut-être répondu depuis.
+            let again = (entry.legacy && entry.password.is_none())
+                .then(|| book.store.get(&entry.account.id).ok())
+                .flatten()
+                .filter(|p| !p.expose().is_empty());
+            if let Some(p) = again {
+                entry.password = Some(p);
+                entry.legacy = false;
+                recovered = true;
+            }
+            book.entries.push(entry);
+        }
+        if recovered {
+            let _ = book.write(&book.entries);
         }
         Ok(book)
     }
@@ -385,6 +446,7 @@ impl AccountBook {
         next.push(Entry {
             account: account.clone(),
             password: Some(password),
+            legacy: false,
         });
         self.write(&next)?;
         self.entries = next;
@@ -423,6 +485,7 @@ impl AccountBook {
         next[index].account = account.clone();
         if password.is_some() {
             next[index].password = password;
+            next[index].legacy = false;
         }
         self.write(&next)?;
         self.entries = next;
@@ -435,6 +498,9 @@ impl AccountBook {
         next.remove(index);
         self.write(&next)?;
         self.entries = next;
+        // Suppression voulue : l'ancien trousseau est nettoyé aussi (la
+        // reprise, elle, ne supprime rien). Échec sans conséquence.
+        let _ = self.store.delete(id);
         Ok(())
     }
 
@@ -505,6 +571,7 @@ impl AccountBook {
                     login: imp.login,
                 },
                 password: imp.password,
+                legacy: false,
             };
             let Some(i) = position_of(&next, &imp.name) else {
                 next.push(fresh(imp.name.clone(), imp));
@@ -521,6 +588,7 @@ impl AccountBook {
                     next[i].account.login = imp.login;
                     if imp.password.is_some() {
                         next[i].password = imp.password;
+                        next[i].legacy = false;
                     }
                     summary.replaced += 1;
                 }
@@ -567,12 +635,16 @@ impl AccountBook {
         let accounts: Vec<_> = entries
             .iter()
             .map(|e| {
-                serde_json::json!({
+                let mut a = serde_json::json!({
                     "id": e.account.id,
                     "name": e.account.name,
                     "login": seal::seal(e.account.login.as_bytes()),
                     "password": seal::seal(e.password.as_ref().map_or("", Secret::expose).as_bytes()),
-                })
+                });
+                if e.legacy && e.password.is_none() {
+                    a["legacy"] = true.into();
+                }
+                a
             })
             .collect();
         let json = serde_json::to_vec_pretty(&serde_json::json!({
@@ -584,7 +656,7 @@ impl AccountBook {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json).map_err(io)?;
+        write_private(&tmp, &json).map_err(io)?;
         std::fs::rename(&tmp, &self.path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             io(e)
@@ -1158,5 +1230,118 @@ mod tests {
             Err(AccountError::Io(_))
         ));
         assert!(book.list().is_empty());
+    }
+
+    // ---- Ronde 1 ----
+
+    #[test]
+    fn legacy_account_is_recovered_once_keyring_answers() {
+        let fx = Fixture::new();
+        fx.write_v1(&[("id-1", "Mairie", "root")]);
+        // Trousseau vide au démarrage, puis l'utilisateur crée un autre compte.
+        let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
+        book.create("Gare", "admin", pwd("Autre-1")).unwrap();
+        assert!(fx.raw().contains("\"legacy\": true"));
+        fx.store.set("id-1", &pwd(PWD)).unwrap();
+        let (book, _) = load_or_quarantine(fx.path(), fx.store.clone());
+        assert_eq!(book.credentials("id-1").unwrap().password.expose(), PWD);
+        assert!(!fx.raw().contains("legacy"));
+        assert_eq!(
+            book.credentials(&book.list()[1].id)
+                .unwrap()
+                .password
+                .expose(),
+            "Autre-1"
+        );
+    }
+
+    #[test]
+    fn legacy_marker_cleared_when_password_entered() {
+        let fx = Fixture::new();
+        fx.write_v1(&[("id-1", "Mairie", "root")]);
+        let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
+        book.create("Gare", "admin", pwd("x")).unwrap();
+        book.update("id-1", "Mairie", "root", Some(pwd("Neuf-1")))
+            .unwrap();
+        assert!(!fx.raw().contains("legacy"));
+        // Le trousseau, même rempli plus tard, ne remplace pas le mot de passe saisi.
+        fx.store.set("id-1", &pwd(PWD)).unwrap();
+        assert_eq!(
+            fx.book().credentials("id-1").unwrap().password.expose(),
+            "Neuf-1"
+        );
+    }
+
+    #[test]
+    fn needing_password_account_reloads_from_v2_without_secret() {
+        let fx = Fixture::new();
+        fx.write_v1(&[("id-1", "Mairie", "root")]);
+        let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
+        book.create("Gare", "admin", pwd("x")).unwrap();
+        let book = fx.book();
+        assert!(!book.has_secret("id-1"));
+        assert!(matches!(
+            book.credentials("id-1"),
+            Err(AccountError::SecretMissing)
+        ));
+    }
+
+    #[test]
+    fn import_rejects_names_repeated_ignoring_case() {
+        let mut book = sample_book();
+        let before = book.list();
+        let one = |name: &str| serde_json::json!({"name": name, "login": seal::seal(b"root")});
+        let data = serde_json::json!({
+            "format": "lenscout-accounts", "version": 1,
+            "accounts": [one("Gare Nord"), one("gare nord")],
+        })
+        .to_string();
+        assert!(matches!(
+            book.import_plan(&data),
+            Err(AccountError::ImportInvalid)
+        ));
+        assert!(matches!(
+            book.import_apply(&data, &HashMap::new()),
+            Err(AccountError::ImportInvalid)
+        ));
+        assert_eq!(book.list(), before);
+    }
+
+    #[test]
+    fn remove_also_cleans_keyring_entry() {
+        let fx = Fixture::new();
+        fx.write_v1(&[("id-1", "Mairie", "root")]);
+        fx.store.set("id-1", &pwd(PWD)).unwrap();
+        let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
+        book.remove("id-1").unwrap();
+        assert!(matches!(fx.store.get("id-1"), Err(AccountError::NotFound)));
+    }
+
+    #[test]
+    fn debug_never_shows_login() {
+        let mut book = empty_book();
+        let acc = book.create("A", "root-unique", pwd(PWD)).unwrap();
+        let creds = book.credentials(&acc.id).unwrap();
+        let out = format!("{book:?} {acc:?} {creds:?}");
+        assert!(!out.contains("root-unique") && !out.contains("S3cr3t"));
+    }
+
+    #[test]
+    fn corrupt_v1_error_does_not_echo_content() {
+        let fx = Fixture::new();
+        std::fs::write(fx.path(), br#"["Secret-Nom-Unique"]"#).unwrap();
+        let err = AccountBook::load(fx.path(), fx.store.clone()).unwrap_err();
+        assert!(!err.to_string().contains("Secret-Nom-Unique"));
+        assert!(!format!("{err:?}").contains("login"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn account_file_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fixture::new();
+        fx.book().create("A", "root", pwd(PWD)).unwrap();
+        let mode = std::fs::metadata(fx.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }
