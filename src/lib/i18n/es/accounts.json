@@ -35,7 +35,7 @@
     "missing_mask": "Falta la máscara (p. ej. /24)",
     "invalid_gateway": "Puerta de enlace no válida",
     "gateway_outside_network": "La puerta de enlace no está en la red",
-    "invalid_exclusions": "IP excluidas ilegibles (p. ej. 192.168.1.2-192.168.1.9, 192.168.1.100)"
+    "invalid_exclusions": "IP excluidas ilegibles (p. ej. 192.168.1.2-9, 192.168.1.100)"
   },
   "notice": {
     "quarantined": "Archivo de cuentas ilegible, apartado",

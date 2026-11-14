@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(json[0]["pc_ip"], "192.168.1.250/24");
         assert_eq!(json[0]["network"], "192.168.1.0/24");
         assert_eq!(json[0]["gateway"], "192.168.1.1");
-        assert_eq!(json[0]["exclusions"], "192.168.1.2-192.168.1.9");
+        assert_eq!(json[0]["exclusions"], "192.168.1.2-9");
         let (path, _g_path) = temp_file("n.lenscout");
         accounts_export(&src, &path).unwrap();
         let (mut dst, _g_dst) = book();

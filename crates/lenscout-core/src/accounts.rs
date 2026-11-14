@@ -43,7 +43,8 @@ pub struct AccountNetwork {
 
 /// Adresses qu'un site réserve (NVR, serveur, plage d'un autre installateur) :
 /// la recherche d'IP libres et le plan en lot n'y touchent jamais. Saisies
-/// comme `192.168.1.10, 192.168.1.20-192.168.1.29`, virgules ou espaces.
+/// comme `192.168.1.10, 192.168.1.20-192.168.1.29` ou en forme courte
+/// `192.168.1.20-29` (la fin = dernier octet), virgules ou espaces.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Exclusions(Vec<(u32, u32)>);
 
@@ -68,7 +69,12 @@ impl Exclusions {
         let mut out = Vec::new();
         for item in compact.split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()) {
             let (first, last) = item.split_once('-').unwrap_or((item, item));
-            let (first, last) = (u32::from(first.parse::<Ipv4Addr>().ok()?), u32::from(last.parse::<Ipv4Addr>().ok()?));
+            let first = u32::from(first.parse::<Ipv4Addr>().ok()?);
+            // Forme courte `10.0.20.2-10` : la fin ne donne que le dernier octet.
+            let last = match last.parse::<u8>() {
+                Ok(octet) if last.bytes().all(|b| b.is_ascii_digit()) => (first & !0xff) | u32::from(octet),
+                _ => u32::from(last.parse::<Ipv4Addr>().ok()?),
+            };
             if first > last {
                 return None;
             }
@@ -99,6 +105,8 @@ impl Exclusions {
             .iter()
             .map(|&(first, last)| match first == last {
                 true => Ipv4Addr::from(first).to_string(),
+                // Même /24 : forme courte `a.b.c.d-N`, comme on la saisit.
+                false if first >> 8 == last >> 8 => format!("{}-{}", Ipv4Addr::from(first), last & 0xff),
                 false => format!("{}-{}", Ipv4Addr::from(first), Ipv4Addr::from(last)),
             })
             .collect();
@@ -1140,8 +1148,22 @@ mod tests {
     }
 
     #[test]
+    fn exclusions_read_the_short_form_with_the_last_octet() {
+        let e = Exclusions::parse("10.0.20.2-10,10.0.20.100-150,10.0.20.199").unwrap();
+        for yes in ["10.0.20.2", "10.0.20.6", "10.0.20.10", "10.0.20.100", "10.0.20.150", "10.0.20.199"] {
+            assert!(e.contains(ip(yes)), "{yes}");
+        }
+        for no in ["10.0.20.1", "10.0.20.11", "10.0.20.99", "10.0.20.151", "10.0.20.198", "10.0.21.5"] {
+            assert!(!e.contains(ip(no)), "{no}");
+        }
+        // Une plage sur plusieurs /24 garde la forme longue.
+        let n = with_exclusions(no_net(), "10.0.20.250-10.0.21.5, 10.0.20.2-10.0.20.10");
+        assert_eq!(n.validated().unwrap().exclusions.as_deref(), Some("10.0.20.250-10.0.21.5, 10.0.20.2-10"));
+    }
+
+    #[test]
     fn unreadable_exclusions_are_refused() {
-        for bad in ["x", "192.168.1", "192.168.1.300", "192.168.1.20-192.168.1.10", "192.168.1.1-", "-192.168.1.1", "1.2.3.4-5-6", "10.0.0.0/24"] {
+        for bad in ["x", "192.168.1", "192.168.1.300", "192.168.1.100-50", "192.168.1.2-256", "192.168.1.2-+5", "192.168.1.20-192.168.1.10", "192.168.1.1-", "-192.168.1.1", "1.2.3.4-5-6", "10.0.0.0/24"] {
             assert!(Exclusions::parse(bad).is_none(), "{bad}");
             assert!(
                 matches!(
@@ -1158,7 +1180,7 @@ mod tests {
         let n = with_exclusions(no_net(), "  192.168.1.10   192.168.1.20 - 192.168.1.25 ,192.168.1.30 ");
         assert_eq!(
             n.validated().unwrap().exclusions.as_deref(),
-            Some("192.168.1.10, 192.168.1.20-192.168.1.25, 192.168.1.30")
+            Some("192.168.1.10, 192.168.1.20-25, 192.168.1.30")
         );
         // Vide ou blanc : champ absent.
         assert_eq!(with_exclusions(no_net(), " , ").validated().unwrap().exclusions, None);
@@ -1170,7 +1192,7 @@ mod tests {
         let mut book = fx.book();
         let wanted = with_exclusions(net("192.168.1.250/24", "", "192.168.1.1"), "192.168.1.10-192.168.1.19");
         let acc = book.create("Mairie", "root", pwd(PWD), wanted).unwrap();
-        assert!(fx.raw().contains("\"exclusions\": \"192.168.1.10-192.168.1.19\""));
+        assert!(fx.raw().contains("\"exclusions\": \"192.168.1.10-19\""));
         assert_eq!(fx.book().list()[0].net, acc.net);
         assert!(acc.net.excluded().contains(ip("192.168.1.15")));
     }
@@ -1197,7 +1219,7 @@ mod tests {
         let full = with_exclusions(net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1"), "192.168.1.2-192.168.1.9");
         src.create("Mairie", "root", pwd(PWD), full.clone()).unwrap();
         let data = src.export();
-        assert!(data.contains("\"exclusions\": \"192.168.1.2-192.168.1.9\""));
+        assert!(data.contains("\"exclusions\": \"192.168.1.2-9\""));
         let (mut dst, _fx_dst) = empty_book();
         dst.import_apply(&data, &HashMap::new()).unwrap();
         assert_eq!(dst.list()[0].net, full);
