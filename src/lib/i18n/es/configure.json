@@ -62,7 +62,7 @@
   "cleartext_confirm": "HTTPS no disponible: ¿enviar la contraseña sin cifrar a {ip}?",
   "cleartext_send": "Enviar sin cifrar",
   "reset": {
-    "button": "Restablecer…",
+    "button": "Restablecer",
     "title": "Restablecimiento de fábrica",
     "mode": "Modo",
     "keep_ip": "Conservar la IP",

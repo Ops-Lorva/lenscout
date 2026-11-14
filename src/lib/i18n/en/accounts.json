@@ -43,8 +43,8 @@
     "migration_incomplete": "Previous settings not fully carried over, retrying at next launch"
   },
   "resecret": "Password to re-enter",
-  "import": "Import…",
-  "export": "Export…",
+  "import": "Import",
+  "export": "Export",
   "exported": "{count, plural, one {# account exported} other {# accounts exported}}",
   "exportedIn": "to {path}",
   "imported": "{count, plural, one {# account imported} other {# accounts imported}}",

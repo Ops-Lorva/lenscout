@@ -43,8 +43,8 @@
     "migration_incomplete": "Anciens réglages pas entièrement repris, nouvel essai au prochain lancement"
   },
   "resecret": "Mot de passe à ressaisir",
-  "import": "Importer…",
-  "export": "Exporter…",
+  "import": "Importer",
+  "export": "Exporter",
   "exported": "{count, plural, one {# compte exporté} other {# comptes exportés}}",
   "exportedIn": "dans {path}",
   "imported": "{count, plural, one {# compte importé} other {# comptes importés}}",

@@ -49,7 +49,7 @@
   "account": "Réseau du compte",
   "dhcp": "DHCP",
   "deletedAccount": "Compte supprimé",
-  "posing": "IP en cours de pose…",
+  "posing": "IP en cours de pose",
   "addressing": {
     "dhcp": "DHCP",
     "static": "IP fixe",

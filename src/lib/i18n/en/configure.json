@@ -62,7 +62,7 @@
   "cleartext_confirm": "HTTPS unavailable: send the password in cleartext to {ip}?",
   "cleartext_send": "Send in cleartext",
   "reset": {
-    "button": "Factory reset…",
+    "button": "Factory reset",
     "title": "Factory reset",
     "mode": "Mode",
     "keep_ip": "Keep the IP",

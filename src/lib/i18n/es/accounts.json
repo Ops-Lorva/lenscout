@@ -43,8 +43,8 @@
     "migration_incomplete": "Ajustes anteriores no recuperados del todo, se reintentará en el próximo inicio"
   },
   "resecret": "Contraseña por volver a introducir",
-  "import": "Importar…",
-  "export": "Exportar…",
+  "import": "Importar",
+  "export": "Exportar",
   "exported": "{count, plural, one {# cuenta exportada} other {# cuentas exportadas}}",
   "exportedIn": "en {path}",
   "imported": "{count, plural, one {# cuenta importada} other {# cuentas importadas}}",

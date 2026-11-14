@@ -62,7 +62,7 @@
   "cleartext_confirm": "HTTPS indisponible : envoyer le mot de passe en clair à {ip} ?",
   "cleartext_send": "Envoyer en clair",
   "reset": {
-    "button": "Réinitialiser…",
+    "button": "Réinitialiser",
     "title": "Réinitialisation d'usine",
     "mode": "Mode",
     "keep_ip": "Garder l'IP",

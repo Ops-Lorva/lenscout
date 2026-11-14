@@ -49,7 +49,7 @@
   "account": "Account network",
   "dhcp": "DHCP",
   "deletedAccount": "Deleted account",
-  "posing": "Setting the IP…",
+  "posing": "Setting the IP",
   "addressing": {
     "dhcp": "DHCP",
     "static": "Static IP",
