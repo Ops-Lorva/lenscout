@@ -1,5 +1,8 @@
-import { expect, test } from 'vitest';
-import { FramePresenter } from './stream';
+import { expect, test, vi } from 'vitest';
+
+const invoke = vi.hoisted(() => vi.fn());
+vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
+import { FramePresenter, identifyCamera } from './stream';
 
 function setup() {
   const shown: (string | null)[] = [];
@@ -63,4 +66,10 @@ test('chaque image poussée est acquittée une fois : affichée ou abandonnée',
   p.dispose();
   p.push(buf(4)); // fermé : abandonnée aussitôt
   expect(handled()).toBe(4);
+});
+
+test('IP saisie dans Cadrage : Rust l’identifie avec le compte choisi', async () => {
+  invoke.mockResolvedValue({ ip: '192.168.1.64' });
+  await identifyCamera(' 192.168.1.64 ', 'acc');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_identify_camera', { ip: '192.168.1.64', accountId: 'acc' });
 });

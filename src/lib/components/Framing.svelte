@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { _ } from 'svelte-i18n';
   import { errorKey } from '$lib/api/errors';
-  import { ackFrame, FramePresenter, startStream, stopStream } from '$lib/api/stream';
+  import { ackFrame, FramePresenter, identifyCamera, startStream, stopStream } from '$lib/api/stream';
   import { framingTarget } from '$lib/stores/nav';
   import AccountPicker from './AccountPicker.svelte';
 
@@ -22,6 +22,26 @@
     () => void ackFrame().catch(() => {}),
   );
   const cam = $derived($framingTarget);
+
+  // IP saisie : Rust identifie la caméra (même garde que le flux), qui
+  // devient la cible comme si elle venait de Réseau, puis la lecture part.
+  let typedIp = $state('');
+  let identifying = $state(false);
+  async function openTyped() {
+    if (!typedIp.trim() || !accountId || identifying) return;
+    identifying = true;
+    error = '';
+    try {
+      const found = await identifyCamera(typedIp, accountId);
+      framingTarget.set(found);
+      await tick();
+      void play();
+    } catch (e) {
+      error = $_(`framing.${errorKey(e)}`);
+    } finally {
+      identifying = false;
+    }
+  }
 
   async function play() {
     if (!cam || !accountId) return;
@@ -77,21 +97,32 @@
   });
 </script>
 
-{#if !cam}
-  <div class="none">{$_('framing.none')}</div>
-{:else}
-  <div class="fbar">
+<div class="fbar">
+  <form class="byip" onsubmit={(e) => { e.preventDefault(); void openTyped(); }}>
+    <input type="text" bind:value={typedIp} placeholder="192.168.1.64" aria-label={$_('framing.ip')}
+      inputmode="decimal" autocomplete="off" spellcheck="false" />
+    <button class="btn" type="submit" disabled={!typedIp.trim() || !accountId || identifying}>
+      {#if identifying}<span class="spin"></span>{/if}{$_('framing.open')}
+    </button>
+  </form>
+  {#if cam}
     <strong>{[cam.brand, cam.model].filter(Boolean).join(' ')}</strong>
     <span class="ip">{cam.ip}</span>
-    <span class="sp"></span>
-    <label class="acc"><span class="dim-t">{$_('accounts.picker')}</span> <AccountPicker bind:accountId /></label>
+  {/if}
+  <span class="sp"></span>
+  <label class="acc"><span class="dim-t">{$_('accounts.picker')}</span> <AccountPicker bind:accountId /></label>
+  {#if cam}
     {#if playing}
       <button class="btn def" onclick={stop}>{$_('framing.stop')}</button>
     {:else}
       <button class="btn def" onclick={play} disabled={!accountId}>{$_('framing.play')}</button>
     {/if}
-  </div>
-  {#if error}<p class="err">{error}</p>{/if}
+  {/if}
+</div>
+{#if error}<p class="err">{error}</p>{/if}
+{#if !cam}
+  <div class="none">{$_('framing.none')}</div>
+{:else}
   <!-- Sans flux, la zone reste à sa place, vide et claire, pour que la fenêtre ne saute pas. -->
   <div class="view" class:off={!src} ondblclick={fullscreen} role="presentation">
     {#if src}
@@ -108,6 +139,8 @@
 
 <style>
   .acc { display: inline-flex; align-items: center; gap: 6px; }
+  .byip { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+  .byip input { width: 130px; }
   .view { display: flex; align-items: center; justify-content: center; container-type: size; }
   /* Largeur bornée par la zone et par la hauteur transposée via le ratio (unités de conteneur). */
   .frame { position: relative; width: min(100%, calc(100cqh * var(--r))); aspect-ratio: var(--r); }

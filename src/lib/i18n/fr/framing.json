@@ -14,6 +14,10 @@
     "secret_missing": "Mot de passe absent du trousseau : à ressaisir",
     "internal": "Erreur interne",
     "unknown": "Erreur inattendue",
-    "keyring": "Trousseau inaccessible"
-  }
+    "keyring": "Trousseau inaccessible",
+    "bad_ip": "Adresse IP invalide",
+    "not_a_camera": "Pas une caméra prise en charge (ni Axis ni Hikvision)"
+  },
+  "ip": "IP de la caméra",
+  "open": "Ouvrir"
 }

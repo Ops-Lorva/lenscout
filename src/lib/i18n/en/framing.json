@@ -14,6 +14,10 @@
     "secret_missing": "Password missing from the keychain: enter it again",
     "internal": "Internal error",
     "unknown": "Unexpected error",
-    "keyring": "Keychain unavailable"
-  }
+    "keyring": "Keychain unavailable",
+    "bad_ip": "Invalid IP address",
+    "not_a_camera": "Not a supported camera (neither Axis nor Hikvision)"
+  },
+  "ip": "Camera IP",
+  "open": "Open"
 }

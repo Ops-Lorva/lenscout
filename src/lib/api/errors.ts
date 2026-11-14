@@ -15,6 +15,7 @@ export const CODES = [
   'duplicate_name',
   'camera_off_subnet',
   'unsupported_brand',
+  'not_a_camera',
   'unreachable',
   'auth_failed',
   'auth_insecure',

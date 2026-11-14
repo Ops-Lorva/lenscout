@@ -14,6 +14,10 @@
     "secret_missing": "Contraseña ausente del llavero: vuelva a introducirla",
     "internal": "Error interno",
     "unknown": "Error inesperado",
-    "keyring": "Llavero inaccesible"
-  }
+    "keyring": "Llavero inaccesible",
+    "bad_ip": "Dirección IP no válida",
+    "not_a_camera": "No es una cámara compatible (ni Axis ni Hikvision)"
+  },
+  "ip": "IP de la cámara",
+  "open": "Abrir"
 }

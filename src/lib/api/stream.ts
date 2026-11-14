@@ -14,6 +14,10 @@ export function startStream(camera: Camera, accountId: string, onFrame: (buf: Ar
 
 export const stopStream = () => invoke<void>('cmd_stream_stop');
 
+/** Caméra d'une IP saisie dans Cadrage, identifiée par Rust (même garde de sous-réseau que le flux). */
+export const identifyCamera = (ip: string, accountId: string) =>
+  invoke<Camera>('cmd_identify_camera', { ip: ip.trim(), accountId });
+
 /** Une image a été traitée (affichée ou abandonnée) : Rust peut en envoyer une autre. */
 export const ackFrame = () => invoke<void>('cmd_stream_ack');
 
