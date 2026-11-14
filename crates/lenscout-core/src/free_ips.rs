@@ -142,6 +142,62 @@ async fn icmp_attempt(ip: Ipv4Addr, src: Ipv4Addr) -> Reply {
     }
 }
 
+/// Le système dont on lit la sortie de `ping`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PingOs {
+    Linux,
+    Mac,
+    Windows,
+}
+
+impl PingOs {
+    fn current() -> PingOs {
+        if cfg!(target_os = "windows") {
+            PingOs::Windows
+        } else if cfg!(target_os = "macos") {
+            PingOs::Mac
+        } else {
+            PingOs::Linux
+        }
+    }
+}
+
+/// Ce que dit un `ping` système. ⚠️ Seul un écho parti sans réponse est
+/// `Silent` : toute autre erreur (socket refusé, adresse source disparue…)
+/// est `Unsent`, sans quoi une panne locale ferait passer le réseau pour vide.
+/// Linux : 0 réponse, 1 silence, autre erreur. macOS : 0 réponse, 2 silence.
+/// Windows rend 0 même pour un hôte injoignable : on lit le texte (anglais, français).
+fn classify_ping(os: PingOs, code: Option<i32>, output: &str) -> Reply {
+    let Some(code) = code else {
+        return Reply::Unsent;
+    };
+    match os {
+        PingOs::Linux => match code {
+            0 => Reply::Alive,
+            1 => Reply::Silent,
+            _ => Reply::Unsent,
+        },
+        PingOs::Mac => match code {
+            0 => Reply::Alive,
+            2 => Reply::Silent,
+            _ => Reply::Unsent,
+        },
+        PingOs::Windows => {
+            let text = output.to_lowercase();
+            if text.contains("ttl=") {
+                Reply::Alive
+            } else if ["request timed out", "destination host unreachable", "délai d'attente", "hôte de destination inaccessible"]
+                .iter()
+                .any(|m| text.contains(m))
+            {
+                Reply::Silent
+            } else {
+                Reply::Unsent
+            }
+        }
+    }
+}
+
 /// Ping du système, source forcée sur l'interface choisie. `None` si le
 /// programme n'a pas pu être lancé.
 async fn system_ping(ip: Ipv4Addr, src: Ipv4Addr) -> Option<Reply> {
@@ -166,10 +222,8 @@ async fn system_ping(ip: Ipv4Addr, src: Ipv4Addr) -> Option<Reply> {
         let _ = &timeout;
     }
     let out = cmd.output().await.ok()?;
-    let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
-    // Windows rend 0 même pour « hôte injoignable » : on exige un TTL.
-    let ok = out.status.success() && (cfg!(not(target_os = "windows")) || text.contains("ttl="));
-    Some(if ok { Reply::Alive } else { Reply::Silent })
+    let text = String::from_utf8_lossy(&out.stdout);
+    Some(classify_ping(PingOs::current(), out.status.code(), &text))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -208,7 +262,8 @@ pub async fn scan(
     progress(0, total);
 
     let mut taken: HashSet<Ipv4Addr> = HashSet::new();
-    let mut sent = 0usize;
+    let mut silent: HashSet<Ipv4Addr> = HashSet::new();
+    let mut unsent = 0usize;
     let mut done = 0usize;
     let mut replies = futures_util::stream::iter(targets.clone())
         .map(|a| {
@@ -225,20 +280,23 @@ pub async fn scan(
                 Some((a, r)) => {
                     done += 1;
                     match r {
-                        Reply::Alive => { sent += 1; taken.insert(a); }
-                        Reply::Silent => sent += 1,
-                        Reply::Unsent => {}
+                        Reply::Alive => { taken.insert(a); }
+                        Reply::Silent => { silent.insert(a); }
+                        Reply::Unsent => unsent += 1,
                     }
                     progress(done, total);
                 }
             },
         }
     }
-    if total > 0 && sent == 0 {
+    // Plus d'un tir sur dix qui n'a pas pu partir : le résultat ne dirait rien du réseau.
+    if unsent * 10 > total {
         return Err(FreeError::PingUnavailable);
     }
     taken.extend(probe.neighbours().await);
-    let free: Vec<Ipv4Addr> = targets.into_iter().filter(|a| !taken.contains(a)).collect();
+    // Libre = a reçu un ping resté sans réponse ET n'est pas dans l'ARP. Un tir
+    // isolé qui n'a pas pu partir n'est jamais libre.
+    let free: Vec<Ipv4Addr> = targets.into_iter().filter(|a| silent.contains(a) && !taken.contains(a)).collect();
     Ok(FreeScan { ranges: ranges(&free), truncated })
 }
 
@@ -308,7 +366,10 @@ mod tests {
         alive: HashSet<Ipv4Addr>,
         neigh: HashSet<Ipv4Addr>,
         unsent: bool,
+        unsent_for: HashSet<Ipv4Addr>,
         pinged: Mutex<Vec<Ipv4Addr>>,
+        /// Nombre de pings attendus avant la lecture ARP ; `None` : pas de contrôle.
+        pings_before_arp: Option<usize>,
     }
 
     impl Fake {
@@ -317,7 +378,9 @@ mod tests {
                 alive: alive.iter().map(|s| ip(s)).collect(),
                 neigh: neigh.iter().map(|s| ip(s)).collect(),
                 unsent: false,
+                unsent_for: HashSet::new(),
                 pinged: Mutex::new(vec![]),
+                pings_before_arp: None,
             }
         }
     }
@@ -326,7 +389,7 @@ mod tests {
     impl FreeProbe for Fake {
         async fn ping(&self, a: Ipv4Addr) -> Reply {
             self.pinged.lock().unwrap().push(a);
-            if self.unsent {
+            if self.unsent || self.unsent_for.contains(&a) {
                 Reply::Unsent
             } else if self.alive.contains(&a) {
                 Reply::Alive
@@ -335,6 +398,9 @@ mod tests {
             }
         }
         async fn neighbours(&self) -> HashSet<Ipv4Addr> {
+            if let Some(n) = self.pings_before_arp {
+                assert_eq!(self.pinged.lock().unwrap().len(), n, "l'ARP se lit après tous les pings");
+            }
             self.neigh.clone()
         }
     }
@@ -375,5 +441,79 @@ mod tests {
         fake.unsent = true;
         let r = scan(&iface(), HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await;
         assert_eq!(r, Err(FreeError::PingUnavailable));
+    }
+
+    fn lan() -> ScanInterface {
+        ScanInterface { name: "eth0".into(), ip: ip("192.0.2.10"), mask: ip("255.255.255.0") }
+    }
+
+    #[tokio::test]
+    async fn scan_reads_arp_only_after_every_ping() {
+        let mut fake = Fake::new(&[], &["192.0.2.11"]);
+        fake.pings_before_arp = Some(4); // /29 : 5 hôtes sans le poste .10 → .9 .11 .12 .13 .14, moins .12 exclue
+        let exclude: HashSet<Ipv4Addr> = [ip("192.0.2.12")].into();
+        scan(&iface(), exclude, Arc::new(fake), |_, _| {}, CancellationToken::new()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scan_reports_a_truncated_big_subnet() {
+        let big = ScanInterface { name: "eth0".into(), ip: ip("10.1.2.3"), mask: ip("255.255.0.0") };
+        let fake = Arc::new(Fake::new(&[], &[]));
+        let out = scan(&big, HashSet::new(), fake.clone(), |_, _| {}, CancellationToken::new()).await.unwrap();
+        assert!(out.truncated);
+        // 1024 adresses, moins celle du poste.
+        assert_eq!(fake.pinged.lock().unwrap().len(), 1023);
+        let n: usize = out.ranges.iter().map(|r| r.count).sum();
+        assert_eq!(n, 1023);
+        let small = scan(&iface(), HashSet::new(), Arc::new(Fake::new(&[], &[])), |_, _| {}, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(!small.truncated);
+    }
+
+    #[tokio::test]
+    async fn an_address_that_could_not_be_pinged_is_never_free() {
+        let mut fake = Fake::new(&[], &[]);
+        fake.unsent_for = [ip("192.0.2.77")].into();
+        let out = scan(&lan(), HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await.unwrap();
+        assert!(out.ranges.iter().all(|r| !(r.first..=r.last).contains(&ip("192.0.2.77"))));
+        // Le poste (.10) et .77 coupent les plages : trois.
+        assert_eq!(out.ranges.len(), 3);
+        assert_eq!(out.ranges.iter().map(|r| r.count).sum::<usize>(), 252);
+    }
+
+    #[tokio::test]
+    async fn too_many_unsent_pings_is_an_error() {
+        let mut fake = Fake::new(&[], &[]);
+        // 26 sur 253 : plus de 10 %.
+        fake.unsent_for = (100..126).map(|n| Ipv4Addr::new(192, 0, 2, n)).collect();
+        let r = scan(&lan(), HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await;
+        assert_eq!(r, Err(FreeError::PingUnavailable));
+    }
+
+    #[test]
+    fn system_ping_output_is_classified_by_os_code_and_text() {
+        use PingOs::*;
+        let cases: &[(PingOs, Option<i32>, &str, Reply)] = &[
+            (Linux, Some(0), "64 bytes from 192.0.2.1", Reply::Alive),
+            (Linux, Some(1), "1 packets transmitted, 0 received", Reply::Silent),
+            (Linux, Some(2), "ping: socket: Operation not permitted", Reply::Unsent),
+            (Linux, None, "", Reply::Unsent),
+            (Mac, Some(0), "64 bytes from 192.0.2.1", Reply::Alive),
+            (Mac, Some(2), "0 packets received", Reply::Silent),
+            (Mac, Some(1), "ping: bind: Can't assign requested address", Reply::Unsent),
+            (Mac, Some(68), "", Reply::Unsent),
+            (Windows, Some(0), "Reply from 192.0.2.1: bytes=32 time<1ms TTL=64", Reply::Alive),
+            (Windows, Some(1), "Réponse de 192.0.2.1 : octets=32 temps<1ms TTL=64", Reply::Alive),
+            (Windows, Some(1), "Request timed out.", Reply::Silent),
+            (Windows, Some(1), "Reply from 192.0.2.10: Destination host unreachable.", Reply::Silent),
+            (Windows, Some(1), "Délai d'attente de la demande dépassé.", Reply::Silent),
+            (Windows, Some(1), "Réponse de 192.0.2.10 : Hôte de destination inaccessible.", Reply::Silent),
+            (Windows, Some(1), "PING: transmit failed. General failure.", Reply::Unsent),
+            (Windows, Some(1), "Bad IP address 192.0.2.1.", Reply::Unsent),
+        ];
+        for (os, code, out, want) in cases {
+            assert_eq!(classify_ping(*os, *code, out), *want, "{os:?} {code:?} {out}");
+        }
     }
 }

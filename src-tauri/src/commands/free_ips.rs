@@ -13,10 +13,53 @@ use tokio_util::sync::CancellationToken;
 use super::discovery::{ScanState, SeenSnapshot};
 
 /// Le balayage d'adresses libres en cours : un seul à la fois, remplacé au
-/// démarrage du suivant.
+/// démarrage du suivant. Le front numérote ses balayages : une annulation vise
+/// un balayage précis, et celle qui arrive avant son démarrage est retenue.
 #[derive(Default)]
 pub struct FreeIpsState {
-    cancel: Mutex<Option<CancellationToken>>,
+    inner: Mutex<Runs>,
+}
+
+#[derive(Default)]
+struct Runs {
+    current: Option<(u64, CancellationToken)>,
+    /// Annulations reçues avant le démarrage de leur balayage.
+    early: HashSet<u64>,
+}
+
+/// Plus d'annulations en avance que cela : le front n'en produit pas autant.
+const MAX_EARLY: usize = 64;
+
+impl FreeIpsState {
+    /// Le jeton du balayage `id` (déjà annulé s'il l'a été avant de démarrer) ;
+    /// le balayage précédent est annulé.
+    fn begin(&self, id: u64) -> CancellationToken {
+        let mut runs = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let token = CancellationToken::new();
+        if runs.early.remove(&id) {
+            token.cancel();
+        }
+        if let Some((_, old)) = runs.current.replace((id, token.clone())) {
+            old.cancel();
+        }
+        token
+    }
+
+    /// Annule le balayage `id` ; un autre balayage n'est pas touché.
+    fn cancel(&self, id: u64) {
+        let mut runs = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cur, token)) = &runs.current
+            && *cur == id
+        {
+            token.cancel();
+            runs.current = None;
+        } else {
+            if runs.early.len() >= MAX_EARLY {
+                runs.early.clear();
+            }
+            runs.early.insert(id);
+        }
+    }
 }
 
 /// Miroir côté front : `src/lib/api/freeIps.ts`.
@@ -47,15 +90,13 @@ fn exclusions(iface: &ScanInterface, seen: &SeenSnapshot, gateway: Option<&str>)
 /// rend `Ok` sans `Done` : plus rien ne doit viser la feuille disparue.
 #[tauri::command]
 pub async fn cmd_free_ips(
+    id: u64,
     interface: String,
     channel: Channel<FreeIpsEvent>,
     state: State<'_, FreeIpsState>,
     scan_state: State<'_, ScanState>,
 ) -> Result<(), String> {
-    let token = CancellationToken::new();
-    if let Some(old) = state.cancel.lock().unwrap_or_else(|e| e.into_inner()).replace(token.clone()) {
-        old.cancel();
-    }
+    let token = state.begin(id);
 
     let name = interface.clone();
     let (iface, gateway) = tauri::async_runtime::spawn_blocking(move || {
@@ -71,20 +112,8 @@ pub async fn cmd_free_ips(
 
     let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref());
     let probe = Arc::new(SystemProbe { iface: iface.clone() });
-    let (sender, cancel) = (channel.clone(), token.clone());
-    let result = scan(
-        &iface,
-        exclude,
-        probe,
-        move |done, total| {
-            // Feuille fermée ou balayage remplacé : rien n'est envoyé.
-            if !cancel.is_cancelled() && sender.send(FreeIpsEvent::Progress { done, total }).is_err() {
-                cancel.cancel();
-            }
-        },
-        token.clone(),
-    )
-    .await;
+    let sender = channel.clone();
+    let result = scan(&iface, exclude, probe, progress_to(token.clone(), move |e| sender.send(e).is_ok()), token.clone()).await;
     match result {
         Ok(found) if !token.is_cancelled() => {
             let _ = channel.send(FreeIpsEvent::Done { ranges: found.ranges, truncated: found.truncated });
@@ -95,11 +124,19 @@ pub async fn cmd_free_ips(
     }
 }
 
-#[tauri::command]
-pub fn cmd_free_ips_cancel(state: State<'_, FreeIpsState>) {
-    if let Some(t) = state.cancel.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        t.cancel();
+/// La progression envoyée par `send` (qui rend `false` quand le webview n'est
+/// plus là : le balayage est annulé). Après l'annulation, rien n'est envoyé.
+fn progress_to(token: CancellationToken, send: impl Fn(FreeIpsEvent) -> bool) -> impl Fn(usize, usize) {
+    move |done, total| {
+        if !token.is_cancelled() && !send(FreeIpsEvent::Progress { done, total }) {
+            token.cancel();
+        }
     }
+}
+
+#[tauri::command]
+pub fn cmd_free_ips_cancel(id: u64, state: State<'_, FreeIpsState>) {
+    state.cancel(id);
 }
 
 #[cfg(test)]
@@ -126,6 +163,56 @@ mod tests {
         let out = exclusions(&eth0(), &seen("wlan0", &["10.0.50.31"]), None);
         assert!(out.is_empty());
         assert!(exclusions(&eth0(), &seen("eth0", &[]), Some("pas une ip")).is_empty());
+    }
+
+    #[test]
+    fn a_cancel_only_reaches_its_own_run() {
+        let state = FreeIpsState::default();
+        let a = state.begin(1);
+        state.cancel(2);
+        assert!(!a.is_cancelled());
+        state.cancel(1);
+        assert!(a.is_cancelled());
+    }
+
+    #[test]
+    fn a_cancel_received_before_the_start_is_kept() {
+        let state = FreeIpsState::default();
+        state.cancel(7);
+        let t = state.begin(7);
+        assert!(t.is_cancelled(), "le balayage démarre déjà annulé");
+        assert!(!state.begin(8).is_cancelled(), "et l'annulation ne vaut que pour lui");
+    }
+
+    #[test]
+    fn a_new_run_cancels_the_previous_one() {
+        let state = FreeIpsState::default();
+        let a = state.begin(1);
+        let b = state.begin(2);
+        assert!(a.is_cancelled() && !b.is_cancelled());
+    }
+
+    #[test]
+    fn no_event_is_sent_after_cancellation() {
+        use std::cell::RefCell;
+        let token = CancellationToken::new();
+        let sent = RefCell::new(vec![]);
+        let progress = progress_to(token.clone(), |e| {
+            sent.borrow_mut().push(e);
+            true
+        });
+        progress(1, 3);
+        token.cancel();
+        progress(2, 3);
+        progress(3, 3);
+        assert_eq!(*sent.borrow(), vec![FreeIpsEvent::Progress { done: 1, total: 3 }]);
+    }
+
+    #[test]
+    fn a_closed_webview_cancels_the_run() {
+        let token = CancellationToken::new();
+        progress_to(token.clone(), |_| false)(1, 3);
+        assert!(token.is_cancelled());
     }
 
     #[test]

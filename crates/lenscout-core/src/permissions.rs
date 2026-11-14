@@ -209,10 +209,8 @@ mod tests {
         }
     }
 
-    fn scratch() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("lenscout-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch() -> crate::testing::TmpDir {
+        crate::testing::TmpDir::new("lenscout-test")
     }
 
     #[test]

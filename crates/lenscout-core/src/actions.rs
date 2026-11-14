@@ -415,13 +415,14 @@ mod tests {
     }
 
     /// Contexte sans élévation possible : un appel ferait échouer le test.
-    fn ctx(http: Arc<dyn CameraHttp>) -> ActionContext {
+    fn ctx(http: Arc<dyn CameraHttp>) -> TestCtx {
         ctx_with(http, Arc::new(PanicElevator), vec![])
     }
 
     /// `seen` : adresses entendues par le dernier scan, fait sur `eth0`.
-    fn ctx_with(http: Arc<dyn CameraHttp>, elevator: Arc<dyn Elevator>, seen: Vec<Ipv4Addr>) -> ActionContext {
-        ActionContext {
+    fn ctx_with(http: Arc<dyn CameraHttp>, elevator: Arc<dyn Elevator>, seen: Vec<Ipv4Addr>) -> TestCtx {
+        let journal = crate::testing::UncreatedFile::new("lenscout-test", "temp-ip.json");
+        let c = ActionContext {
             http,
             iface: ScanInterface {
                 name: "eth0".into(),
@@ -430,15 +431,33 @@ mod tests {
             },
             service: "eth0".into(),
             elevator,
-            journal: std::env::temp_dir()
-                .join(format!("lenscout-test-{}", uuid::Uuid::new_v4()))
-                .join("temp-ip.json"),
+            journal: journal.to_path_buf(),
             seen,
             seen_iface: Some("eth0".into()),
             seen_sadp: vec![],
             sadp: None,
             in_use: vec![],
             other_ifaces: vec![],
+        };
+        TestCtx { c, _journal: journal }
+    }
+
+    /// Le contexte d'un test ; le dossier du journal part avec lui.
+    struct TestCtx {
+        c: ActionContext,
+        _journal: crate::testing::UncreatedFile,
+    }
+
+    impl std::ops::Deref for TestCtx {
+        type Target = ActionContext;
+        fn deref(&self) -> &ActionContext {
+            &self.c
+        }
+    }
+
+    impl std::ops::DerefMut for TestCtx {
+        fn deref_mut(&mut self) -> &mut ActionContext {
+            &mut self.c
         }
     }
 
@@ -792,7 +811,7 @@ mod tests {
 
     /// Contexte Hikvision : socket SADP faux, MAC entendue en SADP sur `eth0`
     /// si `heard`. Un Elevator qui panique : jamais d'IP temporaire.
-    fn sadp_ctx(http: Arc<dyn CameraHttp>, heard: bool) -> (ActionContext, Arc<crate::testing::FakeDatagram>) {
+    fn sadp_ctx(http: Arc<dyn CameraHttp>, heard: bool) -> (TestCtx, Arc<crate::testing::FakeDatagram>) {
         let dg = Arc::new(crate::testing::FakeDatagram::new(vec![]));
         let mut c = ctx(http);
         c.sadp = Some(dg.clone());
@@ -1191,7 +1210,7 @@ mod tests {
         let (a, b) = (batch_cam(11, "AC:CC:8E:12:34:56"), batch_cam(12, "AC:CC:8E:12:34:57"));
         let http = Arc::new(PerHost { inner: axis_ok(), serials: vec![("192.0.2.12", "ACCC8E123457")] });
         let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
-        let out = apply_batch(ctx(http.clone()), &[a, b], &rows, &creds(), &req).await.unwrap();
+        let out = apply_batch(ctx(http.clone()).c, &[a, b], &rows, &creds(), &req).await.unwrap();
         assert!(out.iter().all(|r| r.ok), "{out:?}");
         let hosts: Vec<String> = http.inner.requests().into_iter().map(|r| r.url).collect();
         assert!(hosts.iter().all(|u| u.contains("192.0.2.11") || u.contains("192.0.2.12")), "{hosts:?}");
@@ -1213,7 +1232,7 @@ mod tests {
         // B répond avec la série d'une autre caméra.
         let http = Arc::new(PerHost { inner: axis_ok(), serials: vec![("192.0.2.12", "ACCC8E999999")] });
         let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
-        let out = apply_batch(ctx(http.clone()), &[a, b], &rows, &creds(), &req).await.unwrap();
+        let out = apply_batch(ctx(http.clone()).c, &[a, b], &rows, &creds(), &req).await.unwrap();
         assert_eq!(out.len(), 2);
         assert!(out[0].ok);
         assert_eq!(out[1].error, Some(ActionError::IdentityMismatch));
@@ -1235,7 +1254,7 @@ mod tests {
             dead: "192.0.2.11",
         });
         let (req, rows) = batch_plan(&[a.clone(), b.clone()]);
-        let out = apply_batch(ctx(http), &[a, b], &rows, &creds(), &req).await.unwrap();
+        let out = apply_batch(ctx(http).c, &[a, b], &rows, &creds(), &req).await.unwrap();
         assert!(matches!(out[0].error, Some(ActionError::Unreachable { .. })));
         // B répond avec la série de la MAC de A : l'identité de B ne correspond pas, mais elle a bien été tentée.
         assert_eq!(out[1].error, Some(ActionError::IdentityMismatch));
@@ -1262,7 +1281,7 @@ mod tests {
             let elev = Arc::new(FakeElevator::new());
             let mut c = ctx_with(Arc::new(axis_ok()), elev.clone(), vec![a.ip, b.ip]);
             c.in_use = (203..=250).map(|d| Ipv4Addr::new(192, 168, 0, d)).collect();
-            let out = apply_batch(c, &[a.clone(), b.clone()], &rows, &creds(), &req).await.unwrap();
+            let out = apply_batch(c.c, &[a.clone(), b.clone()], &rows, &creds(), &req).await.unwrap();
             assert!(out.iter().all(|r| r.ok), "{out:?}");
             let plans = elev.plans();
             assert_eq!(plans.len(), 4);
@@ -1277,7 +1296,7 @@ mod tests {
         let http = Arc::new(axis_ok());
         let (req, rows) = batch_plan(std::slice::from_ref(&a));
         let two = [a.clone(), batch_cam(12, "AC:CC:8E:12:34:57")];
-        assert!(apply_batch(ctx(http.clone()), &two, &rows, &creds(), &req).await.is_err());
+        assert!(apply_batch(ctx(http.clone()).c, &two, &rows, &creds(), &req).await.is_err());
         assert!(http.requests().is_empty());
     }
 
@@ -1292,7 +1311,7 @@ mod tests {
             dns: vec![],
         };
         let rows = crate::batch::plan_batch(std::slice::from_ref(&a), &req, &[], &[]).unwrap();
-        let out = apply_batch(ctx(http.clone()), &[a], &rows, &creds(), &req).await.unwrap();
+        let out = apply_batch(ctx(http.clone()).c, &[a], &rows, &creds(), &req).await.unwrap();
         assert!(out[0].ok, "{out:?}");
         let body = http.requests().into_iter().find(|r| r.url.ends_with("/axis-cgi/param.cgi")).unwrap();
         assert!(String::from_utf8(body.body).unwrap().contains("Network.IPAddress=192.0.2.11"));

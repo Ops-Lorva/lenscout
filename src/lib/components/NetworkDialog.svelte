@@ -49,7 +49,7 @@
   }
 </script>
 
-<Dialog title={$_('configure.ip')} {subtitle} width={520} {onClose}>
+<Dialog title={$_('configure.ip')} {subtitle} width={560} {onClose}>
   <div class="form">
     <label for="ip-account">{$_('accounts.picker')}</label><AccountPicker id="ip-account" bind:accountId />
     <label for="ip-mode">{$_('configure.mode')}</label>

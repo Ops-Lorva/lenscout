@@ -25,14 +25,23 @@ export function reduceFreeEvent(state: FreeState | null, e: FreeIpsEvent): FreeS
   return { phase: 'scanning', done: e.done, total: e.total };
 }
 
-/** Rend la main à la fin du balayage ; rejette avec un code stable (`ping_unavailable`…). */
-export function startFreeIps(iface: string, onEvent: (e: FreeIpsEvent) => void): Promise<void> {
+// Numéro unique d'un balayage : l'horloge d'abord (un rechargement de la page ne
+// retombe pas sur un numéro déjà annulé), puis un compteur.
+let counter = 0;
+const nextId = () => Date.now() * 1000 + (counter++ % 1000);
+
+/**
+ * `done` rend la main à la fin du balayage et rejette avec un code stable
+ * (`ping_unavailable`…) ; `id` sert à l'annuler, même avant son démarrage.
+ */
+export function startFreeIps(iface: string, onEvent: (e: FreeIpsEvent) => void): { id: number; done: Promise<void> } {
+  const id = nextId();
   const channel = new Channel<FreeIpsEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>('cmd_free_ips', { interface: iface, channel });
+  return { id, done: invoke<void>('cmd_free_ips', { id, interface: iface, channel }) };
 }
 
-export const cancelFreeIps = () => invoke<void>('cmd_free_ips_cancel');
+export const cancelFreeIps = (id: number) => invoke<void>('cmd_free_ips_cancel', { id });
 
 /** Clé i18n (espace `free`) d'une erreur du balayage. */
 export const freeErrorKey = (e: unknown): string => `free.${errorKey(e)}`;

@@ -205,10 +205,8 @@ pub fn failure(req: &HttpRequest, e: &NetError) {
 mod tests {
     use super::*;
 
-    fn tmp() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("lenscout-debug-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmp() -> crate::testing::TmpDir {
+        crate::testing::TmpDir::new("lenscout-debug")
     }
 
     fn req(method: Method, url: &str, body: &str) -> HttpRequest {
@@ -252,7 +250,8 @@ mod tests {
 
     #[test]
     fn the_switch_file_is_created_and_removed_and_decides_enabled() {
-        let dir = tmp().join("sous-dossier-absent");
+        let base = tmp();
+        let dir = base.join("sous-dossier-absent");
         set_switch(&dir, true).unwrap();
         assert!(dir.join(SWITCH).is_file());
         assert!(enabled(None, &dir));

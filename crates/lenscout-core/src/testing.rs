@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -248,5 +249,69 @@ pub struct PanicElevator;
 impl crate::temp_ip::Elevator for PanicElevator {
     fn run(&self, _: &crate::temp_ip::ElevatedPlan) -> Result<(), crate::temp_ip::TempIpError> {
         panic!("élévation inattendue dans ce test");
+    }
+}
+
+/// Dossier temporaire d'un test, retiré à sa fin (même en cas d'échec).
+pub struct TmpDir(PathBuf);
+
+impl TmpDir {
+    pub fn new(prefix: &str) -> TmpDir {
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        TmpDir(dir)
+    }
+}
+
+impl std::ops::Deref for TmpDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TmpDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Un fichier dans un dossier propre au test, pas encore créé (le code testé le
+/// crée) ; le dossier est retiré à la fin du test.
+pub struct UncreatedFile {
+    dir: PathBuf,
+    file: PathBuf,
+}
+
+impl UncreatedFile {
+    pub fn new(prefix: &str, name: &str) -> UncreatedFile {
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        let file = dir.join(name);
+        UncreatedFile { dir, file }
+    }
+}
+
+impl std::ops::Deref for UncreatedFile {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.file
+    }
+}
+
+impl Drop for UncreatedFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+impl AsRef<Path> for UncreatedFile {
+    fn as_ref(&self) -> &Path {
+        &self.file
+    }
+}
+
+impl AsRef<Path> for TmpDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
     }
 }

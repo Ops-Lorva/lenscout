@@ -673,7 +673,6 @@ fn cleanup_unlocked(elev: &dyn Elevator, journal: &Path) -> Result<Option<TempIp
 mod tests {
     use super::*;
     use crate::testing::FakeElevator;
-    use std::path::PathBuf;
 
     fn ip(s: &str) -> Ipv4Addr {
         s.parse().unwrap()
@@ -684,10 +683,8 @@ mod tests {
     }
 
     /// Un journal dans un dossier propre au test (pas encore créé).
-    fn journal() -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("lenscout-test-{}", uuid::Uuid::new_v4()))
-            .join("temp-ip.json")
+    fn journal() -> crate::testing::UncreatedFile {
+        crate::testing::UncreatedFile::new("lenscout-test", "temp-ip.json")
     }
 
     fn os() -> OsKind {

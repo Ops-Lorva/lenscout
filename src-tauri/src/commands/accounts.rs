@@ -316,11 +316,25 @@ mod tests {
     use lenscout_core::accounts::{MemoryStore, SecretStore};
     use std::sync::Arc;
 
-    fn book() -> AccountBook {
-        let path = std::env::temp_dir()
-            .join(format!("lenscout-cmd-accounts-{}", uuid_like()))
-            .join("accounts.json");
-        AccountBook::load(path, Arc::new(MemoryStore::default())).unwrap()
+    /// Dossier temporaire d'un test, retiré à sa fin (même en cas d'échec).
+    struct TmpDir(std::path::PathBuf);
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tmp_dir() -> TmpDir {
+        let dir = std::env::temp_dir().join(format!("lenscout-cmd-accounts-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        TmpDir(dir)
+    }
+
+    fn book() -> (AccountBook, TmpDir) {
+        let dir = tmp_dir();
+        let book = AccountBook::load(dir.0.join("accounts.json"), Arc::new(MemoryStore::default())).unwrap();
+        (book, dir)
     }
 
     fn uuid_like() -> String {
@@ -336,7 +350,7 @@ mod tests {
 
     #[test]
     fn list_never_contains_password() {
-        let mut book = book();
+        let (mut book, _g_book) = book();
         account_create(
             &mut book,
             "Défaut LORVA",
@@ -353,10 +367,8 @@ mod tests {
     fn list_flags_accounts_without_secret() {
         // Ancien format dont le trousseau a perdu un secret.
         let store = Arc::new(MemoryStore::default());
-        let path = std::env::temp_dir()
-            .join(format!("lenscout-cmd-accounts-{}", uuid_like()))
-            .join("accounts.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let _dir = tmp_dir();
+        let path = _dir.0.join("accounts.json");
         std::fs::write(
             &path,
             r#"[{"id":"ok","name":"A","login":"r"},{"id":"lost","name":"B","login":"r"}]"#,
@@ -392,7 +404,7 @@ mod tests {
 
     #[test]
     fn errors_are_stable_codes() {
-        let mut book = book();
+        let (mut book, _g_book) = book();
         let pwd = || Secret::new("x".into());
         assert_eq!(
             account_create(&mut book, " ", "r", pwd()).unwrap_err(),
@@ -409,10 +421,8 @@ mod tests {
     #[test]
     fn missing_secret_has_its_own_code() {
         let store = Arc::new(MemoryStore::default());
-        let path = std::env::temp_dir()
-            .join(format!("lenscout-cmd-accounts-{}", uuid_like()))
-            .join("accounts.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let _dir = tmp_dir();
+        let path = _dir.0.join("accounts.json");
         std::fs::write(&path, r#"[{"id":"a","name":"A","login":"r"}]"#).unwrap();
         // Trousseau sans le secret : compte repris « à ressaisir ».
         let book = Mutex::new(AccountBook::load(path, store).unwrap());
@@ -422,32 +432,31 @@ mod tests {
 
     #[test]
     fn update_without_password_keeps_it() {
-        let mut book = book();
+        let (mut book, _g_book) = book();
         let acc = account_create(&mut book, "A", "r", Secret::new("x".into())).unwrap();
         let upd = account_update(&mut book, &acc.id, "B", "r2", None).unwrap();
         assert_eq!((upd.name.as_str(), upd.login.as_str()), ("B", "r2"));
         assert_eq!(book.credentials(&acc.id).unwrap().password.expose(), "x");
     }
 
-    fn temp_file(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lenscout-cmd-accounts-{}", uuid_like()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
+    fn temp_file(name: &str) -> (std::path::PathBuf, TmpDir) {
+        let dir = tmp_dir();
+        (dir.0.join(name), dir)
     }
 
     #[test]
     fn export_writes_the_sealed_file_and_counts() {
-        let mut src = book();
+        let (mut src, _g_src) = book();
         account_create(&mut src, "Mairie Arles", "root-unique", Secret::new("S3cr3t-Unique!".into())).unwrap();
         account_create(&mut src, "Gare", "admin", Secret::new("x".into())).unwrap();
-        let path = temp_file("lenscout-comptes.lenscout");
+        let (path, _g_path) = temp_file("lenscout-comptes.lenscout");
         assert_eq!(accounts_export(&src, &path).unwrap(), 2);
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("Mairie Arles") && !raw.contains("root-unique") && !raw.contains("S3cr3t"));
         // Pas de temporaire laissé à côté.
         assert!(!path.with_extension("lenscout.tmp").exists());
         // Le fichier se réimporte sur un carnet neuf.
-        let mut dst = book();
+        let (mut dst, _g_dst) = book();
         let summary = accounts_import_apply(&mut dst, &path, HashMap::new()).unwrap();
         assert_eq!(summary.added, 2);
         assert_eq!(dst.list().len(), 2);
@@ -455,12 +464,12 @@ mod tests {
 
     #[test]
     fn import_plan_has_flat_kinds_and_no_secret() {
-        let mut src = book();
+        let (mut src, _g_src) = book();
         account_create(&mut src, "Mairie Arles", "root-unique", Secret::new("S3cr3t-Unique!".into())).unwrap();
         account_create(&mut src, "Gare", "admin", Secret::new("x".into())).unwrap();
-        let path = temp_file("a.lenscout");
+        let (path, _g_path) = temp_file("a.lenscout");
         accounts_export(&src, &path).unwrap();
-        let mut dst = book();
+        let (mut dst, _g_dst) = book();
         account_create(&mut dst, "Mairie Arles", "autre", Secret::new("S3cr3t-Unique!".into())).unwrap();
         let plan = accounts_import_plan(&dst, &path).unwrap();
         let json = serde_json::to_string(&plan).unwrap();
@@ -477,11 +486,11 @@ mod tests {
 
     #[test]
     fn keep_both_choice_is_applied() {
-        let mut src = book();
+        let (mut src, _g_src) = book();
         account_create(&mut src, "Mairie", "root", Secret::new("a".into())).unwrap();
-        let path = temp_file("a.lenscout");
+        let (path, _g_path) = temp_file("a.lenscout");
         accounts_export(&src, &path).unwrap();
-        let mut dst = book();
+        let (mut dst, _g_dst) = book();
         account_create(&mut dst, "Mairie", "autre", Secret::new("b".into())).unwrap();
         // Les choix arrivent du front en JSON : on passe par la vraie désérialisation.
         let choices: HashMap<String, ChoiceIn> = serde_json::from_str(r#"{"Mairie":"keep_both"}"#).unwrap();
@@ -492,9 +501,9 @@ mod tests {
 
     #[test]
     fn unreadable_import_is_import_invalid_and_changes_nothing() {
-        let mut dst = book();
+        let (mut dst, _g_dst) = book();
         account_create(&mut dst, "A", "r", Secret::new("x".into())).unwrap();
-        let path = temp_file("junk.lenscout");
+        let (path, _g_path) = temp_file("junk.lenscout");
         std::fs::write(&path, b"{\"format\":\"autre\"}").unwrap();
         assert_eq!(accounts_import_plan(&dst, &path).unwrap_err(), "import_invalid");
         assert_eq!(accounts_import_apply(&mut dst, &path, HashMap::new()).unwrap_err(), "import_invalid");
@@ -502,18 +511,18 @@ mod tests {
         assert_eq!(accounts_import_plan(&dst, &path).unwrap_err(), "import_invalid");
         assert_eq!(dst.list().len(), 1);
         // Fichier absent : erreur d'accès, pas « illisible ».
-        let gone = temp_file("absent.lenscout");
+        let (gone, _g_gone) = temp_file("absent.lenscout");
         assert_eq!(accounts_import_plan(&dst, &gone).unwrap_err(), "file_unreadable");
     }
 
     #[test]
     fn export_adds_the_extension_when_missing() {
-        let mut src = book();
+        let (mut src, _g_src) = book();
         account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
-        let bare = temp_file("sauvegarde");
+        let (bare, _g_bare) = temp_file("sauvegarde");
         accounts_export(&src, &bare).unwrap();
         assert!(bare.with_extension("lenscout").exists() && !bare.exists());
-        let named = temp_file("b.lenscout");
+        let (named, _g_named) = temp_file("b.lenscout");
         accounts_export(&src, &named).unwrap();
         assert!(named.exists());
     }
@@ -522,9 +531,9 @@ mod tests {
     #[test]
     fn export_is_private_even_over_a_stale_temp() {
         use std::os::unix::fs::PermissionsExt;
-        let mut src = book();
+        let (mut src, _g_src) = book();
         account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
-        let path = temp_file("c.lenscout");
+        let (path, _g_path) = temp_file("c.lenscout");
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         std::fs::write(&tmp, b"vieux").unwrap();
@@ -537,9 +546,9 @@ mod tests {
     /// a pour « dossier » un fichier ordinaire, le système refuse quoi qu'on soit.
     #[test]
     fn io_errors_on_the_chosen_file_have_their_own_codes() {
-        let mut src = book();
+        let (mut src, _g_src) = book();
         account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
-        let plain = temp_file("ordinaire");
+        let (plain, _g_plain) = temp_file("ordinaire");
         std::fs::write(&plain, b"x").unwrap();
         let path = plain.join("d.lenscout");
         assert_eq!(accounts_export(&src, &path).unwrap_err(), "file_unwritable");

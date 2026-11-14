@@ -827,10 +827,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn captures_received_datagrams_when_a_directory_is_given() {
-        let dir = std::env::temp_dir().join(format!("lenscout-capture-{}", uuid::Uuid::new_v4()));
+        let dir = crate::testing::TmpDir::new("lenscout-capture");
         let (p, _) = probe_pair(Arc::new(MdnsProbe), vec![(axis_response_packet(), from("192.0.2.21", 5353))]);
         let (tx, _rx) = mpsc::channel(256);
-        run_scan_with_capture(vec![p], axis_http(), arp(&[]), cfg(), tx, CancellationToken::new(), Some(dir.clone())).await;
+        run_scan_with_capture(vec![p], axis_http(), arp(&[]), cfg(), tx, CancellationToken::new(), Some(dir.to_path_buf())).await;
         let written = std::fs::read(dir.join("mdns-192.0.2.21-0.bin")).unwrap();
         assert_eq!(written, axis_response_packet());
     }

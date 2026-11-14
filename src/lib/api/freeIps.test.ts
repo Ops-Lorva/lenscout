@@ -57,15 +57,25 @@ test('le réseau est affiché avec son interface', () => {
   expect(networkLabel('eth0', null, null)).toBe('eth0');
 });
 
-test('startFreeIps relaie les événements du canal et cancelFreeIps appelle la commande', async () => {
+test('startFreeIps numérote le balayage, relaie ses événements, et cancelFreeIps vise ce numéro', async () => {
   invoke.mockResolvedValue(undefined);
   const got: unknown[] = [];
-  await startFreeIps('eth0', (e) => got.push(e));
+  const run = startFreeIps('eth0', (e) => got.push(e));
+  await run.done;
   const [cmd, args] = invoke.mock.calls[0];
   expect(cmd).toBe('cmd_free_ips');
   expect(args.interface).toBe('eth0');
+  expect(args.id).toBe(run.id);
   args.channel.onmessage({ kind: 'progress', done: 1, total: 2 });
   expect(got).toEqual([{ kind: 'progress', done: 1, total: 2 }]);
-  await cancelFreeIps();
-  expect(invoke).toHaveBeenLastCalledWith('cmd_free_ips_cancel');
+  await cancelFreeIps(run.id);
+  expect(invoke).toHaveBeenLastCalledWith('cmd_free_ips_cancel', { id: run.id });
+});
+
+test('deux balayages ont deux numéros différents', () => {
+  invoke.mockResolvedValue(undefined);
+  const a = startFreeIps('eth0', () => {});
+  const b = startFreeIps('eth0', () => {});
+  expect(b.id).not.toBe(a.id);
+  expect(Number.isSafeInteger(a.id)).toBe(true);
 });

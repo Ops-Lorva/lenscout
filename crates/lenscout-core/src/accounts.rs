@@ -702,6 +702,13 @@ mod tests {
         store: Arc<MemoryStore>,
     }
 
+    // Le dossier temporaire part avec la fixture, même si le test échoue.
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     impl Fixture {
         fn new() -> Self {
             let dir =
@@ -737,8 +744,9 @@ mod tests {
         Secret::new(p.into())
     }
 
-    fn empty_book() -> AccountBook {
-        Fixture::new().book()
+    fn empty_book() -> (AccountBook, Fixture) {
+        let fx = Fixture::new();
+        (fx.book(), fx)
     }
 
     #[test]
@@ -777,7 +785,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_empty_book() {
-        assert!(empty_book().list().is_empty());
+        assert!(empty_book().0.list().is_empty());
     }
 
     #[test]
@@ -792,7 +800,7 @@ mod tests {
 
     #[test]
     fn update_rejects_name_of_another_account() {
-        let mut book = empty_book();
+        let (mut book, _fx_book) = empty_book();
         book.create("A", "root", pwd(PWD)).unwrap();
         let b = book.create("B", "root", pwd(PWD)).unwrap();
         let err = book.update(&b.id, "a", "root", None).unwrap_err();
@@ -803,7 +811,7 @@ mod tests {
 
     #[test]
     fn empty_fields_rejected() {
-        let mut book = empty_book();
+        let (mut book, _fx_book) = empty_book();
         assert!(matches!(
             book.create(" ", "root", pwd(PWD)).unwrap_err(),
             AccountError::EmptyField
@@ -861,7 +869,7 @@ mod tests {
 
     #[test]
     fn unknown_id_is_not_found() {
-        let mut book = empty_book();
+        let (mut book, _fx_book) = empty_book();
         assert!(matches!(book.credentials("x"), Err(AccountError::NotFound)));
         assert!(matches!(
             book.update("x", "A", "r", None),
@@ -871,7 +879,7 @@ mod tests {
 
     #[test]
     fn account_debug_has_no_password() {
-        let mut book = empty_book();
+        let (mut book, _fx_book) = empty_book();
         let acc = book.create("A", "root", pwd(PWD)).unwrap();
         assert!(!format!("{book:?} {acc:?}").contains("S3cr3t"));
     }
@@ -1041,7 +1049,7 @@ mod tests {
     // ---- Export / import ----
 
     fn sample_book() -> AccountBook {
-        let mut book = empty_book();
+        let (mut book, _fx_book) = empty_book();
         book.create("Mairie Arles", "root-unique", pwd(PWD))
             .unwrap();
         book.create("Gare", "admin", pwd("Autre-1")).unwrap();
@@ -1075,7 +1083,7 @@ mod tests {
     fn export_then_import_on_empty_book_restores_all() {
         let src = sample_book();
         let data = src.export();
-        let mut dst = empty_book();
+        let (mut dst, _fx_dst) = empty_book();
         let plan = dst.import_plan(&data).unwrap();
         assert!(plan.items.iter().all(|i| i.kind == ImportKind::New));
         let summary = dst.import_apply(&data, &HashMap::new()).unwrap();
@@ -1115,16 +1123,16 @@ mod tests {
         assert_eq!(book.list(), before);
     }
 
-    fn differing() -> (AccountBook, String) {
+    fn differing() -> (AccountBook, String, Fixture) {
         let src = sample_book();
-        let mut dst = empty_book();
+        let (mut dst, fx) = empty_book();
         dst.create("Mairie Arles", "autre-login", pwd(PWD)).unwrap();
-        (dst, src.export())
+        (dst, src.export(), fx)
     }
 
     #[test]
     fn import_plan_reports_what_differs_without_secrets() {
-        let (dst, data) = differing();
+        let (dst, data, _fx) = differing();
         let plan = dst.import_plan(&data).unwrap();
         let mairie = plan
             .items
@@ -1144,7 +1152,7 @@ mod tests {
 
     #[test]
     fn import_differs_default_replace() {
-        let (mut dst, data) = differing();
+        let (mut dst, data, _fx) = differing();
         let id = dst.list()[0].id.clone();
         let summary = dst.import_apply(&data, &HashMap::new()).unwrap();
         assert_eq!((summary.added, summary.replaced), (1, 1));
@@ -1156,11 +1164,11 @@ mod tests {
     #[test]
     fn import_keep_both_avoids_every_name_of_the_file() {
         // Le fichier porte « X » (qui diffère) et « X 2 » : « X » devient « X 3 ».
-        let mut src = empty_book();
+        let (mut src, _fx_src) = empty_book();
         src.create("X", "root", pwd("a")).unwrap();
         src.create("X 2", "admin", pwd("b")).unwrap();
         let data = src.export();
-        let mut dst = empty_book();
+        let (mut dst, _fx_dst) = empty_book();
         dst.create("X", "autre", pwd("c")).unwrap();
         let choices = HashMap::from([("X".to_string(), Choice::KeepBoth)]);
         let summary = dst.import_apply(&data, &choices).unwrap();
@@ -1174,7 +1182,7 @@ mod tests {
 
     #[test]
     fn import_keep_both_picks_next_free_suffix() {
-        let (mut dst, data) = differing();
+        let (mut dst, data, _fx) = differing();
         dst.create("Mairie Arles 2", "x", pwd("y")).unwrap();
         let choices = HashMap::from([("Mairie Arles".to_string(), Choice::KeepBoth)]);
         let summary = dst.import_apply(&data, &choices).unwrap();
@@ -1200,7 +1208,7 @@ mod tests {
 
     #[test]
     fn import_skip_changes_nothing() {
-        let (mut dst, data) = differing();
+        let (mut dst, data, _fx) = differing();
         let choices = HashMap::from([("Mairie Arles".to_string(), Choice::Skip)]);
         let summary = dst.import_apply(&data, &choices).unwrap();
         assert_eq!((summary.skipped, summary.replaced), (1, 0));
@@ -1255,12 +1263,12 @@ mod tests {
         fx.write_v1(&[("id-1", "Sans secret", "root")]);
         let (nopass, _) = load_or_quarantine(fx.path(), fx.store.clone());
         let data = nopass.export();
-        let mut dst = empty_book();
+        let (mut dst, _fx_dst) = empty_book();
         dst.create("Sans secret", "root", pwd(PWD)).unwrap();
         let plan = dst.import_plan(&data).unwrap();
         assert_eq!(plan.items[0].kind, ImportKind::Identical);
         // Sur un carnet vide : ajouté, à ressaisir.
-        let mut empty = empty_book();
+        let (mut empty, _fx_empty) = empty_book();
         empty.import_apply(&data, &HashMap::new()).unwrap();
         assert!(!empty.has_secret(&empty.list()[0].id));
     }
@@ -1401,7 +1409,7 @@ mod tests {
 
     #[test]
     fn debug_never_shows_login() {
-        let mut book = empty_book();
+        let (mut book, _fx_book) = empty_book();
         let acc = book.create("A", "root-unique", pwd(PWD)).unwrap();
         let creds = book.credentials(&acc.id).unwrap();
         let out = format!("{book:?} {acc:?} {creds:?}");

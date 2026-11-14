@@ -33,6 +33,7 @@
   let state = $state<FreeState | null>(null);
   // Un balayage remplacé ou une feuille fermée ne doit plus rien écrire.
   let run = 0;
+  let runId: number | null = null;
   let alive = true;
 
   const active = $derived(state?.phase === 'done' ? rangeContaining(state.ranges, value) : undefined);
@@ -41,11 +42,13 @@
     const mine = ++run;
     state = { phase: 'scanning', done: 0, total: 0 };
     try {
-      await startFreeIps(iface, (e) => {
+      const started = startFreeIps(iface, (e) => {
         if (!alive || mine !== run) return;
         state = reduceFreeEvent(state, e);
         if (e.kind === 'done') onFound(e.ranges);
       });
+      runId = started.id;
+      await started.done;
     } catch (e) {
       if (alive && mine === run) state = { phase: 'error', code: freeErrorKey(e) };
     }
@@ -54,7 +57,7 @@
   onMount(scan);
   onDestroy(() => {
     alive = false;
-    void cancelFreeIps().catch(() => {});
+    if (runId !== null) void cancelFreeIps(runId).catch(() => {});
   });
 </script>
 
