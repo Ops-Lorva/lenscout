@@ -243,6 +243,34 @@ impl crate::temp_ip::Elevator for FakeElevator {
     }
 }
 
+/// Faux voisins ARP : une table fixe, ou la même MAC pour toute adresse.
+pub struct FakeNeighbours {
+    table: std::collections::HashMap<std::net::Ipv4Addr, String>,
+    any: Option<String>,
+}
+
+impl FakeNeighbours {
+    /// Table fixe : adresse → MAC.
+    pub fn table(entries: &[(&str, &str)]) -> Self {
+        FakeNeighbours {
+            table: entries.iter().map(|(ip, mac)| (ip.parse().unwrap(), mac.to_string())).collect(),
+            any: None,
+        }
+    }
+
+    /// Toute adresse répond avec `mac`.
+    pub fn any(mac: &str) -> Self {
+        FakeNeighbours { table: Default::default(), any: Some(mac.to_string()) }
+    }
+}
+
+#[async_trait]
+impl crate::discovery::arp::Neighbours for FakeNeighbours {
+    async fn mac_of(&self, _iface: &crate::discovery::arp::ScanInterface, ip: std::net::Ipv4Addr) -> Option<String> {
+        self.table.get(&ip).cloned().or_else(|| self.any.clone())
+    }
+}
+
 /// `Elevator` des tests où aucune élévation ne doit avoir lieu.
 pub struct PanicElevator;
 

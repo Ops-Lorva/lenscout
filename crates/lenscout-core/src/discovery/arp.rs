@@ -104,6 +104,23 @@ pub async fn read_neighbours(iface: &ScanInterface) -> HashMap<Ipv4Addr, String>
     out
 }
 
+/// La MAC d'un voisin telle que la couche 2 la voit (table ARP du système),
+/// pas telle que l'appareil l'annonce ; le faux des tests rend une table fixe.
+#[async_trait]
+pub trait Neighbours: Send + Sync {
+    /// MAC normalisée de `ip` dans la table ARP de `iface`, `None` sans entrée.
+    async fn mac_of(&self, iface: &ScanInterface, ip: Ipv4Addr) -> Option<String>;
+}
+
+pub struct SystemNeighbours;
+
+#[async_trait]
+impl Neighbours for SystemNeighbours {
+    async fn mac_of(&self, iface: &ScanInterface, ip: Ipv4Addr) -> Option<String> {
+        read_neighbours(iface).await.remove(&ip)
+    }
+}
+
 /// Arguments de `ip neigh`, restreints à l'interface choisie.
 #[allow(dead_code)]
 fn neigh_args(iface: &ScanInterface) -> Vec<&str> {

@@ -9,7 +9,9 @@ use lenscout_core::discovery::scanner::{
 };
 use lenscout_core::discovery::sadp::SadpProbe;
 use lenscout_core::http_client::ReqwestCameraHttp;
+use lenscout_core::actions::row_key;
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
+use lenscout_core::model::Activation;
 use lenscout_core::presence;
 use lenscout_core::transport::Datagram;
 use tauri::ipc::Channel;
@@ -46,6 +48,9 @@ pub struct LastSeen {
     /// (`ScanEvent::HeardSadp`) : seules celles-ci peuvent recevoir une action
     /// SADP, qui diffuse le mot de passe sur le LAN de l'interface.
     pub sadp_macs: HashSet<String>,
+    /// Clés de ligne (MAC, sinon IP) dont la dernière annonce du scan dit
+    /// « neuve » : seules celles-ci peuvent être activées.
+    pub new_keys: HashSet<String>,
 }
 
 /// Instantané de `LastSeen`, adresses triées.
@@ -53,6 +58,7 @@ pub struct SeenSnapshot {
     pub iface: Option<String>,
     pub ips: Vec<Ipv4Addr>,
     pub sadp_macs: Vec<String>,
+    pub new_keys: Vec<String>,
 }
 
 impl ScanState {
@@ -62,7 +68,9 @@ impl ScanState {
         ips.sort();
         let mut sadp_macs: Vec<String> = last.sadp_macs.iter().cloned().collect();
         sadp_macs.sort();
-        SeenSnapshot { iface: last.iface.clone(), ips, sadp_macs }
+        let mut new_keys: Vec<String> = last.new_keys.iter().cloned().collect();
+        new_keys.sort();
+        SeenSnapshot { iface: last.iface.clone(), ips, sadp_macs, new_keys }
     }
 
     /// Un nouveau scan repart de zéro, sur son interface ; rend son numéro.
@@ -85,6 +93,14 @@ impl ScanState {
             }
             ScanEvent::HeardSadp { mac } => {
                 last.sadp_macs.insert(mac.clone());
+            }
+            ScanEvent::Upsert { camera } => {
+                let key = row_key(camera);
+                if camera.activation == Activation::New {
+                    last.new_keys.insert(key);
+                } else {
+                    last.new_keys.remove(&key);
+                }
             }
             _ => {}
         }
@@ -234,7 +250,7 @@ pub fn cmd_open_camera_web(app: AppHandle, ip: String, port: u16) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lenscout_core::model::{Activation, Camera, Family};
+    use lenscout_core::model::{Camera, Family};
 
     fn eth0() -> ScanInterface {
         ScanInterface { name: "eth0".into(), ip: "10.0.50.2".parse().unwrap(), mask: "255.255.255.0".parse().unwrap() }
@@ -297,6 +313,38 @@ mod tests {
         state.begin(&ScanInterface { name: "wlan0".into(), ..eth0() });
         assert!(state.seen().ips.is_empty());
         assert_eq!(state.seen().iface.as_deref(), Some("wlan0"));
+    }
+
+    /// L'état d'activation lu au scan est tenu par Rust, par clé de ligne : la
+    /// dernière annonce d'une ligne fait foi.
+    #[test]
+    fn seules_les_lignes_lues_neuves_au_scan_sont_retenues() {
+        let state = ScanState::default();
+        let cam = |mac: Option<&str>, activation| Camera {
+            ip: "192.0.2.11".parse().unwrap(),
+            mac: mac.map(String::from),
+            family: Family::Axis,
+            brand: None,
+            model: None,
+            serial: None,
+            firmware: None,
+            activation,
+            http_port: 80,
+            sources: vec![],
+        };
+        let g = state.begin(&eth0());
+        state.record(g, &ScanEvent::Upsert { camera: cam(Some("AC:CC:8E:12:34:56"), Activation::Unknown) });
+        assert!(state.seen().new_keys.is_empty());
+        state.record(g, &ScanEvent::Upsert { camera: cam(Some("AC:CC:8E:12:34:56"), Activation::New) });
+        state.record(g, &ScanEvent::Upsert { camera: cam(None, Activation::New) });
+        assert_eq!(state.seen().new_keys, vec!["192.0.2.11".to_string(), "AC:CC:8E:12:34:56".to_string()]);
+        // Relue activée (ou plus enrichie : IP partagée) : retirée.
+        state.record(g, &ScanEvent::Upsert { camera: cam(Some("AC:CC:8E:12:34:56"), Activation::Activated) });
+        state.record(g, &ScanEvent::Upsert { camera: cam(None, Activation::Unknown) });
+        assert!(state.seen().new_keys.is_empty());
+        state.record(g, &ScanEvent::Upsert { camera: cam(Some("AC:CC:8E:12:34:56"), Activation::New) });
+        state.begin(&eth0());
+        assert!(state.seen().new_keys.is_empty(), "un nouveau scan repart de zéro");
     }
 
     /// Un scan remplacé qui finit de se vider n'écrit pas dans le nouveau.
@@ -399,6 +447,8 @@ mod tests {
             in_use: vec![],
             other_ifaces: vec![],
             account_network: false,
+            seen_new: seen.new_keys,
+            neighbours: Arc::new(lenscout_core::testing::FakeNeighbours::any("AC:CC:8E:12:34:56")),
         };
         let cam = Camera {
             ip: "10.66.66.66".parse().unwrap(),
@@ -413,8 +463,12 @@ mod tests {
             sources: vec![],
         };
         let creds = Credentials { login: "root".into(), password: Secret::new("x".into()) };
-        let r = apply(&ctx, &cam, &creds, &Action::Activate).await;
+        // L'heure : « Activer » s'arrêterait avant, faute d'état lu neuf au scan.
+        let time = Action::Time(lenscout_core::vapix::TimeSettings { ntp_servers: vec![], timezone: "UTC".into() });
+        let r = apply(&ctx, &cam, &creds, &time).await;
         assert_eq!(r.error, Some(ActionError::CameraOffSubnet));
+        let r = apply(&ctx, &cam, &creds, &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::NotNew));
     }
 
     #[test]

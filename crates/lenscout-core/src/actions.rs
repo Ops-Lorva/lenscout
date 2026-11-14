@@ -12,8 +12,9 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::batch::{Assignment, BatchRequest};
-use crate::discovery::arp::ScanInterface;
-use crate::model::{Camera, Family, Source, normalize_mac};
+use crate::discovery::arp::{Neighbours, ScanInterface};
+use crate::model::{Activation, Camera, Family, Source, normalize_mac};
+use crate::oui::camera_brand_for_mac;
 use crate::temp_ip::{
     Elevator, TempIpError, needs_temp_ip, pick_temp_ip, reachable_with_temp_ip, read_journal, subnets_overlap,
     temp_mask, with_temp_ip,
@@ -25,7 +26,11 @@ use crate::vapix::{self, NetworkSettings, TimeSettings, VapixError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    /// Premier compte, en https seulement.
     Activate,
+    /// `Activate` dont l'envoi en http clair, si https ne se connecte pas, a
+    /// été confirmé par le technicien pour CETTE caméra (jamais un lot).
+    ActivateCleartext,
     Network(NetworkSettings),
     Time(TimeSettings),
 }
@@ -92,6 +97,18 @@ pub enum ActionError {
     /// l'IP temporaire. Revenir sur DHCP pour joindre cette caméra.
     #[error("réseau d'un compte en cours")]
     AccountNetworkActive,
+    /// Activation : https injoignable. Rien n'est parti ; le technicien peut
+    /// confirmer l'envoi en clair pour cette caméra.
+    #[error("https injoignable : envoi en clair à confirmer")]
+    ActivationCleartext,
+    /// Activation d'un appareil que le dernier scan n'a pas lu neuf
+    /// (`needsetup=yes`) : rien n'est envoyé.
+    #[error("caméra pas lue neuve au scan")]
+    NotNew,
+    /// Activation : la MAC vue en couche 2 (table ARP) n'est pas d'un OUI
+    /// Axis, ou l'adresse n'a pas d'entrée ARP. Le mot de passe ne part pas.
+    #[error("MAC non Axis en couche 2")]
+    MacNotAxis,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -129,6 +146,12 @@ pub struct ActionContext {
     /// Une IP de compte est posée (« Se mettre dans ce réseau ») : elle
     /// tient le verrou de l'IP temporaire.
     pub account_network: bool,
+    /// Clés de ligne (MAC, sinon IP, comme `ActionResult::key`) que le dernier
+    /// scan a lues neuves, tenues par Rust : seules elles peuvent être activées.
+    pub seen_new: Vec<String>,
+    /// Table ARP : la MAC de couche 2 d'une caméra avant l'envoi d'un mot de
+    /// passe d'activation.
+    pub neighbours: Arc<dyn Neighbours>,
 }
 
 /// Erreur d'un appel VAPIX → code affiché. `ip` n'est que celle de la caméra visée.
@@ -145,6 +168,30 @@ fn from_vapix(e: VapixError, ip: Ipv4Addr) -> ActionError {
         VapixError::Rejected(detail) => ActionError::Rejected { detail },
         VapixError::Parse(_) => ActionError::BadReply,
         VapixError::Invalid(reason) => ActionError::Invalid { reason: reason.into() },
+        VapixError::Cleartext => ActionError::ActivationCleartext,
+    }
+}
+
+/// Clé de la ligne d'une caméra : sa MAC, sinon son IP.
+pub fn row_key(cam: &Camera) -> String {
+    cam.mac.clone().unwrap_or_else(|| cam.ip.to_string())
+}
+
+fn is_activation(action: &Action) -> bool {
+    matches!(action, Action::Activate | Action::ActivateCleartext)
+}
+
+/// Neuve pour le front ET pour le dernier scan tenu par Rust.
+fn read_as_new(ctx: &ActionContext, cam: &Camera) -> bool {
+    cam.activation == Activation::New && ctx.seen_new.contains(&row_key(cam))
+}
+
+/// La MAC de couche 2 de la caméra (pas celle qu'elle annonce) est d'un OUI
+/// Axis. Relève la barre face à un faux appareil, sans plus : une MAC se change.
+async fn layer2_is_axis(ctx: &ActionContext, cam: &Camera) -> bool {
+    match ctx.neighbours.mac_of(&ctx.iface, cam.ip).await {
+        Some(mac) => matches!(camera_brand_for_mac(&mac), Some((Family::Axis, _))),
+        None => false,
     }
 }
 
@@ -219,7 +266,7 @@ fn off_subnet_allowed(ctx: &ActionContext, ip: Ipv4Addr) -> bool {
 
 fn result(cam: &Camera, outcome: Result<(), ActionError>) -> ActionResult {
     ActionResult {
-        key: cam.mac.clone().unwrap_or_else(|| cam.ip.to_string()),
+        key: row_key(cam),
         ok: outcome.is_ok(),
         error: outcome.err(),
     }
@@ -245,8 +292,16 @@ async fn apply_checked(
 ) -> Result<(), ActionError> {
     match cam.family {
         Family::Axis => {}
-        Family::Hikvision => return apply_sadp(ctx, cam, creds, action).await,
+        Family::Hikvision => {
+            if is_activation(action) && !read_as_new(ctx, cam) {
+                return Err(ActionError::NotNew);
+            }
+            return apply_sadp(ctx, cam, creds, action).await;
+        }
         Family::Other => return Err(ActionError::Unsupported),
+    }
+    if is_activation(action) && !read_as_new(ctx, cam) {
+        return Err(ActionError::NotNew);
     }
     if on_subnet(&ctx.iface, cam.ip) {
         return verify_and_write(ctx, cam, creds, action).await;
@@ -306,7 +361,7 @@ async fn apply_sadp(
     }
     let uuid = uuid::Uuid::new_v4();
     let msg = match action {
-        Action::Activate => sadp::build_activate(uuid, &mac, &creds.password),
+        Action::Activate | Action::ActivateCleartext => sadp::build_activate(uuid, &mac, &creds.password),
         Action::Network(net) => sadp::build_update(uuid, &mac, &creds.password, net),
         Action::Time(_) => None,
     };
@@ -322,16 +377,21 @@ async fn verify_and_write(
     action: &Action,
 ) -> Result<(), ActionError> {
     verify_identity(ctx, cam, creds).await?;
+    // Juste avant le mot de passe : la couche 2 dit-elle Axis ?
+    if is_activation(action) && !layer2_is_axis(ctx, cam).await {
+        return Err(ActionError::MacNotAxis);
+    }
     let http = ctx.http.as_ref();
     let base = cam.base_url();
     let done = match action {
-        Action::Activate => vapix::activate(http, &base, creds).await,
+        Action::Activate => vapix::activate(http, &base, creds, false).await,
+        Action::ActivateCleartext => vapix::activate(http, &base, creds, true).await,
         Action::Network(net) => vapix::set_network(http, &base, creds, net).await,
         Action::Time(t) => vapix::set_time(http, &base, creds, t).await,
     };
     done.map_err(|e| match (action, from_vapix(e, cam.ip)) {
         // Une caméra qui a déjà un compte refuse la création du premier (401).
-        (Action::Activate, ActionError::AuthFailed) => ActionError::AlreadyActivated,
+        (Action::Activate | Action::ActivateCleartext, ActionError::AuthFailed) => ActionError::AlreadyActivated,
         (_, err) => err,
     })
 }
@@ -397,7 +457,7 @@ mod tests {
     use crate::model::{Activation, Source};
     use crate::secret::Secret;
     use crate::temp_ip::TempIpError;
-    use crate::testing::{FakeElevator, FakeHttp, PanicElevator};
+    use crate::testing::{FakeElevator, FakeHttp, FakeNeighbours, PanicElevator};
     use crate::transport::{ByteStream, HttpRequest, HttpResponse, Method};
     use async_trait::async_trait;
 
@@ -449,6 +509,8 @@ mod tests {
             in_use: vec![],
             other_ifaces: vec![],
             account_network: false,
+            seen_new: vec![MAC.into(), "192.0.2.11".into()],
+            neighbours: Arc::new(FakeNeighbours::any(MAC)),
         };
         TestCtx { c, _journal: journal }
     }
@@ -972,6 +1034,88 @@ mod tests {
         assert_eq!(r.error, Some(ActionError::Rejected { detail: "Error: invalid password.".into() }));
     }
 
+    /// Seule une caméra que le dernier scan a lue neuve (côté Rust) reçoit
+    /// « Activer » ; l'état envoyé par le front ne suffit pas.
+    #[tokio::test]
+    async fn activate_is_refused_unless_the_scan_read_the_camera_as_new() {
+        let http = Arc::new(axis_ok());
+        for state in [Activation::Activated, Activation::Unknown] {
+            let mut c = cam("192.0.2.11", Family::Axis);
+            c.activation = state;
+            for action in [Action::Activate, Action::ActivateCleartext] {
+                let r = apply(&ctx(http.clone()), &c, &creds(), &action).await;
+                assert_eq!(r.error, Some(ActionError::NotNew), "{state:?}");
+            }
+        }
+        // Le front dit « neuve », le scan ne l'a pas lue ainsi.
+        let mut c = ctx(http.clone());
+        c.seen_new.clear();
+        let r = apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::NotNew));
+        assert!(http.requests().is_empty());
+        // Les autres actions ne changent pas.
+        let mut unknown = cam("192.0.2.11", Family::Axis);
+        unknown.activation = Activation::Unknown;
+        assert!(apply(&c, &unknown, &creds(), &time()).await.ok);
+    }
+
+    /// Le mot de passe ne part que si la MAC vue en couche 2 (table ARP) est
+    /// d'un OUI Axis ; une MAC absente de la table est refusée aussi.
+    #[tokio::test]
+    async fn activate_needs_an_axis_mac_in_the_arp_table() {
+        for table in [
+            FakeNeighbours::table(&[]),
+            FakeNeighbours::table(&[("192.0.2.11", "A4:5E:60:11:22:33")]),
+            FakeNeighbours::table(&[("192.0.2.12", MAC)]),
+        ] {
+            let http = Arc::new(axis_ok());
+            let mut c = ctx(http.clone());
+            c.neighbours = Arc::new(table);
+            for action in [Action::Activate, Action::ActivateCleartext] {
+                let r = apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &action).await;
+                assert_eq!(r.error, Some(ActionError::MacNotAxis));
+            }
+            assert!(writes(&http).is_empty(), "aucun mot de passe envoyé");
+            // Les autres actions ne lisent pas l'ARP.
+            assert!(apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &time()).await.ok);
+        }
+        let http = Arc::new(axis_ok());
+        let mut c = ctx(http.clone());
+        c.neighbours = Arc::new(FakeNeighbours::table(&[("192.0.2.11", "00:40:8C:01:02:03")]));
+        assert!(apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await.ok);
+    }
+
+    /// https injoignable : `activation_cleartext`, rien en clair ; seule
+    /// l'action confirmée pour cette caméra repasse en http.
+    #[tokio::test]
+    async fn https_unreachable_activation_asks_before_sending_in_cleartext() {
+        let http = Arc::new(Scripted::new(|req| {
+            if req.url.starts_with("https://") {
+                Err(NetError::Unreachable("443 fermé".into()))
+            } else if req.url.ends_with("basicdeviceinfo.cgi") {
+                Ok(HttpResponse { status: 200, headers: vec![], body: INFO.to_vec() })
+            } else {
+                Ok(HttpResponse { status: 200, headers: vec![], body: b"Created account root.".to_vec() })
+            }
+        }));
+        let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::ActivationCleartext));
+        let urls = http.urls.lock().unwrap().clone();
+        assert!(!urls.contains(&"http://192.0.2.11/axis-cgi/pwdgrp.cgi".to_string()), "{urls:?}");
+        let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::ActivateCleartext).await;
+        assert!(r.ok, "{r:?}");
+        assert!(http.urls.lock().unwrap().contains(&"http://192.0.2.11/axis-cgi/pwdgrp.cgi".to_string()));
+    }
+
+    #[test]
+    fn cleartext_refusal_becomes_its_own_code() {
+        let ip: Ipv4Addr = "192.0.2.11".parse().unwrap();
+        assert_eq!(from_vapix(VapixError::Cleartext, ip), ActionError::ActivationCleartext);
+        assert_eq!(serde_json::to_string(&ActionError::ActivationCleartext).unwrap(), r#"{"code":"activation_cleartext"}"#);
+        assert_eq!(serde_json::to_string(&ActionError::NotNew).unwrap(), r#"{"code":"not_new"}"#);
+        assert_eq!(serde_json::to_string(&ActionError::MacNotAxis).unwrap(), r#"{"code":"mac_not_axis"}"#);
+    }
+
     fn ll_cam() -> Camera {
         cam("169.254.10.20", Family::Axis)
     }
@@ -1174,6 +1318,9 @@ mod tests {
             ActionError::TempIpLeft { ip },
             ActionError::TempIpBusy,
             ActionError::AccountNetworkActive,
+            ActionError::ActivationCleartext,
+            ActionError::NotNew,
+            ActionError::MacNotAxis,
         ];
         for e in all {
             let json = serde_json::to_string(&e).unwrap();

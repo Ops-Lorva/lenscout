@@ -2,8 +2,9 @@ import { expect, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
+import { get } from 'svelte/store';
 import type { Camera } from './types';
-import { applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
+import { activateCleartext, cleartextPending, mergeResults, actionResults, applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
 
 const cam = (family: Camera['family'], ip = '10.0.50.11'): Camera => ({
   ip, mac: null, family, brand: null, model: null, serial: null, firmware: null,
@@ -67,11 +68,12 @@ test('fuseaux : jamais vide, fuseau du poste s’il est listé', () => {
   expect(defaultTimeZone([])).toBe('UTC');
 });
 
-test('« Activer » grisé quand toutes les caméras sont déjà activées', () => {
+test('« Activer » grisé sans aucune caméra lue neuve au scan', () => {
   const done = (ip: string): Camera => ({ ...cam('axis', ip), activation: 'activated' });
   expect(canActivate([done('10.0.50.11'), done('10.0.50.12')])).toBe(false);
   expect(canActivate([done('10.0.50.11'), cam('axis', '10.0.50.12')])).toBe(true);
-  expect(canActivate([{ ...cam('axis'), activation: 'unknown' }])).toBe(true);
+  // Rust refuse d'activer un état inconnu (`not_new`).
+  expect(canActivate([{ ...cam('axis'), activation: 'unknown' }])).toBe(false);
   expect(canActivate([])).toBe(false);
   expect(canActivate([cam('other')])).toBe(false);
 });
@@ -86,9 +88,48 @@ test('hors du sous-réseau du poste : masque appliqué aux deux adresses', () =>
 });
 
 test('les nouveaux codes ont un message', () => {
-  for (const code of ['identity_unreadable', 'camera_off_subnet', 'camera_not_seen', 'already_activated', 'network_needs_one_camera'] as const) {
+  for (const code of ['identity_unreadable', 'camera_off_subnet', 'camera_not_seen', 'already_activated', 'network_needs_one_camera', 'activation_cleartext', 'not_new', 'mac_not_axis'] as const) {
     expect(resultMessage({ key: 'k', ok: false, error: { code } })).toEqual({ key: `configure.error.${code}`, values: {} });
   }
+});
+
+test('https injoignable : les caméras à confirmer, une par une', () => {
+  const a = { ...cam('axis', '10.0.50.11'), mac: 'AC:CC:8E:00:00:01' };
+  const b = { ...cam('axis', '10.0.50.12'), mac: 'AC:CC:8E:00:00:02' };
+  const c = cam('axis', '10.0.50.13');
+  const results = [
+    { key: 'AC:CC:8E:00:00:01', ok: false, error: { code: 'activation_cleartext' as const } },
+    { key: 'AC:CC:8E:00:00:02', ok: true, error: null },
+    { key: '10.0.50.13', ok: false, error: { code: 'activation_cleartext' as const } },
+  ];
+  expect(cleartextPending(results, [a, b, c])).toEqual([a, c]);
+  expect(cleartextPending([], [a])).toEqual([]);
+});
+
+test('envoi en clair confirmé : une seule caméra, le drapeau pour elle seule', async () => {
+  invoke.mockClear();
+  invoke.mockResolvedValue([{ key: '10.0.50.11', ok: true, error: null }]);
+  const one = cam('axis');
+  await activateCleartext(one, 'acc', 'eth0');
+  expect(invoke).toHaveBeenCalledWith('cmd_apply_action', {
+    cameras: [one],
+    accountId: 'acc',
+    action: { kind: 'activate', allow_cleartext: true },
+    iface: 'eth0',
+  });
+});
+
+test('le résultat d’une confirmation remplace la pastille de sa seule caméra', () => {
+  actionResults.set(new Map());
+  mergeResults([
+    { key: 'a', ok: false, error: { code: 'activation_cleartext' } },
+    { key: 'b', ok: true, error: null },
+  ]);
+  mergeResults([{ key: 'a', ok: true, error: null }]);
+  const m = get(actionResults);
+  expect(m.get('a')?.ok).toBe(true);
+  expect(m.get('b')?.ok).toBe(true);
+  expect(m.size).toBe(2);
 });
 
 test('aucune caméra : rien n’est envoyé à Rust', async () => {

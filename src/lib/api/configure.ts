@@ -23,7 +23,11 @@ export type ActionError =
   | { code: 'elevation_refused'; ip: string }
   | { code: 'temp_ip_failed' }
   | { code: 'temp_ip_left'; ip: string }
-  | { code: 'temp_ip_busy' };
+  | { code: 'temp_ip_busy' }
+  | { code: 'account_network_active' }
+  | { code: 'activation_cleartext' }
+  | { code: 'not_new' }
+  | { code: 'mac_not_axis' };
 
 /** Miroir de `ActionResult` ; `key` = MAC de la caméra, sinon son IP (comme `cameraKey`). */
 export interface ActionResult {
@@ -34,7 +38,7 @@ export interface ActionResult {
 
 /** Miroir de `ActionDto` (src-tauri/src/commands/configure.rs). */
 export type ActionDto =
-  | { kind: 'activate' }
+  | { kind: 'activate'; allow_cleartext?: boolean }
   | { kind: 'network_dhcp' }
   | { kind: 'network_static'; ip: string; mask: string; gateway: string | null; dns: string[] }
   | { kind: 'time'; ntp_servers: string[]; timezone: string };
@@ -51,9 +55,9 @@ const ACTIONABLE: readonly Family[] = ['axis'];
 export const canAct = (cams: Camera[]): boolean =>
   cams.length > 0 && cams.every((c) => ACTIONABLE.includes(c.family));
 
-/** Activer ne sert à rien si toutes les caméras visées le sont déjà. */
+/** Activer : au moins une caméra lue neuve au scan (Rust refuse les autres : `not_new`). */
 export const canActivate = (cams: Camera[]): boolean =>
-  canAct(cams) && !cams.every((c) => c.activation === 'activated');
+  canAct(cams) && cams.some((c) => c.activation === 'new');
 
 const ipNum = (ip: string): number | null => {
   const p = ip.trim().split('.');
@@ -84,6 +88,14 @@ export const setResults = (list: ActionResult[]) =>
   actionResults.set(new Map(list.map((r) => [r.key, r])));
 
 export const clearResults = () => actionResults.set(new Map());
+
+/** Ajoute ou remplace les pastilles reçues, sans toucher aux autres lignes. */
+export const mergeResults = (list: ActionResult[]) =>
+  actionResults.update((m) => new Map([...m, ...list.map((r) => [r.key, r] as const)]));
+
+/** Caméras dont l'activation attend une confirmation d'envoi en clair (https injoignable). */
+export const cleartextPending = (results: ActionResult[], cams: Camera[]): Camera[] =>
+  cams.filter((c) => results.some((r) => r.key === cameraKey(c) && r.error?.code === 'activation_cleartext'));
 
 /** Les clés de ligne du front et du cœur coïncident : MAC sinon IP. */
 export const resultFor = (m: Map<string, ActionResult>, c: Camera): ActionResult | undefined =>
@@ -148,6 +160,13 @@ export const applyAction = (cameras: Camera[], accountId: string, action: Action
   cameras.length === 0
     ? Promise.reject('no_cameras')
     : invoke<ActionResult[]>('cmd_apply_action', { cameras, accountId, action, iface });
+
+/**
+ * Envoi du mot de passe en http clair confirmé par le technicien pour CETTE
+ * caméra : jamais pour une liste (Rust refuse aussi plus d'une caméra).
+ */
+export const activateCleartext = (camera: Camera, accountId: string, iface: string) =>
+  applyAction([camera], accountId, { kind: 'activate', allow_cleartext: true }, iface);
 
 /** Le lot vise au moins deux caméras d'une marque configurable (une seule : « IP »). */
 export const canBatchIp = (cams: Camera[]): boolean => cams.length > 1 && canAct(cams);

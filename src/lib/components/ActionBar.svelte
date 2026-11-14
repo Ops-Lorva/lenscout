@@ -1,6 +1,7 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { applyAction, canActivate, dialogAfterSelection, canAct, canChangeIp, canBatchIp, clearResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
+  import { activateCleartext, applyAction, canActivate, cleartextPending, dialogAfterSelection, canAct, canChangeIp, canBatchIp, clearResults, mergeResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
+  import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { cameraKey, cameras, selectedCameras } from '#lib/stores/cameras.ts';
   import BatchIpDialog from './BatchIpDialog.svelte';
@@ -16,6 +17,10 @@
   let accountId = $state('');
   let busy = $state(false);
   let error = $state('');
+  // HTTPS injoignable à l'activation : caméras qui attendent une confirmation
+  // d'envoi en clair, une par une, avec le compte de l'activation.
+  let pending = $state<Camera[]>([]);
+  let pendingAccount = '';
 
   const cams = $derived($selectedCameras);
   const allowed = $derived(canAct(cams));
@@ -41,6 +46,11 @@
     onDone();
   }
 
+  function closeDialog() {
+    open = null;
+    pending = [];
+  }
+
   async function run(action: ActionDto) {
     // La sélection est figée au clic : ce qui part est ce que le dialogue annonçait.
     const targets = cams;
@@ -49,11 +59,30 @@
     error = '';
     clearResults();
     try {
-      setResults(await applyAction(targets, accountId, action, iface));
-      open = null;
+      const results = await applyAction(targets, accountId, action, iface);
+      setResults(results);
+      pending = action.kind === 'activate' ? cleartextPending(results, targets) : [];
+      pendingAccount = accountId;
+      if (pending.length === 0) open = null;
       if (action.kind === 'network_dhcp' || action.kind === 'network_static') onDone();
     } catch (e) {
-      open = null;
+      closeDialog();
+      error = `configure.${errorKey(e)}`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Confirmation pour UNE caméra : le mot de passe part en clair vers elle seule.
+  async function confirmCleartext(cam: Camera) {
+    busy = true;
+    error = '';
+    try {
+      mergeResults(await activateCleartext(cam, pendingAccount, iface));
+      pending = pending.filter((c) => c !== cam);
+      if (pending.length === 0) open = null;
+    } catch (e) {
+      closeDialog();
       error = `configure.${errorKey(e)}`;
     } finally {
       busy = false;
@@ -74,7 +103,7 @@
 {/if}
 
 {#if open === 'activate'}
-  <ActivateDialog count={cams.length} bind:accountId {busy} onSubmit={() => run({ kind: 'activate' })} onClose={() => (open = null)} />
+  <ActivateDialog count={cams.length} bind:accountId {busy} {pending} onSubmit={() => run({ kind: 'activate' })} onConfirm={confirmCleartext} onClose={closeDialog} />
 {:else if open === 'network'}
   <NetworkDialog subtitle={oneLabel} bind:accountId {busy} {iface} onSubmit={run} onClose={() => (open = null)} />
 {:else if open === 'batch'}

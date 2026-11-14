@@ -76,6 +76,10 @@ pub enum VapixError {
     /// front traduit ; jamais de texte affiché tel quel.
     #[error("valeur refusée : {0}")]
     Invalid(&'static str),
+    /// Activation : https injoignable et http clair non confirmé. Rien n'est
+    /// parti, le mot de passe non plus.
+    #[error("https injoignable, http clair non confirmé")]
+    Cleartext,
 }
 
 /// `base` est `http://hôte[:port]`, avec ou sans barre finale.
@@ -310,10 +314,14 @@ pub async fn activation_state(http: &dyn CameraHttp, base: &str) -> Activation {
 
 /// Crée le premier compte (administrateur avec PTZ), sans authentification :
 /// la caméra n'en accepte aucune tant qu'elle n'a pas de compte.
+///
+/// `allow_cleartext` : le technicien a confirmé, pour cette caméra seule,
+/// l'envoi du mot de passe en http clair si https ne se connecte pas.
 pub async fn activate(
     http: &dyn CameraHttp,
     base: &str,
     account: &Credentials,
+    allow_cleartext: bool,
 ) -> Result<(), VapixError> {
     let login = &account.login;
     if login.is_empty() || login.len() > 14 || !login.bytes().all(|b| b.is_ascii_alphanumeric()) {
@@ -333,13 +341,20 @@ pub async fn activate(
     );
     // https d'abord (certificat auto-signé accepté, comme partout en v1) ;
     // http clair seulement si https ne se connecte pas (port fermé, échec
-    // TLS : `Unreachable`, rien n'est parti). Jamais après une réponse HTTP ni
-    // un silence après l'envoi : le mot de passe a pu arriver.
+    // TLS : `Unreachable`, rien n'est parti) ET si le technicien l'a confirmé
+    // pour cette caméra. Jamais après une réponse HTTP ni un silence après
+    // l'envoi : le mot de passe a pu arriver.
     if let Some(secure) = https_base(base) {
         match http.send(post(&secure, "/axis-cgi/pwdgrp.cgi", FORM, body.clone()), None).await {
-            Err(NetError::Unreachable(_)) => debug("pwdgrp.cgi : https injoignable, repli http"),
+            Err(NetError::Unreachable(_)) if allow_cleartext => debug("pwdgrp.cgi : https injoignable, http confirmé"),
+            Err(NetError::Unreachable(_)) => {
+                debug("pwdgrp.cgi : https injoignable, http clair à confirmer");
+                return Err(VapixError::Cleartext);
+            }
             done => return require_text_ok(&done?),
         }
+    } else if !allow_cleartext {
+        return Err(VapixError::Cleartext);
     }
     let resp = http
         .send(post(base, "/axis-cgi/pwdgrp.cgi", FORM, body), None)
@@ -651,7 +666,7 @@ mod tests {
             200,
             "Created account root.",
         );
-        activate(&http, BASE, &creds("root", "S3cr3t"))
+        activate(&http, BASE, &creds("root", "S3cr3t"), false)
             .await
             .unwrap();
         let req = &http.requests()[0];
@@ -694,22 +709,41 @@ mod tests {
         Ok(HttpResponse { status: 200, headers: vec![], body: b"Created account root.".to_vec() })
     }
 
-    /// Le mot de passe part d'abord en https (certificat accepté) ; http clair
-    /// seulement si https ne se connecte pas (port fermé, échec TLS).
+    /// Le mot de passe part en https (certificat accepté). Si https ne se
+    /// connecte pas (port fermé, échec TLS), rien ne part en clair sans
+    /// `allow_cleartext` : `Cleartext`, et le technicien confirme cette caméra.
     #[tokio::test]
     async fn activate_tries_https_first_then_http_only_without_a_connection() {
-        let https_ok = ByUrl::new(|_| created());
-        activate(&https_ok, "http://192.0.2.11:8080", &creds("root", "x")).await.unwrap();
-        assert_eq!(https_ok.urls(), ["https://192.0.2.11/axis-cgi/pwdgrp.cgi"]);
+        for allow in [false, true] {
+            let https_ok = ByUrl::new(|_| created());
+            activate(&https_ok, "http://192.0.2.11:8080", &creds("root", "x"), allow).await.unwrap();
+            assert_eq!(https_ok.urls(), ["https://192.0.2.11/axis-cgi/pwdgrp.cgi"]);
+        }
 
-        let no_tls = ByUrl::new(|u| {
+        let no_tls = || ByUrl::new(|u| {
             if u.starts_with("https://") { Err(NetError::Unreachable("connexion impossible".into())) } else { created() }
         });
-        activate(&no_tls, "http://192.0.2.11:8080", &creds("root", "x")).await.unwrap();
+        let refused = no_tls();
+        let err = activate(&refused, "http://192.0.2.11:8080", &creds("root", "x"), false).await.unwrap_err();
+        assert!(matches!(err, VapixError::Cleartext), "{err:?}");
+        assert_eq!(refused.urls(), ["https://192.0.2.11/axis-cgi/pwdgrp.cgi"], "rien en clair");
+
+        let confirmed = no_tls();
+        activate(&confirmed, "http://192.0.2.11:8080", &creds("root", "x"), true).await.unwrap();
         assert_eq!(
-            no_tls.urls(),
+            confirmed.urls(),
             ["https://192.0.2.11/axis-cgi/pwdgrp.cgi", "http://192.0.2.11:8080/axis-cgi/pwdgrp.cgi"]
         );
+    }
+
+    /// Une base qui n'est pas en http n'a pas d'équivalent https : sans
+    /// confirmation, rien ne part.
+    #[tokio::test]
+    async fn activate_without_an_https_base_needs_the_confirmation_too() {
+        let http = ByUrl::new(|_| created());
+        let err = activate(&http, "ftp://192.0.2.11", &creds("root", "x"), false).await.unwrap_err();
+        assert!(matches!(err, VapixError::Cleartext), "{err:?}");
+        assert!(http.urls().is_empty());
     }
 
     /// Une réponse HTTP en https (refus, erreur) ou un silence après l'envoi :
@@ -725,7 +759,7 @@ mod tests {
             |_| Err(NetError::Io("coupure".into())),
         ] {
             let http = ByUrl::new(reply);
-            assert!(activate(&http, BASE, &creds("root", "x")).await.is_err());
+            assert!(activate(&http, BASE, &creds("root", "x"), false).await.is_err());
             assert_eq!(http.urls(), ["https://192.0.2.11/axis-cgi/pwdgrp.cgi"]);
         }
     }
@@ -738,7 +772,7 @@ mod tests {
             200,
             "# Error: user exists",
         );
-        let err = activate(&http, BASE, &creds("root", "S3cr3t"))
+        let err = activate(&http, BASE, &creds("root", "S3cr3t"), false)
             .await
             .unwrap_err();
         assert!(matches!(err, VapixError::Rejected(_)), "{err:?}");
@@ -749,7 +783,7 @@ mod tests {
     async fn activate_rejects_bad_login_without_sending() {
         let http = FakeHttp::new().on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "ok");
         for login in ["", "a&b", "dix-huit-lettres-xx", "élève"] {
-            let err = activate(&http, BASE, &creds(login, "S3cr3t"))
+            let err = activate(&http, BASE, &creds(login, "S3cr3t"), false)
                 .await
                 .unwrap_err();
             assert!(matches!(err, VapixError::Invalid("bad_login")), "{login}: {err:?}");
@@ -765,7 +799,7 @@ mod tests {
             200,
             "Created account root.",
         );
-        activate(&http, BASE, &creds("root", "a&b=c"))
+        activate(&http, BASE, &creds("root", "a&b=c"), false)
             .await
             .unwrap();
         assert!(body_of(&http.requests()[0]).contains("pwd=a%26b%3Dc&"));
@@ -986,7 +1020,7 @@ mod tests {
             "Error: invalid password.",
         );
         assert!(matches!(
-            activate(&http, BASE, &creds("root", "x")).await,
+            activate(&http, BASE, &creds("root", "x"), false).await,
             Err(VapixError::Rejected(_))
         ));
         let http = FakeHttp::new().on(
@@ -995,7 +1029,7 @@ mod tests {
             200,
             "Created account root. (No Error)",
         );
-        assert!(activate(&http, BASE, &creds("root", "x")).await.is_ok());
+        assert!(activate(&http, BASE, &creds("root", "x"), false).await.is_ok());
     }
 
     fn time(servers: &[&str]) -> TimeSettings {

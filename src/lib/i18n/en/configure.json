@@ -40,7 +40,10 @@
     "auth_insecure": "Basic authentication refused over HTTP",
     "bad_reply": "Unreadable reply",
     "keyring": "Keychain unavailable",
-    "account_network_active": "An account IP is set on this computer: switch back to DHCP to reach this camera"
+    "account_network_active": "An account IP is set on this computer: switch back to DHCP to reach this camera",
+    "activation_cleartext": "HTTPS unavailable: password not sent",
+    "not_new": "Not read as new by the scan: rescan",
+    "mac_not_axis": "MAC seen on the network is not Axis: password not sent"
   },
   "off_subnet": "Outside the subnet of {iface}",
   "invalid": {
@@ -55,5 +58,7 @@
     "bad_password": "Invalid password (1 to 64 characters)"
   },
   "activate_note": "This account’s password becomes each camera’s password.",
-  "busy": "In progress"
+  "busy": "In progress",
+  "cleartext_confirm": "HTTPS unavailable: send the password in cleartext to {ip}?",
+  "cleartext_send": "Send in cleartext"
 }

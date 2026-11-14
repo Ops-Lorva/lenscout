@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use lenscout_core::accounts::AccountBook;
 use lenscout_core::actions::{Action, ActionContext, ActionResult, apply_all, apply_batch, on_subnet};
 use lenscout_core::batch::{Assignment, BatchError, BatchRequest, plan_batch};
-use lenscout_core::discovery::arp::{ScanInterface, read_neighbours};
+use lenscout_core::discovery::arp::{ScanInterface, SystemNeighbours, read_neighbours};
 use lenscout_core::discovery::sadp;
 use lenscout_core::discovery::socket::open_multicast;
 use lenscout_core::transport::Datagram;
@@ -34,7 +34,11 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActionDto {
-    Activate,
+    /// `allow_cleartext` : envoi en http clair confirmé pour cette caméra.
+    Activate {
+        #[serde(default)]
+        allow_cleartext: bool,
+    },
     NetworkDhcp,
     NetworkStatic {
         ip: Ipv4Addr,
@@ -55,7 +59,8 @@ pub enum ActionDto {
 /// erreurs par caméra sont dans les `ActionResult`.
 pub(crate) fn to_action(dto: ActionDto) -> Result<Action, String> {
     Ok(match dto {
-        ActionDto::Activate => Action::Activate,
+        ActionDto::Activate { allow_cleartext: false } => Action::Activate,
+        ActionDto::Activate { allow_cleartext: true } => Action::ActivateCleartext,
         ActionDto::NetworkDhcp => Action::Network(NetworkSettings::Dhcp),
         ActionDto::NetworkStatic { ip, mask, gateway, dns } => {
             Action::Network(NetworkSettings::Static { ip, mask, gateway, dns })
@@ -79,6 +84,15 @@ pub(crate) fn to_action(dto: ActionDto) -> Result<Action, String> {
             Action::Time(TimeSettings { ntp_servers, timezone })
         }
     })
+}
+
+/// L'envoi en clair d'un mot de passe d'activation se confirme pour une
+/// caméra à la fois : une liste de plusieurs (ou aucune) est refusée.
+pub(crate) fn one_camera_for_cleartext(action: &Action, cameras: usize) -> Result<(), String> {
+    if *action == Action::ActivateCleartext && cameras != 1 {
+        return Err("bad_action".into());
+    }
+    Ok(())
 }
 
 /// Le contexte d'écriture, identique pour une action et pour un lot : sous-réseau
@@ -142,6 +156,8 @@ async fn build_context(
         in_use,
         other_ifaces,
         account_network,
+        seen_new: seen.new_keys,
+        neighbours: Arc::new(SystemNeighbours),
     })
 }
 
@@ -163,6 +179,7 @@ pub async fn cmd_apply_action(
     join: State<'_, super::join::JoinState>,
 ) -> Result<Vec<ActionResult>, String> {
     let action = to_action(action)?;
+    one_camera_for_cleartext(&action, cameras.len())?;
     let creds = credentials_for(&accounts, &account_id)?;
     let ctx = build_context(iface, &cameras, &scan, &journal.0, &join).await?;
     Ok(apply_all(&ctx, &cameras, &creds, &action).await)
@@ -363,6 +380,19 @@ mod tests {
             t,
             Action::Time(TimeSettings { ntp_servers: vec!["pool.ntp.org".into()], timezone: "Europe/Paris".into() })
         );
+    }
+
+    /// L'envoi en clair se confirme caméra par caméra : jamais pour un lot.
+    #[test]
+    fn l_activation_en_clair_ne_vise_qu_une_camera() {
+        assert_eq!(parse(r#"{"kind":"activate","allow_cleartext":false}"#).unwrap(), Action::Activate);
+        let clear = parse(r#"{"kind":"activate","allow_cleartext":true}"#).unwrap();
+        assert_eq!(clear, Action::ActivateCleartext);
+        assert_eq!(one_camera_for_cleartext(&clear, 1), Ok(()));
+        for n in [0, 2, 5] {
+            assert_eq!(one_camera_for_cleartext(&clear, n), Err("bad_action".to_string()), "{n}");
+        }
+        assert_eq!(one_camera_for_cleartext(&Action::Activate, 5), Ok(()));
     }
 
     #[test]
