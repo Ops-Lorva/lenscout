@@ -13,8 +13,8 @@ use tauri::State;
 
 /// Erreurs : codes stables (`empty_field`, `duplicate_name`, `not_found`,
 /// `secret_missing`, `keyring`, `io`, `import_invalid`, `file_unwritable`,
-/// `file_unreadable`, `invalid_pc_ip`, `invalid_network`, `invalid_gateway`,
-/// `pc_ip_outside_network`, `gateway_outside_network`), traduits par le front. Le message de
+/// `file_unreadable`, `invalid_pc_ip`, `missing_mask`, `invalid_gateway`,
+/// `gateway_outside_network`), traduits par le front. Le message de
 /// l'OS n'est pas renvoyé.
 fn code(e: AccountError) -> String {
     match e {
@@ -26,9 +26,8 @@ fn code(e: AccountError) -> String {
         AccountError::Io(_) => "io",
         AccountError::ImportInvalid => "import_invalid",
         AccountError::InvalidPcIp => "invalid_pc_ip",
-        AccountError::InvalidNetwork => "invalid_network",
+        AccountError::MaskMissing => "missing_mask",
         AccountError::InvalidGateway => "invalid_gateway",
-        AccountError::PcIpOutsideNetwork => "pc_ip_outside_network",
         AccountError::GatewayOutsideNetwork => "gateway_outside_network",
     }
     .to_string()
@@ -366,11 +365,10 @@ mod tests {
             gateway: Some(g.into()),
         };
         let cases = [
-            (net("x", "", ""), "invalid_pc_ip"),
-            (net("", "x", ""), "invalid_network"),
+            (net("x/24", "", ""), "invalid_pc_ip"),
+            (net("10.0.1.5", "", ""), "missing_mask"),
             (net("", "", "x"), "invalid_gateway"),
-            (net("10.0.1.5/24", "10.0.0.0/24", ""), "pc_ip_outside_network"),
-            (net("", "10.0.0.0/24", "10.0.1.1"), "gateway_outside_network"),
+            (net("10.0.1.5/24", "10.0.0.0/16", "10.0.2.1"), "gateway_outside_network"),
         ];
         for (n, want) in cases {
             assert_eq!(account_create(&mut book, "A", "r", pwd(), n).unwrap_err(), want);

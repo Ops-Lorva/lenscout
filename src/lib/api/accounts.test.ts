@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  createAccount, joinable, netIn, updateAccount, whyKeys,
+  createAccount, joinable, netIn, pcIpError, updateAccount, whyKeys,
   applyImport, defaultChoices, exportAccounts, groupPlan, importPlan, keepBothNames, noticeKey, passwordRequired,
   pickAccount, suffixedName, withExtension, type ImportPlan,
 } from './accounts';
@@ -139,7 +139,8 @@ test('les codes d’E/S du fichier choisi ont leur libellé', () => {
 
 test('champs réseau : vides → null, transmis à la création et à la modification', async () => {
   invoke.mockResolvedValue({});
-  const net = netIn(' 192.168.1.250/24 ', '', '192.168.1.1');
+  // Le réseau ne se saisit plus : Rust le déduit de l'IP du PC.
+  const net = netIn(' 192.168.1.250/24 ', '192.168.1.1');
   expect(net).toEqual({ pc_ip: '192.168.1.250/24', network: null, gateway: '192.168.1.1' });
   await createAccount('A', 'root', 'pw', net);
   expect(invoke).toHaveBeenLastCalledWith('cmd_account_create', { name: 'A', login: 'root', password: 'pw', net });
@@ -163,4 +164,14 @@ test('le sélecteur de réseau ne propose que les comptes qui ont une IP du PC',
     { id: 'c', name: 'C', login: 'r', pc_ip: '' },
   ];
   expect(joinable(list).map((a) => a.id)).toEqual(['a']);
+});
+
+test('IP du PC sans masque : erreur sous le champ, jamais de /24 ajouté', () => {
+  expect(pcIpError('192.168.1.250')).toBe('error.missing_mask');
+  expect(pcIpError(' 192.168.1.250 ')).toBe('error.missing_mask');
+  expect(pcIpError('192.168.1.250/24')).toBe('');
+  // Champ vide : facultatif, pas d'erreur.
+  expect(pcIpError('')).toBe('');
+  expect(pcIpError('  ')).toBe('');
+  expect(errorKey('missing_mask')).toBe('error.missing_mask');
 });

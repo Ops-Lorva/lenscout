@@ -23,7 +23,7 @@ function cidr(s: string): { ip: number; prefix: number } | null {
 
 const maskBits = (prefix: number) => (prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0);
 
-/** `192.168.1.250/24` → `192.168.1.0/24` ; illisible → `''`. Aide du formulaire de compte. */
+/** `192.168.1.250/24` → `192.168.1.0/24` ; illisible → `''`. */
 export function networkOf(pcIp: string): string {
   const c = cidr(pcIp);
   return c ? `${dotted((c.ip & maskBits(c.prefix)) >>> 0)}/${c.prefix}` : '';
@@ -34,10 +34,6 @@ export function maskOf(s: string): string {
   const c = cidr(s);
   return c ? dotted(maskBits(c.prefix)) : '';
 }
-
-/** Réseau du formulaire de compte : déduit de l'IP du PC tant que l'utilisateur n'a pas touché le champ. */
-export const derivedNetwork = (pcIp: string, network: string, touched: boolean): string =>
-  touched ? network : networkOf(pcIp) || network;
 
 export interface AccountNet {
   pc_ip?: string | null;

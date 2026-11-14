@@ -25,6 +25,8 @@ pub struct Account {
 /// Réseau du site d'un compte, tout facultatif et en clair : `pc_ip` = IPv4 +
 /// préfixe que prend le poste (`192.168.1.250/24`), `network` = CIDR
 /// (`192.168.1.0/24`), `gateway` = IPv4. Normalisé par `validated`.
+/// `network` ne se saisit plus : il se déduit de `pc_ip` (gardé dans le
+/// fichier et l'export pour les versions précédentes, qui le lisent).
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct AccountNetwork {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,6 +47,12 @@ fn parse_cidr(s: &str) -> Option<(Ipv4Addr, u8)> {
 
 fn mask_bits(prefix: u8) -> u32 {
     if prefix == 0 { 0 } else { !0u32 << (32 - u32::from(prefix)) }
+}
+
+/// Réseau `a.b.c.0/n` d'une IP du PC `a.b.c.d/n` lisible.
+fn network_of(pc_ip: &str) -> Option<String> {
+    let (ip, prefix) = parse_cidr(pc_ip.trim())?;
+    Some(format!("{}/{prefix}", Ipv4Addr::from(u32::from(ip) & mask_bits(prefix))))
 }
 
 /// Adresse d'hôte du réseau : ni l'adresse de réseau ni la diffusion (sauf
@@ -68,9 +76,9 @@ fn contains(net: (Ipv4Addr, u8), ip: Ipv4Addr) -> bool {
 }
 
 impl AccountNetwork {
-    /// Champs vides retirés, espaces ôtés, `network` ramené à son adresse de
-    /// réseau. `pc_ip` doit appartenir à `network` ; `gateway` à `network`, ou
-    /// à défaut au réseau de `pc_ip`.
+    /// Champs vides retirés, espaces ôtés, `network` recalculé depuis `pc_ip`
+    /// (celui reçu est ignoré : anciens fichiers, ancien formulaire).
+    /// `gateway` doit appartenir au réseau de `pc_ip`.
     pub fn validated(&self) -> Result<AccountNetwork, AccountError> {
         let clean = |f: &Option<String>| {
             f.as_deref()
@@ -78,9 +86,11 @@ impl AccountNetwork {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
         };
-        let (pc_ip, network, gateway) = (clean(&self.pc_ip), clean(&self.network), clean(&self.gateway));
+        let (pc_ip, gateway) = (clean(&self.pc_ip), clean(&self.gateway));
         let pc = match &pc_ip {
             None => None,
+            // Jamais de /24 ajouté d'office : le masque se saisit.
+            Some(s) if !s.contains('/') => return Err(AccountError::MaskMissing),
             Some(s) => {
                 let (ip, prefix) = parse_cidr(s).ok_or(AccountError::InvalidPcIp)?;
                 // /8 à /30 : un réseau de site, avec de la place pour les caméras.
@@ -90,24 +100,12 @@ impl AccountNetwork {
                 Some((ip, prefix))
             }
         };
-        let net = match &network {
-            None => None,
-            Some(s) => {
-                let (ip, prefix) = parse_cidr(s).ok_or(AccountError::InvalidNetwork)?;
-                Some((Ipv4Addr::from(u32::from(ip) & mask_bits(prefix)), prefix))
-            }
-        };
-        if let (Some((ip, _)), Some(n)) = (pc, net)
-            && !contains(n, ip)
-        {
-            return Err(AccountError::PcIpOutsideNetwork);
-        }
         if let Some(g) = &gateway {
             let g: Ipv4Addr = g.parse().map_err(|_| AccountError::InvalidGateway)?;
             if !unicast(g) || pc.is_some_and(|(ip, _)| ip == g) {
                 return Err(AccountError::InvalidGateway);
             }
-            if let Some(scope) = net.or(pc) {
+            if let Some(scope) = pc {
                 if !contains(scope, g) {
                     return Err(AccountError::GatewayOutsideNetwork);
                 }
@@ -117,8 +115,8 @@ impl AccountNetwork {
             }
         }
         Ok(AccountNetwork {
+            network: pc_ip.as_deref().and_then(network_of),
             pc_ip,
-            network: net.map(|(ip, prefix)| format!("{ip}/{prefix}")),
             gateway,
         })
     }
@@ -155,12 +153,14 @@ impl AccountNetwork {
     }
 
     /// Lecture du carnet : un champ qui n'est pas une chaîne est ignoré
-    /// (jamais un carnet perdu pour un champ facultatif).
+    /// (jamais un carnet perdu pour un champ facultatif) ; le réseau est
+    /// recalculé depuis l'IP du PC.
     fn read_lenient(a: &serde_json::Value) -> AccountNetwork {
         let field = |key: &str| a.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        let pc_ip = field("pc_ip");
         AccountNetwork {
-            pc_ip: field("pc_ip"),
-            network: field("network"),
+            network: pc_ip.as_deref().and_then(network_of),
+            pc_ip,
             gateway: field("gateway"),
         }
     }
@@ -223,12 +223,11 @@ pub enum AccountError {
     ImportInvalid,
     #[error("IP du PC invalide")]
     InvalidPcIp,
-    #[error("réseau invalide")]
-    InvalidNetwork,
+    // IP du PC sans `/préfixe` : rien n'est supposé à la place de l'utilisateur.
+    #[error("masque manquant")]
+    MaskMissing,
     #[error("passerelle invalide")]
     InvalidGateway,
-    #[error("IP du PC hors du réseau")]
-    PcIpOutsideNetwork,
     #[error("passerelle hors du réseau")]
     GatewayOutsideNetwork,
 }
@@ -1026,13 +1025,77 @@ mod tests {
     }
 
     #[test]
+    fn network_is_derived_from_the_pc_ip() {
+        // Le réseau reçu ne compte plus : il se déduit de l'IP du PC.
+        let n = net("10.1.2.250/16", "192.168.1.0/24", "").validated().unwrap();
+        assert_eq!(n, net("10.1.2.250/16", "10.1.0.0/16", ""));
+        // Ancien réseau illisible : ignoré, pas une erreur.
+        assert!(net("192.168.1.250/24", "réseau", "").validated().is_ok());
+        // Sans IP du PC, pas de réseau.
+        assert_eq!(net("", "192.168.1.0/24", "").validated().unwrap(), no_net());
+    }
+
+    #[test]
+    fn pc_ip_without_mask_is_a_missing_mask() {
+        let err = net("192.168.1.250", "", "").validated().unwrap_err();
+        assert!(matches!(err, AccountError::MaskMissing));
+        // Pas de /24 ajouté en douce.
+        let (mut book, _fx) = empty_book();
+        assert!(matches!(
+            book.create("A", "root", pwd(PWD), net(" 192.168.1.250 ", "", "")),
+            Err(AccountError::MaskMissing)
+        ));
+        assert!(book.list().is_empty());
+    }
+
+    #[test]
+    fn stored_network_is_recomputed_on_load() {
+        let fx = Fixture::new();
+        let file = serde_json::json!({"version": 2, "accounts": [
+            {"id": "1", "name": "A", "pc_ip": "192.168.1.250/24", "network": "192.168.0.0/22",
+             "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes())},
+            {"id": "2", "name": "B", "network": "10.0.0.0/8",
+             "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes())},
+        ]});
+        std::fs::write(fx.path(), file.to_string()).unwrap();
+        let (book, startup) = load_or_quarantine(fx.path(), fx.store.clone());
+        assert!(matches!(startup, Startup::Clean));
+        assert_eq!(book.list()[0].net, net("192.168.1.250/24", "192.168.1.0/24", ""));
+        assert_eq!(book.list()[1].net, no_net());
+    }
+
+    #[test]
+    fn import_ignores_the_network_of_older_files() {
+        let (mut book, _fx) = empty_book();
+        book.create("Mairie", "root", pwd(PWD), net("192.168.1.250/24", "", "192.168.1.1"))
+            .unwrap();
+        let file = |network: &str| {
+            serde_json::json!({
+                "format": "lenscout-accounts", "version": 1,
+                "accounts": [{"name": "Mairie", "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes()),
+                    "pc_ip": "192.168.1.250/24", "network": network, "gateway": "192.168.1.1"}],
+            })
+            .to_string()
+        };
+        // Réseau cohérent avec l'IP du PC : rien ne diffère.
+        assert_eq!(book.import_plan(&file("192.168.1.0/24")).unwrap().items[0].kind, ImportKind::Identical);
+        // Ancien réseau saisi à la main (autre préfixe) : recalculé, pas « différent ».
+        assert_eq!(book.import_plan(&file("192.168.0.0/22")).unwrap().items[0].kind, ImportKind::Identical);
+        // Réseau seul, sans IP du PC : le fichier se charge, le réseau est ignoré.
+        let only = serde_json::json!({
+            "format": "lenscout-accounts", "version": 1,
+            "accounts": [{"name": "Gare", "login": seal::seal(b"root"), "network": "10.0.0.0/8"}],
+        })
+        .to_string();
+        book.import_apply(&only, &HashMap::new()).unwrap();
+        assert_eq!(book.list()[1].net, no_net());
+    }
+
+    #[test]
     fn network_fields_are_validated_with_stable_errors() {
         let err = |n: AccountNetwork| n.validated().unwrap_err();
-        for bad in ["192.168.1.250", "192.168.1.250/33", "192.168.1.0/24", "192.168.1.255/24", "x/24", "192.168.1.250/0"] {
+        for bad in ["192.168.1.250/33", "192.168.1.0/24", "192.168.1.255/24", "x/24", "192.168.1.250/0"] {
             assert!(matches!(err(net(bad, "", "")), AccountError::InvalidPcIp), "{bad}");
-        }
-        for bad in ["192.168.1.0", "192.168.1.0/40", "réseau"] {
-            assert!(matches!(err(net("", bad, "")), AccountError::InvalidNetwork), "{bad}");
         }
         for bad in ["192.168.1.1/24", "x", "192.168.1.0", "192.168.1.255"] {
             assert!(
@@ -1044,15 +1107,7 @@ mod tests {
             err(net("192.168.1.250/24", "192.168.1.250/24", "192.168.1.250")),
             AccountError::InvalidGateway
         ));
-        assert!(matches!(
-            err(net("192.168.2.250/24", "192.168.1.0/24", "")),
-            AccountError::PcIpOutsideNetwork
-        ));
-        assert!(matches!(
-            err(net("", "192.168.1.0/24", "192.168.2.1")),
-            AccountError::GatewayOutsideNetwork
-        ));
-        // Sans réseau, la passerelle doit appartenir à celui de l'IP du PC.
+        // La passerelle doit appartenir au réseau de l'IP du PC.
         assert!(matches!(
             err(net("192.168.1.250/24", "", "192.168.2.1")),
             AccountError::GatewayOutsideNetwork
@@ -1118,9 +1173,9 @@ mod tests {
         dst.create("Mairie", "root", pwd(PWD), net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1"))
             .unwrap();
         dst.import_apply(&data, &HashMap::new()).unwrap();
-        // Réseau et passerelle anciens hors du réseau de la nouvelle IP : ceux du fichier (vides).
+        // Passerelle ancienne hors du réseau de la nouvelle IP : celle du fichier (vide).
         let got = dst.list()[0].net.clone();
-        assert_eq!(got, net("10.0.0.250/24", "", ""));
+        assert_eq!(got, net("10.0.0.250/24", "10.0.0.0/24", ""));
         assert_eq!(got.validated().unwrap(), got);
     }
 
@@ -1129,9 +1184,9 @@ mod tests {
         let fx = Fixture::new();
         let mut book = fx.book();
         let err = book
-            .create("A", "root", pwd(PWD), net("192.168.2.250/24", "192.168.1.0/24", ""))
+            .create("A", "root", pwd(PWD), net("192.168.2.250/24", "", "192.168.1.1"))
             .unwrap_err();
-        assert!(matches!(err, AccountError::PcIpOutsideNetwork));
+        assert!(matches!(err, AccountError::GatewayOutsideNetwork));
         assert!(book.list().is_empty());
         let acc = book.create("A", "root", pwd(PWD), no_net()).unwrap();
         let err = book
@@ -1148,9 +1203,9 @@ mod tests {
         let acc = book
             .create("A", "root", pwd(PWD), net("10.1.0.250/16", "", ""))
             .unwrap();
-        book.update(&acc.id, "A", "root", None, net("", "192.168.1.0/24", ""))
+        book.update(&acc.id, "A", "root", None, net("192.168.1.250/24", "", ""))
             .unwrap();
-        assert_eq!(fx.book().list()[0].net, net("", "192.168.1.0/24", ""));
+        assert_eq!(fx.book().list()[0].net, net("192.168.1.250/24", "192.168.1.0/24", ""));
     }
 
     #[test]
@@ -1188,7 +1243,7 @@ mod tests {
             ImportKind::Differs { login_differs: false, password_differs: false, network_differs: true }
         );
         dst.import_apply(&data, &HashMap::new()).unwrap();
-        assert_eq!(dst.list()[0].net, net("192.168.1.250/24", "", ""));
+        assert_eq!(dst.list()[0].net, net("192.168.1.250/24", "192.168.1.0/24", ""));
         assert_eq!(dst.list()[0].id, id);
         // Identique, réseau compris.
         let plan = dst.import_plan(&data).unwrap();

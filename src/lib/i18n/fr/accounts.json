@@ -16,7 +16,6 @@
     "login": "Identifiant",
     "password": "Mot de passe",
     "pc_ip": "IP du PC",
-    "network": "Réseau",
     "gateway": "Passerelle"
   },
   "error": {
@@ -32,9 +31,8 @@
     "file_unwritable": "Impossible d'écrire le fichier choisi",
     "file_unreadable": "Impossible de lire le fichier choisi",
     "invalid_pc_ip": "IP du PC invalide (ex. 192.168.1.250/24)",
-    "invalid_network": "Réseau invalide (ex. 192.168.1.0/24)",
+    "missing_mask": "Masque manquant (ex. /24)",
     "invalid_gateway": "Passerelle invalide",
-    "pc_ip_outside_network": "L'IP du PC n'est pas dans le réseau",
     "gateway_outside_network": "La passerelle n'est pas dans le réseau"
   },
   "notice": {

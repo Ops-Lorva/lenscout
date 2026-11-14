@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  activeAddress, createJoinSwitch, derivedNetwork, DEFAULT_MASK, joinStep, maskOf, networkOf, prefillFor, type Joined,
+  activeAddress, createJoinSwitch, DEFAULT_MASK, joinStep, maskOf, networkOf, prefillFor, type Joined,
 } from './net';
 
 test('le réseau se déduit de l’IP du PC', () => {
@@ -19,15 +19,6 @@ test('masque d’un CIDR', () => {
   expect(maskOf('192.168.1.0/24')).toBe('255.255.255.0');
   expect(maskOf('10.0.0.0/22')).toBe('255.255.252.0');
   expect(maskOf('nope')).toBe('');
-});
-
-test('réseau du compte : déduit de l’IP du PC tant que le champ n’a pas été touché', () => {
-  expect(derivedNetwork('192.168.1.250/24', '', false)).toBe('192.168.1.0/24');
-  expect(derivedNetwork('10.1.2.3/16', '192.168.1.0/24', false)).toBe('10.1.0.0/16');
-  // Saisi à la main (même identique à une déduction passée) : il reste.
-  expect(derivedNetwork('10.1.2.3/16', '192.168.1.0/24', true)).toBe('192.168.1.0/24');
-  // IP du PC incomplète : le champ ne bouge pas.
-  expect(derivedNetwork('10.1.2', '192.168.1.0/24', false)).toBe('192.168.1.0/24');
 });
 
 test('préremplissage : masque et passerelle du compte, sinon les valeurs par défaut', () => {

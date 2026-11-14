@@ -20,12 +20,18 @@ export interface AccountNetIn {
 
 const orNull = (s: string) => (s.trim() === '' ? null : s.trim());
 
-/** Les trois champs du formulaire → ce que Rust attend. */
-export const netIn = (pc_ip: string, network: string, gateway: string): AccountNetIn => ({
+/** Les deux champs du formulaire → ce que Rust attend ; le réseau, Rust le déduit de l'IP du PC. */
+export const netIn = (pc_ip: string, gateway: string): AccountNetIn => ({
   pc_ip: orNull(pc_ip),
-  network: orNull(network),
+  network: null,
   gateway: orNull(gateway),
 });
+
+/** Erreur à afficher sous le champ IP du PC (même clé que le code Rust `missing_mask`), sinon `''`. */
+export const pcIpError = (pcIp: string): string => {
+  const s = pcIp.trim();
+  return s !== '' && !s.includes('/') ? 'error.missing_mask' : '';
+};
 
 /** Entrée de liste : `has_secret` dit seulement si le mot de passe est au trousseau. */
 export interface AccountEntry extends Account {

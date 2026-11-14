@@ -16,7 +16,6 @@
     "login": "Login",
     "password": "Password",
     "pc_ip": "PC IP",
-    "network": "Network",
     "gateway": "Gateway"
   },
   "error": {
@@ -32,9 +31,8 @@
     "file_unwritable": "Unable to write the chosen file",
     "file_unreadable": "Unable to read the chosen file",
     "invalid_pc_ip": "Invalid PC IP (e.g. 192.168.1.250/24)",
-    "invalid_network": "Invalid network (e.g. 192.168.1.0/24)",
+    "missing_mask": "Missing mask (e.g. /24)",
     "invalid_gateway": "Invalid gateway",
-    "pc_ip_outside_network": "The PC IP is not in the network",
     "gateway_outside_network": "The gateway is not in the network"
   },
   "notice": {

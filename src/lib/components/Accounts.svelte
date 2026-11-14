@@ -4,10 +4,9 @@
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
     accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, listAccounts, netIn, noticeKey,
-    passwordRequired, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
+    passwordRequired, pcIpError, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
-  import { derivedNetwork } from '$lib/api/net';
   import { clearStatusIf, status, type Status } from '$lib/stores/nav';
   import Dialog from './Dialog.svelte';
   import ImportSheet from './ImportSheet.svelte';
@@ -24,17 +23,17 @@
   // Masqué par défaut, remasqué à chaque ouverture et fermeture.
   let showPassword = $state(false);
   let pcIp = $state('');
-  let network = $state('');
   let gateway = $state('');
-  // Réseau saisi (ou déjà enregistré) : l'IP du PC ne le change plus.
-  let networkTouched = false;
   let confirming = $state('');
   let needPassword = $state(true);
 
   const nameError = $derived(errorCode === 'error.duplicate_name' ? error : '');
-  const otherError = $derived(nameError ? '' : error);
-  // Enregistrer reste grisé tant qu'un champ obligatoire est vide.
-  const ready = $derived(name.trim() !== '' && login.trim() !== '' && (!needPassword || password !== ''));
+  // Masque manquant : vu dès la saisie, ou rendu par Rust (même clé).
+  const pcIpKey = $derived(pcIpError(pcIp) || (errorCode === 'error.missing_mask' ? errorCode : ''));
+  const pcIpMessage = $derived(pcIpKey ? $_(`accounts.${pcIpKey}`) : '');
+  const otherError = $derived(nameError || errorCode === 'error.missing_mask' ? '' : error);
+  // Enregistrer reste grisé tant qu'un champ obligatoire est vide ou que l'IP du PC n'a pas de masque.
+  const ready = $derived(name.trim() !== '' && login.trim() !== '' && (!needPassword || password !== '') && !pcIpError(pcIp));
 
   // Import en cours : le fichier choisi et son plan (la feuille s'ouvre dessus).
   let importing = $state<{ path: string; plan: ImportPlan } | null>(null);
@@ -104,13 +103,7 @@
     password = '';
     showPassword = false;
     pcIp = a?.pc_ip ?? '';
-    network = a?.network ?? '';
     gateway = a?.gateway ?? '';
-    networkTouched = network !== '';
-  }
-
-  function onPcIp() {
-    network = derivedNetwork(pcIp, network, networkTouched);
   }
 
   function close() {
@@ -125,7 +118,7 @@
     error = '';
     errorCode = '';
     try {
-      const net = netIn(pcIp, network, gateway);
+      const net = netIn(pcIp, gateway);
       if (editing) await updateAccount(editing, name, login, password === '' ? null : password, net);
       else await createAccount(name, login, password, net);
     } catch (e) {
@@ -234,9 +227,10 @@
           </button>
         </span>
         <label for="a-pcip">{$_('accounts.field.pc_ip')}</label>
-        <input id="a-pcip" type="text" bind:value={pcIp} oninput={onPcIp} placeholder="192.168.1.250/24" inputmode="decimal" autocomplete="off" spellcheck="false" />
-        <label for="a-net">{$_('accounts.field.network')}</label>
-        <input id="a-net" type="text" bind:value={network} oninput={() => (networkTouched = network !== '')} placeholder="192.168.1.0/24" inputmode="decimal" autocomplete="off" spellcheck="false" />
+        <input id="a-pcip" type="text" bind:value={pcIp} oninput={() => { if (errorCode === 'error.missing_mask') { error = ''; errorCode = ''; } }}
+          placeholder="192.168.1.250/24" inputmode="decimal" autocomplete="off" spellcheck="false"
+          aria-invalid={pcIpMessage ? 'true' : undefined} aria-describedby={pcIpMessage ? 'a-pcip-err' : undefined} />
+        {#if pcIpMessage}<span class="note bad" id="a-pcip-err">{pcIpMessage}</span>{/if}
         <label for="a-gw">{$_('accounts.field.gateway')}</label>
         <input id="a-gw" type="text" bind:value={gateway} placeholder="192.168.1.1" inputmode="decimal" autocomplete="off" spellcheck="false" />
       </div>
