@@ -36,5 +36,10 @@
   "overrides": {
     "esbuild": "^0.28.2",
     "deepmerge": "file:./vendor/deepmerge"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "es5-ext": false,
+    "fsevents": false
   }
 }
