@@ -95,6 +95,12 @@ export function accountChoices(list: Account[], j: Joined | null): AccountChoice
   return out;
 }
 
+/**
+ * Un scan peut-il partir ? Jamais pendant la pose d'une IP : il verrait
+ * l'ancien réseau, ou rien (l'adresse n'est pas encore là).
+ */
+export const canScan = (iface: string, posing: boolean): boolean => !!iface && !posing;
+
 /** Jetons de génération : seule la dernière attente lancée compte. */
 export function generations() {
   let n = 0;

@@ -13,7 +13,7 @@
   import { actionResults, resultFor } from '$lib/api/configure';
   import { accountList, ensureAccounts } from '$lib/stores/accounts';
   import {
-    accountChoices, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice,
+    accountChoices, canScan, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice,
   } from '$lib/api/net';
 
   const IFACE_KEY = 'lenscout.iface';
@@ -65,7 +65,8 @@
 
   // `keepSelection` : rescan différé d'une action IP, la sélection suit les MAC.
   async function scan(keepSelection = false) {
-    if (!iface) return;
+    // Rescan différé, premier affichage : rien pendant la pose d'une IP.
+    if (!canScan(iface, posing)) return;
     const mine = ++run;
     error = '';
     scanning = true;
@@ -127,6 +128,11 @@
     const mine = poses.next();
     posing = true;
     error = '';
+    // Plus rien de l'ancien réseau : ni rescan différé, ni scan en cours
+    // (ses derniers événements sont ignorés, il ne re-remplit pas la liste).
+    rescanTimers.forEach(clearTimeout);
+    rescanTimers = [];
+    if (scanning) stop();
     try {
       await joinReady();
       return poses.current(mine);

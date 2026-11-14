@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  accountChoices, activeAddress, createJoinSwitch, DEFAULT_MASK, generations, joinReady, joinStep, maskOf, networkOf, prefillFor,
+  accountChoices, activeAddress, canScan, createJoinSwitch, DEFAULT_MASK, generations, joinReady, joinStep, maskOf, networkOf, prefillFor,
   type Joined,
 } from './net';
 
@@ -184,4 +184,10 @@ test('compte supprimé alors que son IP est posée : il reste dans le sélecteur
     { id: 'a', name: 'A', deleted: false },
     { id: 'zz', name: '', deleted: true },
   ]);
+});
+
+test('jamais de scan sans interface ni pendant la pose d’une IP', () => {
+  expect(canScan('en0', false)).toBe(true);
+  expect(canScan('en0', true)).toBe(false);
+  expect(canScan('', false)).toBe(false);
 });
