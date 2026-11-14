@@ -348,6 +348,28 @@ pub(crate) fn with_reorder(mut cmds: Vec<Vec<String>>, listing: &str) -> Result<
     Ok(cmds)
 }
 
+/// macOS : un plan networksetup → les arguments typés de l'assistant
+/// (`add <service> <ip> <masque>` / `remove`), seul programme que la règle
+/// sudoers autorise. L'assistant revalide tout et réordonne lui-même ; un
+/// autre plan est refusé ici, avant sudo.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn helper_args(cmds: &[Vec<String>]) -> Result<Vec<String>, TempIpError> {
+    fn words(v: &[String]) -> Vec<&str> {
+        v.iter().map(String::as_str).collect()
+    }
+    let refused = || TempIpError::Invalid("plan".into());
+    match cmds {
+        [dup, set] => match (words(dup).as_slice(), words(set).as_slice()) {
+            (["-duplicatenetworkservice", src, MACOS_SERVICE], ["-setmanual", MACOS_SERVICE, ip, mask, router]) if ip == router => {
+                Ok(vec!["add".to_string(), src.to_string(), ip.to_string(), mask.to_string()])
+            }
+            _ => Err(refused()),
+        },
+        [rm] if words(rm) == ["-removenetworkservice", MACOS_SERVICE] => Ok(vec!["remove".to_string()]),
+        _ => Err(refused()),
+    }
+}
+
 fn is_add(plan: &ElevatedPlan) -> bool {
     match plan {
         ElevatedPlan::Networksetup(c) => c.iter().any(|a| a.first().is_some_and(|x| x == "-duplicatenetworkservice")),
@@ -358,8 +380,8 @@ fn is_add(plan: &ElevatedPlan) -> bool {
 
 #[cfg(target_os = "macos")]
 mod system {
-    use super::{ElevatedPlan, TempIpError, is_add, networksetup_shell, with_reorder};
-    use crate::permissions::{applescript_shell, has_permissions, install_permissions};
+    use super::{ElevatedPlan, TempIpError, helper_args, is_add, networksetup_shell, with_reorder};
+    use crate::permissions::{HELPER_PATH, applescript_shell, has_permissions, install_permissions};
     use crate::proc::sync_cmd;
 
     /// Ordre des services réseau du poste, lu sans droits.
@@ -391,42 +413,34 @@ mod system {
         let ElevatedPlan::Networksetup(cmds) = plan else {
             return Err(TempIpError::Invalid("plan d'un autre système".into()));
         };
-        // Une pose remet le service « Lenscout » en dernier (jamais principal).
-        // Ordre illisible ou échec de cet ordre : la pose échoue, et
-        // l'appelant retire ce qui aurait été fait.
-        let cmds = &if is_add(plan) { with_reorder(cmds.clone(), &listing())? } else { cmds.clone() };
         let removal = cmds.iter().any(|a| a.first().is_some_and(|x| x == "-removenetworkservice"));
         let gone = |err: &str| removal && err.contains("not a recognized network service");
-        // Règle absente ou différente de l'attendue : une invite pour la
-        // (re)poser ; refusée, rien n'est fait.
+        // Règle ou assistant absents, ou d'une autre version : une invite pour
+        // les (re)poser ; refusée, rien n'est fait.
         // Autre échec de l'installation : le repli osascript ci-dessous.
         if !has_permissions() && install_permissions() == Err(TempIpError::ElevationRefused) {
             return Err(TempIpError::ElevationRefused);
         }
-        let mut via_osascript = false;
-        for args in cmds {
-            let out = sync_cmd("sudo")
-                .env("LC_ALL", "C")
-                .args(["-n", "/usr/sbin/networksetup"])
-                .args(args)
-                .output()
-                .map_err(|e| TempIpError::Failed(e.to_string()))?;
-            if let Some(err) = failed(&out) {
-                if gone(&err) {
-                    return Ok(());
-                }
-                // Seul « mot de passe requis » (règle absente) justifie le
-                // repli osascript ; il survient dès la première commande.
-                if err.contains("a password is required") {
-                    via_osascript = true;
-                    break;
-                }
-                return Err(TempIpError::Failed(err));
-            }
+        // L'assistant duplique, pose l'adresse et remet « Lenscout » en
+        // dernier (jamais principal) ; ordre illisible : il ne pose rien.
+        let out = sync_cmd("sudo")
+            .env("LC_ALL", "C")
+            .args(["-n", HELPER_PATH])
+            .args(helper_args(cmds)?)
+            .output()
+            .map_err(|e| TempIpError::Failed(e.to_string()))?;
+        match failed(&out) {
+            None => return Ok(()),
+            Some(err) if gone(&err) => return Ok(()),
+            // Seul « mot de passe requis » (règle absente) justifie le repli
+            // osascript.
+            Some(err) if err.contains("a password is required") => {}
+            Some(err) => return Err(TempIpError::Failed(err)),
         }
-        if !via_osascript {
-            return Ok(());
-        }
+        // Repli : networksetup lui-même, en une invite ; l'ordre est réécrit
+        // ici, « Lenscout » en dernier. Ordre illisible : la pose échoue, et
+        // l'appelant retire ce qui aurait été fait.
+        let cmds = &if is_add(plan) { with_reorder(cmds.clone(), &listing())? } else { cmds.clone() };
         let out = sync_cmd("osascript")
             .args(["-e", &applescript_shell(&networksetup_shell(cmds))])
             .output()
@@ -1009,6 +1023,28 @@ mod tests {
         );
         for bad in ["", "Wi-Fi\nrm", "a\0b"] {
             assert!(matches!(add_plan(OsKind::Macos, &t, bad), Err(TempIpError::Invalid(_))), "{bad:?}");
+        }
+    }
+
+    /// Sous la règle sudoers, un plan macOS devient les arguments typés de
+    /// l'assistant ; tout autre plan est refusé avant d'appeler sudo.
+    #[test]
+    fn macos_plans_become_helper_arguments() {
+        let t = tmp("en0");
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let ElevatedPlan::Networksetup(add) = add_plan(OsKind::Macos, &t, "USB 10/100/1000 LAN").unwrap() else { panic!() };
+        assert_eq!(helper_args(&add).unwrap(), s(&["add", "USB 10/100/1000 LAN", "169.254.7.7", "255.255.0.0"]));
+        let ElevatedPlan::Networksetup(rm) = remove_plan(OsKind::Macos, &t, "Ethernet").unwrap() else { panic!() };
+        assert_eq!(helper_args(&rm).unwrap(), s(&["remove"]));
+        for bad in [
+            vec![s(&["-ordernetworkservices", "Wi-Fi", "Lenscout"])],
+            vec![s(&["-duplicatenetworkservice", "Wi-Fi", "Autre"]), s(&["-setmanual", "Autre", "1.2.3.4", "255.0.0.0", "1.2.3.4"])],
+            vec![s(&["-duplicatenetworkservice", "Wi-Fi", "Lenscout"])],
+            vec![s(&["-duplicatenetworkservice", "Wi-Fi", "Lenscout"]), s(&["-setmanual", "Lenscout", "1.2.3.4", "255.0.0.0", "9.9.9.9"])],
+            vec![s(&["-removenetworkservice", "Wi-Fi"])],
+            vec![],
+        ] {
+            assert!(matches!(helper_args(&bad), Err(TempIpError::Invalid(_))), "{bad:?}");
         }
     }
 
