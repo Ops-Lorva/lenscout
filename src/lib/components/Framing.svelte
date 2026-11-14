@@ -2,7 +2,7 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { _ } from 'svelte-i18n';
   import { errorKey } from '#lib/api/errors.ts';
-  import { ackFrame, FramePresenter, identifyCamera, startStream, stopStream } from '#lib/api/stream.ts';
+  import { ackFrame, FramePresenter, identifyCamera, listViews, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
   import { framingTarget, page, suspendStep } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
 
@@ -51,9 +51,14 @@
     error = '';
     playing = true;
     try {
-      await startStream(cam, accountId, (buf) => {
-        if (mine === generation) presenter.push(buf);
-      });
+      await startStream(
+        cam,
+        accountId,
+        (buf) => {
+          if (mine === generation) presenter.push(buf);
+        },
+        view,
+      );
     } catch (e) {
       if (mine === generation) error = `framing.${errorKey(e)}`;
     }
@@ -92,6 +97,35 @@
       if (playing) void stop();
     });
   });
+
+  // Axis multicapteur : ses vues, lues avec le compte, pour le sélecteur.
+  // Une seule vue (ou rien de lisible) : pas de sélecteur, URL d'avant.
+  let views = $state<View[]>([]);
+  let view = $state<number | null>(null);
+  let viewsRun = 0;
+  $effect(() => {
+    const c = cam;
+    const a = accountId;
+    untrack(() => {
+      const mine = ++viewsRun;
+      views = [];
+      view = null;
+      if (!c || !a) return;
+      listViews(c, a)
+        .then((v) => {
+          if (mine !== viewsRun || v.length < 2) return;
+          views = v;
+          view = v[0].n;
+        })
+        .catch(() => {});
+    });
+  });
+
+  // Autre vue pendant la lecture : le flux repart sur elle.
+  function pickView(n: number) {
+    view = n;
+    if (playing) void play();
+  }
 
   // Onglet caché (il reste monté) : le flux est coupé, pas de bande
   // passante dans le dos ; il reprend au retour sur l'onglet.
@@ -132,6 +166,14 @@
   {#if cam}
     <strong>{[cam.brand, cam.model].filter(Boolean).join(' ')}</strong>
     <span class="ip">{cam.ip}</span>
+    {#if views.length > 1}
+      <select value={view} onchange={(e) => pickView(Number(e.currentTarget.value))} aria-label={$_('framing.viewPicker')}>
+        {#each views as v (v.n)}
+          {@const l = viewLabel(v)}
+          <option value={v.n}>{$_(l.key, { values: l.values })}</option>
+        {/each}
+      </select>
+    {/if}
   {/if}
   {#if cam}
     {#if playing}

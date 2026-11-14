@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
-import { FramePresenter, identifyCamera } from './stream';
+import { FramePresenter, identifyCamera, listViews, startStream, viewLabel } from './stream';
 
 function setup() {
   const shown: (string | null)[] = [];
@@ -72,4 +72,33 @@ test('IP saisie dans Cadrage : Rust l’identifie avec le compte choisi', async 
   invoke.mockResolvedValue({ ip: '192.168.1.64' });
   await identifyCamera(' 192.168.1.64 ', 'acc');
   expect(invoke).toHaveBeenLastCalledWith('cmd_identify_camera', { ip: '192.168.1.64', accountId: 'acc' });
+});
+
+const axis = {
+  ip: '192.0.2.20', mac: null, family: 'axis', brand: 'AXIS', model: 'P4705-PLVE', serial: null, firmware: null,
+  activation: 'activated', http_port: 80, sources: [],
+} as const;
+
+test('le flux part avec la vue choisie, sinon sans vue', async () => {
+  invoke.mockResolvedValue(undefined);
+  await startStream({ ...axis, sources: [] }, 'acc', () => {}, 2);
+  expect(invoke.mock.lastCall?.[1]).toMatchObject({ accountId: 'acc', view: 2 });
+  await startStream({ ...axis, sources: [] }, 'acc', () => {});
+  expect(invoke.mock.lastCall?.[1].view).toBeNull();
+});
+
+test('les vues se demandent à Rust ; une seule vue : pas de sélecteur', async () => {
+  invoke.mockResolvedValue([{ n: 1, name: null }, { n: 2, name: 'Quai' }]);
+  expect(await listViews({ ...axis, sources: [] }, 'acc')).toHaveLength(2);
+  expect(invoke).toHaveBeenLastCalledWith('cmd_stream_views', { camera: { ...axis, sources: [] }, accountId: 'acc' });
+  // Hikvision ou sans compte : rien ne part, une vue.
+  invoke.mockClear();
+  expect(await listViews({ ...axis, sources: [], family: 'hikvision' }, 'acc')).toEqual([]);
+  expect(await listViews({ ...axis, sources: [] }, '')).toEqual([]);
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+test('libellé d’une vue : son nom s’il y en a un, sinon « Vue N »', () => {
+  expect(viewLabel({ n: 2, name: 'Quai' })).toEqual({ key: 'framing.viewNamed', values: { n: 2, name: 'Quai' } });
+  expect(viewLabel({ n: 3, name: null })).toEqual({ key: 'framing.view', values: { n: 3 } });
 });

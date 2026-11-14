@@ -19,5 +19,8 @@
     "not_a_camera": "No es una cámara compatible (ni Axis ni Hikvision)"
   },
   "ip": "IP de la cámara",
-  "open": "Abrir"
+  "open": "Abrir",
+  "view": "Vista {n}",
+  "viewNamed": "Vista {n}: {name}",
+  "viewPicker": "Vista"
 }

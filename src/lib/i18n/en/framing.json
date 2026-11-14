@@ -19,5 +19,8 @@
     "not_a_camera": "Not a supported camera (neither Axis nor Hikvision)"
   },
   "ip": "Camera IP",
-  "open": "Open"
+  "open": "Open",
+  "view": "View {n}",
+  "viewNamed": "View {n}: {name}",
+  "viewPicker": "View"
 }

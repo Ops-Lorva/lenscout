@@ -156,15 +156,23 @@ impl MjpegParser {
 /// Flux de cadrage : image réduite, pour que l'installateur oriente la
 /// caméra sans saturer le réseau.
 pub fn stream_url(cam: &Camera) -> Option<String> {
+    stream_url_for_view(cam, None)
+}
+
+/// `stream_url` sur une vue précise d'une Axis multicapteur (`camera=N`, à
+/// partir de 1). `None` : la vue par défaut, URL inchangée. Hikvision :
+/// hors périmètre, la vue est ignorée.
+pub fn stream_url_for_view(cam: &Camera, view: Option<u32>) -> Option<String> {
     let host = if cam.http_port == 80 {
         cam.ip.to_string()
     } else {
         format!("{}:{}", cam.ip, cam.http_port)
     };
     match cam.family {
-        Family::Axis => Some(format!(
-            "http://{host}/axis-cgi/mjpg/video.cgi?resolution=640x360&fps=10&compression=40"
-        )),
+        Family::Axis => {
+            let camera = view.map(|n| format!("&camera={n}")).unwrap_or_default();
+            Some(format!("http://{host}/axis-cgi/mjpg/video.cgi?resolution=640x360&fps=10&compression=40{camera}"))
+        }
         // NON VÉRIFIÉ sur une vraie caméra LTS — écrit d'après la documentation ISAPI.
         Family::Hikvision => Some(format!("http://{host}/ISAPI/Streaming/channels/102/httpPreview")),
         Family::Other => None,
@@ -430,6 +438,22 @@ mod tests {
         // Avec `--` dans l'en-tête, les images sortent quand même.
         let mut p = MjpegParser::from_content_type("multipart/x-mixed-replace; boundary=\"--myboundary\"").unwrap();
         assert_eq!(p.push(&multipart("myboundary", &frames3(), true)).len(), 3);
+    }
+
+    #[test]
+    fn axis_view_goes_into_the_url_and_survives_the_resolution_fallback() {
+        let u = stream_url_for_view(&cam(Family::Axis), Some(2)).unwrap();
+        assert_eq!(u, "http://192.0.2.11/axis-cgi/mjpg/video.cgi?resolution=640x360&fps=10&compression=40&camera=2");
+        assert_eq!(
+            without_resolution(&u).as_deref(),
+            Some("http://192.0.2.11/axis-cgi/mjpg/video.cgi?fps=10&compression=40&camera=2")
+        );
+        // Sans vue choisie (une seule vue) : l'URL d'avant, sans `camera=`.
+        let plain = stream_url_for_view(&cam(Family::Axis), None).unwrap();
+        assert_eq!(plain, stream_url(&cam(Family::Axis)).unwrap());
+        assert!(!plain.contains("camera="));
+        // Hikvision : hors périmètre, la vue est ignorée.
+        assert!(!stream_url_for_view(&cam(Family::Hikvision), Some(2)).unwrap().contains("camera="));
     }
 
     #[test]

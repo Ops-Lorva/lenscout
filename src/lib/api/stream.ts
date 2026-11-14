@@ -6,11 +6,30 @@ import type { Camera } from './types';
  * autre flux) et échoue avec un code stable si le flux tombe. Les images
  * arrivent en octets bruts ; le mot de passe reste côté Rust.
  */
-export function startStream(camera: Camera, accountId: string, onFrame: (buf: ArrayBuffer) => void): Promise<void> {
+export function startStream(
+  camera: Camera,
+  accountId: string,
+  onFrame: (buf: ArrayBuffer) => void,
+  view: number | null = null,
+): Promise<void> {
   const channel = new Channel<ArrayBuffer>();
   channel.onmessage = onFrame;
-  return invoke<void>('cmd_stream_start', { camera, accountId, onFrame: channel });
+  return invoke<void>('cmd_stream_start', { camera, accountId, view, onFrame: channel });
 }
+
+/** Miroir de `View` (vapix.rs) : `n` = `camera=n` du flux, à partir de 1. */
+export interface View {
+  n: number;
+  name: string | null;
+}
+
+/** Vues d'une Axis multicapteur, lues par Rust avec le compte ; ailleurs, rien ne part. */
+export const listViews = (camera: Camera, accountId: string): Promise<View[]> =>
+  camera.family === 'axis' && accountId ? invoke<View[]>('cmd_stream_views', { camera, accountId }) : Promise.resolve([]);
+
+/** Option du sélecteur : le nom que la caméra donne à la vue, sinon « Vue N ». */
+export const viewLabel = (v: View): { key: string; values: Record<string, string | number> } =>
+  v.name ? { key: 'framing.viewNamed', values: { n: v.n, name: v.name } } : { key: 'framing.view', values: { n: v.n } };
 
 export const stopStream = () => invoke<void>('cmd_stream_stop');
 

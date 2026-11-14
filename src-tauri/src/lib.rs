@@ -7,7 +7,7 @@ use commands::accounts::{
     cmd_accounts_startup, notice_code,
 };
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
-use commands::stream::{StreamState, cmd_identify_camera, cmd_stream_ack, cmd_stream_start, cmd_stream_stop};
+use commands::stream::{StreamState, cmd_identify_camera, cmd_stream_ack, cmd_stream_start, cmd_stream_stop, cmd_stream_views};
 use commands::update::{cmd_apply_update, cmd_check_update};
 use commands::app::{cmd_app_version, cmd_debug_get, cmd_debug_set, cmd_interface_details, cmd_list_interfaces};
 use commands::free_ips::{FreeIpsState, cmd_free_ips, cmd_free_ips_cancel};
@@ -100,6 +100,7 @@ pub fn run() {
             cmd_batch_preview,
             cmd_batch_apply,
             cmd_stream_start,
+            cmd_stream_views,
             cmd_identify_camera,
             cmd_stream_stop,
             cmd_stream_ack,

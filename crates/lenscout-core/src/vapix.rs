@@ -25,6 +25,10 @@
 //!   IP) et `GET /axis-cgi/hardfactorydefault.cgi` (tout, réseau compris :
 //!   la caméra repasse en DHCP, ou 192.168.0.90 sans serveur DHCP). Rôle
 //!   Administrator ; la caméra répond puis redémarre.
+//! - Vues (Axis multicapteur) : `Properties.Image.NbrOfViews`, sinon
+//!   `ImageSource.NbrOfSources` ; nom lisible `Image.I<n>.Name` (n à partir
+//!   de 0 pour la vue `camera=n+1` du flux). À VÉRIFIER sur vraie caméra :
+//!   la correspondance index / vue.
 //! - Time API : `/axis-cgi/time.cgi`, `setTimeZone` avec un nom IANA
 //!   (AXIS OS 9.30+, rôle Operator).
 //! - NTP API : `/axis-cgi/ntp.cgi`, `setNTPClientConfiguration` (AXIS OS
@@ -349,6 +353,85 @@ pub async fn factory_default(http: &dyn CameraHttp, base: &str, creds: &Credenti
     };
     let req = HttpRequest { method: Method::Get, url: url(base, path), body: None, content_type: None };
     require_text_ok(&http.send(req, Some(creds)).await?)
+}
+
+/// Une vue d'une Axis : son numéro (`camera=n` du flux, à partir de 1) et le
+/// nom que la caméra lui donne, s'il y en a un.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct View {
+    pub n: u32,
+    pub name: Option<String>,
+}
+
+/// Plus de vues que cela : la valeur n'est pas crédible, on ne la croit pas.
+const MAX_VIEWS: u32 = 64;
+
+/// Valeur entière de `<root.>key=N` dans une réponse `param.cgi`, de 1 à
+/// `MAX_VIEWS` ; sinon `None` (absent, vide, illisible, message d'erreur).
+pub fn param_count(body: &str, key: &str) -> Option<u32> {
+    body.lines()
+        .filter_map(|l| l.trim().split_once('='))
+        .find(|(k, _)| k.trim_start_matches("root.") == key)
+        .and_then(|(_, v)| v.trim().parse::<u32>().ok())
+        .filter(|n| (1..=MAX_VIEWS).contains(n))
+}
+
+/// Noms non vides de `root.Image.I<i>.Name`, par numéro de vue (`i + 1`).
+pub fn view_names(body: &str) -> std::collections::HashMap<u32, String> {
+    body.lines()
+        .filter_map(|l| l.trim().split_once('='))
+        .filter_map(|(k, v)| {
+            let i: u32 = k.trim_start_matches("root.").strip_prefix("Image.I")?.strip_suffix(".Name")?.parse().ok()?;
+            let v = v.trim();
+            (!v.is_empty()).then(|| (i + 1, v.chars().take(64).collect()))
+        })
+        .collect()
+}
+
+/// `param.cgi?action=list&group=<group>` avec le compte ; le corps si 2xx sans
+/// `# Error`, sinon `None`.
+async fn list_params(http: &dyn CameraHttp, base: &str, creds: &Credentials, group: &str) -> Option<String> {
+    let req = HttpRequest {
+        method: Method::Get,
+        url: url(base, &format!("/axis-cgi/param.cgi?action=list&group={group}")),
+        body: None,
+        content_type: None,
+    };
+    match http.send(req, Some(creds)).await {
+        Ok(resp) if require_text_ok(&resp).is_ok() => Some(String::from_utf8_lossy(&resp.body).into_owned()),
+        Ok(resp) => {
+            debug(&format!("param.cgi {group} : statut {}", resp.status));
+            None
+        }
+        Err(e) => {
+            debug(&format!("param.cgi {group} : {e}"));
+            None
+        }
+    }
+}
+
+/// Vues d'une Axis : `Properties.Image.NbrOfViews`, sinon
+/// `ImageSource.NbrOfSources`, sinon une seule. Avec plusieurs vues, leurs
+/// noms (`Image.I<n>.Name`) s'il y en a. Jamais d'erreur : sans réponse
+/// lisible, une vue, et le cadrage reste celui d'avant.
+pub async fn views(http: &dyn CameraHttp, base: &str, creds: &Credentials) -> Vec<View> {
+    let mut count = None;
+    for (group, key) in [
+        ("Properties.Image.NbrOfViews", "Properties.Image.NbrOfViews"),
+        ("ImageSource.NbrOfSources", "ImageSource.NbrOfSources"),
+    ] {
+        count = list_params(http, base, creds, group).await.and_then(|b| param_count(&b, key));
+        if count.is_some() {
+            break;
+        }
+    }
+    let count = count.unwrap_or(1);
+    let names = if count > 1 {
+        list_params(http, base, creds, "Image").await.map(|b| view_names(&b)).unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    (1..=count).map(|n| View { n, name: names.get(&n).cloned() }).collect()
 }
 
 pub async fn activation_state(http: &dyn CameraHttp, base: &str) -> Activation {
@@ -1026,6 +1109,54 @@ mod tests {
             factory_default(&http, BASE, &creds("root", "x"), ResetMode::KeepIp).await,
             Err(VapixError::Rejected(_))
         ));
+    }
+
+    #[test]
+    fn view_count_is_read_from_param_lines() {
+        assert_eq!(param_count("root.Properties.Image.NbrOfViews=3\n", "Properties.Image.NbrOfViews"), Some(3));
+        assert_eq!(param_count("root.ImageSource.NbrOfSources=2\r\n", "ImageSource.NbrOfSources"), Some(2));
+        // Absent, illisible, nul ou message d'erreur : on ne sait pas.
+        for body in ["", "root.Properties.Image.NbrOfViews=", "root.Properties.Image.NbrOfViews=trois", "root.Properties.Image.NbrOfViews=0",
+            "# Error: Error -1 getting param in group 'Properties.Image.NbrOfViews'"] {
+            assert_eq!(param_count(body, "Properties.Image.NbrOfViews"), None, "{body}");
+        }
+    }
+
+    #[test]
+    fn view_names_are_read_by_index() {
+        let body = "root.Image.I0.Name=Nord\nroot.Image.I0.Appearance.Resolution=1920x1080\nroot.Image.I1.Name=\nroot.Image.I2.Name=Quai 3\n";
+        let names = view_names(body);
+        assert_eq!(names.get(&1).map(String::as_str), Some("Nord"));
+        assert_eq!(names.get(&2), None, "un nom vide n'est pas un nom");
+        assert_eq!(names.get(&3).map(String::as_str), Some("Quai 3"));
+    }
+
+    const VIEWS: &str = "/axis-cgi/param.cgi?action=list&group=Properties.Image.NbrOfViews";
+    const SOURCES: &str = "/axis-cgi/param.cgi?action=list&group=ImageSource.NbrOfSources";
+    const NAMES: &str = "/axis-cgi/param.cgi?action=list&group=Image";
+
+    #[tokio::test]
+    async fn views_come_from_nbrofviews_with_their_names() {
+        let http = FakeHttp::new()
+            .on(Method::Get, VIEWS, 200, "root.Properties.Image.NbrOfViews=3\n")
+            .on(Method::Get, NAMES, 200, "root.Image.I1.Name=Quai\n");
+        let v = views(&http, BASE, &creds("root", "x")).await;
+        assert_eq!(v, vec![View { n: 1, name: None }, View { n: 2, name: Some("Quai".into()) }, View { n: 3, name: None }]);
+        assert!(http.requests().iter().all(|r| r.login.as_deref() == Some("root")));
+    }
+
+    #[tokio::test]
+    async fn views_fall_back_to_nbrofsources_then_to_one() {
+        let http = FakeHttp::new()
+            .on(Method::Get, VIEWS, 200, "# Error: Error -1 getting param in group 'Properties.Image.NbrOfViews'\n")
+            .on(Method::Get, SOURCES, 200, "root.ImageSource.NbrOfSources=2\n")
+            .on(Method::Get, NAMES, 404, "");
+        let v = views(&http, BASE, &creds("root", "x")).await;
+        assert_eq!(v, vec![View { n: 1, name: None }, View { n: 2, name: None }]);
+        // Rien de lisible : une vue, et pas de lecture de noms.
+        let http = FakeHttp::new().on(Method::Get, VIEWS, 401, "").on(Method::Get, SOURCES, 200, "x");
+        assert_eq!(views(&http, BASE, &creds("root", "x")).await, vec![View { n: 1, name: None }]);
+        assert!(http.requests().iter().all(|r| !r.url.ends_with("group=Image")));
     }
 
     #[tokio::test]

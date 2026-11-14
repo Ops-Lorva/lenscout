@@ -19,5 +19,8 @@
     "not_a_camera": "Pas une caméra prise en charge (ni Axis ni Hikvision)"
   },
   "ip": "IP de la caméra",
-  "open": "Ouvrir"
+  "open": "Ouvrir",
+  "view": "Vue {n}",
+  "viewNamed": "Vue {n} : {name}",
+  "viewPicker": "Vue"
 }
