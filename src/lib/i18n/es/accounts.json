@@ -25,7 +25,9 @@
     "io": "Archivo de cuentas inaccesible",
     "internal": "Error interno",
     "unknown": "Error",
-    "import_invalid": "Archivo de importación ilegible"
+    "import_invalid": "Archivo de importación ilegible",
+    "file_unwritable": "No se puede escribir el archivo elegido",
+    "file_unreadable": "No se puede leer el archivo elegido"
   },
   "notice": {
     "quarantined": "Archivo de cuentas ilegible, apartado",
@@ -58,6 +60,7 @@
     "new": "añadida",
     "identical": "ya al día"
   },
-  "keepNote": "Conservar ambas crea «{names}».",
-  "doImport": "Importar"
+  "keepNote": "Conservar ambas crea {names}.",
+  "doImport": "Importar",
+  "quoted": "«{name}»"
 }

@@ -243,6 +243,21 @@ struct Imported {
     password: Option<Secret>,
 }
 
+/// Écriture atomique d'un fichier lisible par l'utilisateur seul (0600 sous
+/// Unix) : temporaire voisin (`<chemin>.tmp`, recréé), puis `rename`. Le
+/// temporaire ne reste pas derrière un échec.
+pub fn write_file_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let _ = std::fs::remove_file(&tmp);
+    let result = write_private(&tmp, data).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Crée le fichier lisible par l'utilisateur seul (0600) sous Unix.
 fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
@@ -563,6 +578,8 @@ impl AccountBook {
         let imports = parse_import(data)?;
         let mut next = self.entries.clone();
         let mut summary = ImportSummary::default();
+        // Noms que « Garder les deux » ne doit pas prendre : tous ceux du fichier.
+        let mut reserved: Vec<String> = imports.iter().map(|i| i.name.to_lowercase()).collect();
         for imp in imports {
             let fresh = |name: String, imp: Imported| Entry {
                 account: Account {
@@ -599,8 +616,12 @@ impl AccountBook {
                 Choice::KeepBoth => {
                     let name = (2..)
                         .map(|n| format!("{} {n}", imp.name))
-                        .find(|candidate| position_of(&next, candidate).is_none())
+                        .find(|candidate| {
+                            position_of(&next, candidate).is_none()
+                                && !reserved.contains(&candidate.to_lowercase())
+                        })
                         .expect("suffixe libre");
+                    reserved.push(name.to_lowercase());
                     next.push(fresh(name, imp));
                     summary.kept_both += 1;
                 }
@@ -1130,6 +1151,25 @@ mod tests {
         assert_eq!(dst.list().len(), 2);
         // Remplacé en gardant l'id.
         assert_eq!(dst.credentials(&id).unwrap().login, "root-unique");
+    }
+
+    #[test]
+    fn import_keep_both_avoids_every_name_of_the_file() {
+        // Le fichier porte « X » (qui diffère) et « X 2 » : « X » devient « X 3 ».
+        let mut src = empty_book();
+        src.create("X", "root", pwd("a")).unwrap();
+        src.create("X 2", "admin", pwd("b")).unwrap();
+        let data = src.export();
+        let mut dst = empty_book();
+        dst.create("X", "autre", pwd("c")).unwrap();
+        let choices = HashMap::from([("X".to_string(), Choice::KeepBoth)]);
+        let summary = dst.import_apply(&data, &choices).unwrap();
+        assert_eq!((summary.kept_both, summary.added), (1, 1));
+        let by_name = |n: &str| dst.list().into_iter().find(|a| a.name == n).unwrap();
+        assert_eq!(dst.credentials(&by_name("X").id).unwrap().login, "autre");
+        assert_eq!(dst.credentials(&by_name("X 2").id).unwrap().login, "admin");
+        assert_eq!(dst.credentials(&by_name("X 3").id).unwrap().login, "root");
+        assert_eq!(dst.list().len(), 3);
     }
 
     #[test]

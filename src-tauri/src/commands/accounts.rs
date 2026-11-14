@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use lenscout_core::accounts::{
     Account, AccountBook, AccountError, Choice, ImportKind, ImportPlan, ImportSummary, Startup,
+    write_file_private,
 };
 use lenscout_core::secret::Secret;
 use lenscout_core::transport::Credentials;
@@ -11,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 /// Erreurs : codes stables (`empty_field`, `duplicate_name`, `not_found`,
-/// `secret_missing`, `keyring`, `io`, `import_invalid`), traduits par le front. Le message de
+/// `secret_missing`, `keyring`, `io`, `import_invalid`, `file_unwritable`,
+/// `file_unreadable`), traduits par le front. Le message de
 /// l'OS n'est pas renvoyé.
 fn code(e: AccountError) -> String {
     match e {
@@ -133,28 +135,35 @@ impl From<ChoiceIn> for Choice {
     }
 }
 
-/// Écriture atomique : fichier voisin puis `rename`. Rend le nombre de comptes.
+/// Le fichier d'export porte l'extension `.lenscout` (la boîte Enregistrer
+/// peut la laisser de côté).
+pub(crate) fn with_lenscout_ext(path: &Path) -> std::path::PathBuf {
+    match path.extension() {
+        Some(e) if e.eq_ignore_ascii_case("lenscout") => path.to_path_buf(),
+        _ => {
+            let mut p = path.as_os_str().to_owned();
+            p.push(".lenscout");
+            p.into()
+        }
+    }
+}
+
+/// Écriture atomique en 0600 (mécanisme du core). Rend le nombre de comptes.
 pub(crate) fn accounts_export(book: &AccountBook, path: &Path) -> Result<usize, String> {
-    let io = |_: std::io::Error| "io".to_string();
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    std::fs::write(&tmp, book.export()).map_err(io)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        io(e)
-    })?;
+    write_file_private(&with_lenscout_ext(path), book.export().as_bytes())
+        .map_err(|_| "file_unwritable".to_string())?;
     Ok(book.list().len())
 }
 
-/// Fichier absent ou inaccessible : `io` ; trop gros ou pas du texte :
+/// Fichier absent ou inaccessible : `file_unreadable` ; trop gros ou pas du texte :
 /// `import_invalid`, comme tout fichier qui n'est pas un export.
 fn read_import(path: &Path) -> Result<String, String> {
-    let meta = std::fs::metadata(path).map_err(|_| "io".to_string())?;
+    let unreadable = |_| "file_unreadable".to_string();
+    let meta = std::fs::metadata(path).map_err(unreadable)?;
     if meta.len() > IMPORT_MAX_BYTES {
         return Err("import_invalid".to_string());
     }
-    let bytes = std::fs::read(path).map_err(|_| "io".to_string())?;
+    let bytes = std::fs::read(path).map_err(unreadable)?;
     String::from_utf8(bytes).map_err(|_| "import_invalid".to_string())
 }
 
@@ -467,16 +476,6 @@ mod tests {
     }
 
     #[test]
-    fn choices_from_the_front_are_mapped() {
-        let choices: HashMap<String, ChoiceIn> =
-            serde_json::from_str(r#"{"A":"replace","B":"keep_both","C":"skip"}"#).unwrap();
-        let mapped: HashMap<String, Choice> = choices.into_iter().map(|(k, v)| (k, v.into())).collect();
-        assert_eq!(mapped["A"], Choice::Replace);
-        assert_eq!(mapped["B"], Choice::KeepBoth);
-        assert_eq!(mapped["C"], Choice::Skip);
-    }
-
-    #[test]
     fn keep_both_choice_is_applied() {
         let mut src = book();
         account_create(&mut src, "Mairie", "root", Secret::new("a".into())).unwrap();
@@ -484,8 +483,9 @@ mod tests {
         accounts_export(&src, &path).unwrap();
         let mut dst = book();
         account_create(&mut dst, "Mairie", "autre", Secret::new("b".into())).unwrap();
-        let summary =
-            accounts_import_apply(&mut dst, &path, HashMap::from([("Mairie".to_string(), ChoiceIn::KeepBoth)])).unwrap();
+        // Les choix arrivent du front en JSON : on passe par la vraie désérialisation.
+        let choices: HashMap<String, ChoiceIn> = serde_json::from_str(r#"{"Mairie":"keep_both"}"#).unwrap();
+        let summary = accounts_import_apply(&mut dst, &path, choices).unwrap();
         assert_eq!(summary.kept_both, 1);
         assert!(dst.list().iter().any(|a| a.name == "Mairie 2"));
     }
@@ -503,6 +503,52 @@ mod tests {
         assert_eq!(dst.list().len(), 1);
         // Fichier absent : erreur d'accès, pas « illisible ».
         let gone = temp_file("absent.lenscout");
-        assert_eq!(accounts_import_plan(&dst, &gone).unwrap_err(), "io");
+        assert_eq!(accounts_import_plan(&dst, &gone).unwrap_err(), "file_unreadable");
+    }
+
+    #[test]
+    fn export_adds_the_extension_when_missing() {
+        let mut src = book();
+        account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
+        let bare = temp_file("sauvegarde");
+        accounts_export(&src, &bare).unwrap();
+        assert!(bare.with_extension("lenscout").exists() && !bare.exists());
+        let named = temp_file("b.lenscout");
+        accounts_export(&src, &named).unwrap();
+        assert!(named.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_is_private_even_over_a_stale_temp() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut src = book();
+        account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
+        let path = temp_file("c.lenscout");
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        std::fs::write(&tmp, b"vieux").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        accounts_export(&src, &path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn io_errors_on_the_chosen_file_have_their_own_codes() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut src = book();
+        account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
+        let path = temp_file("d.lenscout");
+        let dir = path.parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = accounts_export(&src, &path);
+        // Un fichier illisible : droits retirés.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(err.unwrap_err(), "file_unwritable");
+        assert!(!path.exists() && !path.with_extension("lenscout.tmp").exists());
+        accounts_export(&src, &path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(accounts_import_plan(&src, &path).unwrap_err(), "file_unreadable");
     }
 }

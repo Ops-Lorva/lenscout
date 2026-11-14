@@ -4,7 +4,7 @@
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
     accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, listAccounts, noticeKey,
-    passwordRequired, removeAccount, updateAccount, type AccountEntry, type ImportPlan, type ImportSummary,
+    passwordRequired, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
   import { clearStatusIf, status, type Status } from '$lib/stores/nav';
@@ -43,8 +43,9 @@
     error = '';
     errorCode = '';
     try {
-      const path = await saveFile({ defaultPath: EXPORT_NAME, filters });
-      if (!path) return;
+      const chosen = await saveFile({ defaultPath: EXPORT_NAME, filters });
+      if (!chosen) return;
+      const path = withExtension(chosen);
       const count = await exportAccounts(path);
       say({ text: $_('accounts.exported', { values: { count } }), detail: $_('accounts.exportedIn', { values: { path } }) });
     } catch (e) {

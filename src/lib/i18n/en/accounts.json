@@ -25,7 +25,9 @@
     "io": "Accounts file unavailable",
     "internal": "Internal error",
     "unknown": "Error",
-    "import_invalid": "Unreadable import file"
+    "import_invalid": "Unreadable import file",
+    "file_unwritable": "Unable to write the chosen file",
+    "file_unreadable": "Unable to read the chosen file"
   },
   "notice": {
     "quarantined": "Accounts file unreadable, set aside",
@@ -58,6 +60,7 @@
     "new": "added",
     "identical": "already up to date"
   },
-  "keepNote": "Keep both creates “{names}”.",
-  "doImport": "Import"
+  "keepNote": "Keep both creates {names}.",
+  "doImport": "Import",
+  "quoted": "“{name}”"
 }

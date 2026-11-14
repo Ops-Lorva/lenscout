@@ -79,6 +79,26 @@ export function suffixedName(name: string, taken: string[]): string {
   }
 }
 
+/**
+ * Noms créés par « Garder les deux », dans l'ordre du fichier. Les suffixes évitent
+ * le carnet et TOUS les noms du fichier, comme le fait le core.
+ */
+export function keepBothNames(plan: ImportPlan, choices: Record<string, Choice>, existing: string[]): string[] {
+  const taken = [...existing, ...plan.items.map((i) => i.name)];
+  const names: string[] = [];
+  for (const i of groupPlan(plan).differs) {
+    if (choices[i.name] !== 'keep_both') continue;
+    const n = suffixedName(i.name, taken);
+    taken.push(n);
+    names.push(n);
+  }
+  return names;
+}
+
+/** Le fichier d'export porte `.lenscout` (Rust l'ajoute aussi : même règle). */
+export const withExtension = (path: string) =>
+  path.toLowerCase().endsWith(`.${EXPORT_EXT}`) ? path : `${path}.${EXPORT_EXT}`;
+
 /** Le dernier choix s'il existe encore, sinon le premier compte, sinon rien. */
 export function pickAccount(accounts: Account[], saved: string): string {
   return accounts.find((a) => a.id === saved)?.id ?? accounts[0]?.id ?? '';

@@ -24,6 +24,8 @@ export const CODES = [
   'keyring',
   'io',
   'import_invalid',
+  'file_unwritable',
+  'file_unreadable',
   'internal',
 ] as const;
 

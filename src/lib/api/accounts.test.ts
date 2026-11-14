@@ -3,8 +3,8 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  applyImport, defaultChoices, exportAccounts, groupPlan, importPlan, noticeKey, passwordRequired, pickAccount,
-  suffixedName, type ImportPlan,
+  applyImport, defaultChoices, exportAccounts, groupPlan, importPlan, keepBothNames, noticeKey, passwordRequired,
+  pickAccount, suffixedName, withExtension, type ImportPlan,
 } from './accounts';
 import { errorKey } from './errors';
 
@@ -95,4 +95,29 @@ test('« Garder les deux » annonce le prochain nom libre', () => {
 
 test('le code import_invalid a son libellé', () => {
   expect(errorKey('import_invalid')).toBe('error.import_invalid');
+});
+
+test('« Garder les deux » évite aussi tous les noms du fichier et du carnet', () => {
+  const file: ImportPlan = {
+    items: [
+      { name: 'X', kind: 'differs', login_differs: true, password_differs: false },
+      { name: 'X 2', kind: 'new', login_differs: false, password_differs: false },
+      { name: 'Y', kind: 'differs', login_differs: true, password_differs: false },
+    ],
+  };
+  const choices = { X: 'keep_both', Y: 'replace' } as const;
+  expect(keepBothNames(file, { ...choices }, ['X', 'Y'])).toEqual(['X 3']);
+  expect(keepBothNames(file, { X: 'keep_both', Y: 'keep_both' }, ['X', 'Y'])).toEqual(['X 3', 'Y 2']);
+  expect(keepBothNames(file, { X: 'replace', Y: 'skip' }, ['X', 'Y'])).toEqual([]);
+});
+
+test('le fichier exporté porte l’extension .lenscout', () => {
+  expect(withExtension('/tmp/sauvegarde')).toBe('/tmp/sauvegarde.lenscout');
+  expect(withExtension('/tmp/a.lenscout')).toBe('/tmp/a.lenscout');
+  expect(withExtension('/tmp/a.LENSCOUT')).toBe('/tmp/a.LENSCOUT');
+});
+
+test('les codes d’E/S du fichier choisi ont leur libellé', () => {
+  expect(errorKey('file_unwritable')).toBe('error.file_unwritable');
+  expect(errorKey('file_unreadable')).toBe('error.file_unreadable');
 });

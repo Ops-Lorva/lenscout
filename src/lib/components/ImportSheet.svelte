@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
   import {
-    applyImport, CHOICES, defaultChoices, groupPlan, suffixedName,
+    applyImport, CHOICES, defaultChoices, groupPlan, keepBothNames,
     type Choice, type ImportItem, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
@@ -35,17 +35,10 @@
   const why = (i: ImportItem) =>
     $_(`accounts.why.${i.login_differs && i.password_differs ? 'both' : i.login_differs ? 'login' : 'password'}`);
 
-  // « Garder les deux » crée des noms nouveaux : on les annonce, deux « Mairie » du fichier ne se heurtent pas.
+  // « Garder les deux » crée des noms nouveaux : on les annonce, guillemets de la langue.
   const keepNote = $derived.by(() => {
-    const taken = [...existing, ...groups.added.map((i) => i.name)];
-    const names: string[] = [];
-    for (const i of groups.differs) {
-      if (choices[i.name] !== 'keep_both') continue;
-      const n = suffixedName(i.name, taken);
-      taken.push(n);
-      names.push(n);
-    }
-    return names.length ? $_('accounts.keepNote', { values: { names: names.join('», «') } }) : '';
+    const names = keepBothNames(plan, choices, existing).map((name) => $_('accounts.quoted', { values: { name } }));
+    return names.length ? $_('accounts.keepNote', { values: { names: names.join(', ') } }) : '';
   });
 
   async function run() {

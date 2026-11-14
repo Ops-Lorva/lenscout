@@ -25,7 +25,9 @@
     "io": "Fichier des comptes inaccessible",
     "internal": "Erreur interne",
     "unknown": "Erreur",
-    "import_invalid": "Fichier d'import illisible"
+    "import_invalid": "Fichier d'import illisible",
+    "file_unwritable": "Impossible d'écrire le fichier choisi",
+    "file_unreadable": "Impossible de lire le fichier choisi"
   },
   "notice": {
     "quarantined": "Fichier des comptes illisible, mis de côté",
@@ -58,6 +60,7 @@
     "new": "ajouté",
     "identical": "déjà à jour"
   },
-  "keepNote": "Garder les deux crée « {names} ».",
-  "doImport": "Importer"
+  "keepNote": "Garder les deux crée {names}.",
+  "doImport": "Importer",
+  "quoted": "« {name} »"
 }
