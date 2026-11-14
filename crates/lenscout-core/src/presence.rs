@@ -39,9 +39,11 @@ pub fn interface_of(ip: Ipv4Addr) -> Option<String> {
     local_addresses().into_iter().find(|a| a.ip == ip).map(|a| a.name)
 }
 
-/// Toutes les adresses IPv4 du poste, avec leur masque : une carte peut en
-/// porter plusieurs (l'adresse principale et celle d'un compte). Nom = nom
-/// BSD / ifname (macOS, Linux), alias d'interface (Windows).
+/// Les adresses IPv4 des liens en service, avec leur masque : une carte peut
+/// en porter plusieurs (l'adresse principale et celle d'un compte). Nom = nom
+/// BSD / ifname (macOS, Linux), alias d'interface (Windows : cartes
+/// matérielles connectées, adresses `Preferred` seulement). Le tri entre
+/// cartes (VPN, pont, docker) reste à l'appelant.
 #[cfg(unix)]
 pub fn local_addresses() -> Vec<ScanInterface> {
     fn v4(sa: *const libc::sockaddr) -> Option<Ipv4Addr> {
@@ -66,7 +68,7 @@ pub fn local_addresses() -> Vec<ScanInterface> {
         let mut cur = head;
         while !cur.is_null() {
             let a = &*cur;
-            if let (Some(ip), Some(mask)) = (v4(a.ifa_addr), v4(a.ifa_netmask)) {
+            if let (true, Some(ip), Some(mask)) = (link_usable(a.ifa_flags), v4(a.ifa_addr), v4(a.ifa_netmask)) {
                 let name = std::ffi::CStr::from_ptr(a.ifa_name).to_string_lossy().into_owned();
                 out.push(ScanInterface { name, ip, mask });
             }
@@ -77,11 +79,19 @@ pub fn local_addresses() -> Vec<ScanInterface> {
     out
 }
 
+/// Lien administrativement levé ET opérationnel (`IFF_UP` + `IFF_RUNNING`).
+#[cfg(unix)]
+fn link_usable(flags: u32) -> bool {
+    let want = (libc::IFF_UP | libc::IFF_RUNNING) as u32;
+    flags & want == want
+}
+
 /// Windows : une ligne `alias|adresse|longueur de préfixe` par adresse.
 #[cfg(target_os = "windows")]
 pub fn local_addresses() -> Vec<ScanInterface> {
     const SCRIPT: &str = r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
-Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { "$($_.InterfaceAlias)|$($_.IPAddress)|$($_.PrefixLength)" }"#;
+$up = Get-NetAdapter | Where-Object { $_.HardwareInterface -eq $true -and $_.Status -eq 'Up' } | Select-Object -ExpandProperty ifIndex;
+Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred -ErrorAction SilentlyContinue | Where-Object { $up -contains $_.InterfaceIndex } | ForEach-Object { "$($_.InterfaceAlias)|$($_.IPAddress)|$($_.PrefixLength)" }"#;
     crate::proc::sync_cmd("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
         .output()
@@ -169,6 +179,16 @@ mod tests {
         let lo = all.iter().find(|a| a.ip == Ipv4Addr::LOCALHOST).expect("127.0.0.1");
         assert!(lo.name.starts_with("lo"), "{}", lo.name);
         assert_eq!(lo.mask, Ipv4Addr::new(255, 0, 0, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_running_links_count() {
+        let (up, run) = (libc::IFF_UP as u32, libc::IFF_RUNNING as u32);
+        assert!(link_usable(up | run));
+        assert!(!link_usable(up));
+        assert!(!link_usable(run));
+        assert!(!link_usable(0));
     }
 
     #[test]

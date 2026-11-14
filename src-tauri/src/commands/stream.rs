@@ -211,14 +211,24 @@ fn active_interfaces() -> Vec<ScanInterface> {
 }
 
 /// Les adresses vues par la garde de sous-réseau : celles des interfaces
-/// actives, toutes celles du poste (une carte en porte deux pendant la pose
-/// d'un compte ; les détails système n'en rendent qu'une), et celle que
-/// Lenscout tient, même si l'énumération l'a manquée. Sans boucle locale ni
-/// doublon.
-pub(crate) fn guard_interfaces(active: &[ScanInterface], local: &[ScanInterface], held: Option<&TempIp>) -> Vec<ScanInterface> {
-    let held = held.map(|t| ScanInterface { name: t.iface.clone(), ip: t.ip, mask: t.mask });
+/// actives, plus les autres adresses de CES cartes (une carte en porte deux
+/// pendant la pose d'un compte ; les détails système n'en rendent qu'une),
+/// et celle que Lenscout tient si `present` la trouve sur le poste (pose
+/// ratée : jamais). Une carte que le scan ne propose pas (VPN, pont, docker,
+/// débranchée) ne compte pas : un identifiant ne part jamais hors réseau.
+/// Sans boucle locale ni doublon.
+pub(crate) fn guard_interfaces(
+    active: &[ScanInterface],
+    local: &[ScanInterface],
+    held: Option<&TempIp>,
+    present: impl Fn(Ipv4Addr) -> bool,
+) -> Vec<ScanInterface> {
+    // `eth0:1` (adresse étiquetée, Linux) appartient à `eth0`.
+    let card = |n: &str| n.split(':').next().unwrap_or(n).to_string();
+    let on_active = |i: &&ScanInterface| active.iter().any(|a| card(&a.name) == card(&i.name));
+    let held = held.filter(|t| present(t.ip) && active.iter().any(|a| card(&a.name) == card(&t.iface))).map(|t| ScanInterface { name: t.iface.clone(), ip: t.ip, mask: t.mask });
     let mut out: Vec<ScanInterface> = Vec::new();
-    for i in active.iter().chain(local).chain(held.as_ref()) {
+    for i in active.iter().chain(local.iter().filter(on_active)).chain(held.as_ref()) {
         if !i.ip.is_loopback() && !out.iter().any(|o| o.ip == i.ip) {
             out.push(i.clone());
         }
@@ -229,7 +239,7 @@ pub(crate) fn guard_interfaces(active: &[ScanInterface], local: &[ScanInterface]
 /// `guard_interfaces` sur l'état réel du poste (bloquant : à lancer hors du
 /// runtime).
 fn guard_interfaces_now(held: Option<TempIp>) -> Vec<ScanInterface> {
-    guard_interfaces(&active_interfaces(), &presence::local_addresses(), held.as_ref())
+    guard_interfaces(&active_interfaces(), &presence::local_addresses(), held.as_ref(), presence::address_present)
 }
 
 /// Démarre le flux et ne rend la main qu'à sa fin : `Ok` à l'arrêt (ou au
@@ -402,25 +412,55 @@ mod tests {
     #[test]
     fn la_garde_voit_toutes_les_adresses_du_poste_et_celle_du_compte() {
         let m = "255.255.255.0";
+        let here = |_: Ipv4Addr| true;
         // Détails système : une seule adresse par carte (la principale sous
         // macOS, l'une ou l'autre ailleurs).
         let active = [si("en0", "10.0.8.235", m)];
         let local = [si("en0", "10.0.8.235", m), si("en0", "192.168.1.10", m), si("lo0", "127.0.0.1", "255.0.0.0")];
         let held = TempIp { iface: "en0".into(), ip: "192.168.1.10".parse().unwrap(), mask: m.parse().unwrap() };
-        let got = guard_interfaces(&active, &local, Some(&held));
+        let got = guard_interfaces(&active, &local, Some(&held), here);
         let ips: Vec<String> = got.iter().map(|i| i.ip.to_string()).collect();
         assert_eq!(ips, ["10.0.8.235", "192.168.1.10"]);
         // Les deux réseaux sont cadrables pendant la pose.
         for ip in ["10.0.8.64", "192.168.1.64"] {
             assert!(guarded_url(&cam(ip, Family::Axis), &got).is_ok(), "{ip}");
         }
-        // Énumération ratée : l'adresse tenue par Lenscout compte quand même.
-        let got = guard_interfaces(&active, &[], Some(&held));
+        // Énumération ratée : l'adresse tenue par Lenscout compte quand même…
+        let got = guard_interfaces(&active, &[], Some(&held), here);
         assert!(guarded_url(&cam("192.168.1.64", Family::Axis), &got).is_ok());
-        // Rien de posé : les adresses du poste, sans la boucle locale.
-        let got = guard_interfaces(&[], &local, None);
+        // …si elle est vraiment sur le poste.
+        let got = guard_interfaces(&active, &[], Some(&held), |_| false);
+        assert!(guarded_url(&cam("192.168.1.64", Family::Axis), &got).is_err());
+        // …et sur une carte active.
+        let got = guard_interfaces(&[], &[], Some(&held), here);
+        assert!(got.is_empty());
+        // Rien de posé : les adresses des cartes actives, sans la boucle locale.
+        let got = guard_interfaces(&active, &local, None, here);
         assert_eq!(got.len(), 2);
         assert!(guarded_url(&cam("127.0.0.2", Family::Axis), &got).is_err());
+    }
+
+    #[test]
+    fn la_garde_ignore_les_cartes_que_le_scan_ne_propose_pas() {
+        let here = |_: Ipv4Addr| true;
+        let active = [si("en0", "10.0.8.235", "255.255.255.0")];
+        // Tunnel VPN, pont de partage, docker, carte débranchée : jamais cadrables.
+        let local = [
+            si("en0", "10.0.8.235", "255.255.255.0"),
+            si("utun3", "100.64.0.2", "255.192.0.0"),
+            si("bridge100", "192.168.2.1", "255.255.255.0"),
+            si("docker0", "172.17.0.1", "255.255.0.0"),
+            si("en7", "192.168.50.10", "255.255.255.0"),
+        ];
+        let got = guard_interfaces(&active, &local, None, here);
+        for ip in ["100.64.0.9", "192.168.2.9", "172.17.0.9", "192.168.50.64"] {
+            assert!(guarded_url(&cam(ip, Family::Axis), &got).is_err(), "{ip}");
+        }
+        // Linux : une adresse étiquetée (`eth0:1`) appartient à `eth0`.
+        let active = [si("eth0", "10.0.8.235", "255.255.255.0")];
+        let local = [si("eth0:1", "192.168.1.10", "255.255.255.0")];
+        let got = guard_interfaces(&active, &local, None, here);
+        assert!(guarded_url(&cam("192.168.1.64", Family::Axis), &got).is_ok());
     }
 
     #[test]
