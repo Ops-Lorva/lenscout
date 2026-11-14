@@ -25,10 +25,8 @@ pub fn sync_cmd<S: AsRef<OsStr>>(program: S) -> std::process::Command {
 pub fn async_cmd<S: AsRef<OsStr>>(program: S) -> tokio::process::Command {
     #[allow(unused_mut)]
     let mut cmd = tokio::process::Command::new(program);
+    // `creation_flags` est une méthode propre de `tokio::process::Command`.
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
 }

@@ -272,6 +272,8 @@ const TEMP_PREFIX: &str = "lenscout-update-";
 fn write_private(asset_name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
     use std::io::Write;
     let tmp_dir = std::env::temp_dir().join(format!("{TEMP_PREFIX}{}", uuid::Uuid::new_v4()));
+    // `mut` sert au mode 0700, Unix seulement.
+    #[allow(unused_mut)]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {

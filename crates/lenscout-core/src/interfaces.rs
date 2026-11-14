@@ -578,6 +578,8 @@ pub fn mask_to_prefix(mask: &str) -> Option<u32> {
     Some(ones)
 }
 
+// Seul Linux lit un préfixe (`ip addr`) ; macOS et Windows donnent le masque.
+#[cfg(any(target_os = "linux", test))]
 fn cidr_to_mask(prefix: u32) -> String {
     if prefix == 0 { return "0.0.0.0".to_string(); }
     if prefix > 32 { return "255.255.255.255".to_string(); }
@@ -661,7 +663,7 @@ mod tests {
         assert_eq!(link_states(""), (false, false));
     }
 
-    #[cfg(target_os = "linux")]
+    // Lecteur pur : testé sur les trois OS (il n'y servirait sinon à rien hors Linux).
     #[test]
     fn the_default_gateway_belongs_only_to_the_interface_that_carries_it() {
         // 🔴 `ip route show default` décrit LA route par défaut de la machine,
@@ -676,7 +678,7 @@ mod tests {
         assert_eq!(gateway_for_device(reel, "docker0"), None);
     }
 
-    #[cfg(target_os = "linux")]
+    // Lecteur pur : testé sur les trois OS (il n'y servirait sinon à rien hors Linux).
     #[test]
     fn each_link_of_a_multi_wan_keeps_its_own_gateway() {
         // Deux sorties : chacune rend la sienne, aucune ne rend celle de
@@ -688,7 +690,7 @@ mod tests {
         assert_eq!(gateway_for_device(deux, "eth9"), None);
     }
 
-    #[cfg(target_os = "linux")]
+    // Lecteur pur : testé sur les trois OS (il n'y servirait sinon à rien hors Linux).
     #[test]
     fn no_default_route_means_no_gateway_not_a_placeholder() {
         // ⚠️ Rien, et surtout pas une valeur « neutre » : une absence doit se
