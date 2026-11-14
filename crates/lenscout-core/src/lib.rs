@@ -21,6 +21,7 @@ pub mod oui;
 pub mod permissions;
 pub mod presence;
 pub mod proc;
+pub mod route;
 pub mod seal;
 pub mod secret;
 pub mod temp_ip;
