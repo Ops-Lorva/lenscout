@@ -198,7 +198,9 @@ fn classify_ping(os: PingOs, code: Option<i32>, output: &str) -> Reply {
         },
         PingOs::Mac => {
             let text = output.to_lowercase();
-            if text.contains("no route to host") || text.contains("sendto:") {
+            // « Host is down » (EHOSTDOWN) = ARP sans réponse : un vrai silence,
+            // donc candidat libre. Seul « No route to host » trahit le refus local.
+            if text.contains("no route to host") {
                 return Reply::Unsent;
             }
             match code {
@@ -559,7 +561,7 @@ mod tests {
             (Windows, Some(1), "Bad IP address 192.0.2.1.", Reply::Unsent),
             // macOS : l'envoi refusé (accès Réseau local) sort en code 2 comme un silence.
             (Mac, Some(2), "ping: sendto: No route to host\n1 packets transmitted, 0 packets received", Reply::Unsent),
-            (Mac, Some(2), "ping: sendto: Host is down", Reply::Unsent),
+            (Mac, Some(2), "ping: sendto: Host is down", Reply::Silent),
         ];
         for (os, code, out, want) in cases {
             assert_eq!(classify_ping(*os, *code, out), *want, "{os:?} {code:?} {out}");
