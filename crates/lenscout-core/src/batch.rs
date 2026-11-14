@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::accounts::Exclusions;
+use crate::accounts::{Exclusions, NetworkFill};
 use crate::discovery::sadp;
 use crate::model::{Camera, Family};
 
@@ -53,6 +53,24 @@ pub enum BatchError {
     GatewayInRange { ip: Ipv4Addr },
     #[error("adresse déjà utilisée : {ip}")]
     IpInUse { ip: Ipv4Addr, mac: Option<String> },
+    #[error("{needed} caméras pour {free} adresses libres")]
+    NotEnoughFree { needed: usize, free: u32 },
+}
+
+/// Le lot tient-il dans les adresses libres du réseau du compte ? Refusé
+/// avant tout plan : sans quoi l'erreur viendrait d'une adresse prise ou d'un
+/// débordement, sans dire que le réseau est plein. `fill` doit compter les
+/// adresses actuelles du lot comme libres (`own`). Un lot vers un autre
+/// réseau, ou un compte sans réseau, n'est pas jugé ici.
+pub fn check_room(needed: usize, req: &BatchRequest, fill: Option<&NetworkFill>) -> Result<(), BatchError> {
+    let Some(fill) = fill else { return Ok(()) };
+    let Some((net, prefix)) = fill.network.split_once('/') else { return Ok(()) };
+    let (Ok(net), Ok(prefix)) = (net.parse::<Ipv4Addr>(), prefix.parse::<u32>()) else { return Ok(()) };
+    let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
+    if u32::from(req.start) & mask != u32::from(net) || needed <= fill.free as usize {
+        return Ok(());
+    }
+    Err(BatchError::NotEnoughFree { needed, free: fill.free })
 }
 
 /// `selection` : les caméras cochées, dans l'ordre affiché ; `others` : toutes
@@ -177,6 +195,7 @@ pub fn plan_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::{AccountNetwork, KnownCamera, network_fill};
     use crate::model::{Activation, Source};
 
     fn ip(s: &str) -> Ipv4Addr {
@@ -437,6 +456,36 @@ mod tests {
         // Une IP de départ exclue n'est pas proposée non plus.
         let rows = plan_batch(&sel[..1], &req("10.0.50.12"), &[], &[], &ex).unwrap();
         assert_eq!(rows[0].new_ip, ip("10.0.50.13"));
+    }
+
+    fn fill_of(pc: &str, cams: &[&str], own: &[Ipv4Addr]) -> NetworkFill {
+        let net = AccountNetwork { pc_ip: Some(pc.into()), ..Default::default() }.validated().unwrap();
+        let cams: Vec<KnownCamera> = cams
+            .iter()
+            .map(|a| KnownCamera { ip: ip(a), serial: Some(a.to_string()), mac: None, model: None, last_seen: 1 })
+            .collect();
+        network_fill(&net, &cams, own).unwrap()
+    }
+
+    #[test]
+    fn a_lot_larger_than_the_free_addresses_is_refused() {
+        // /29 : .1 à .6, PC en .6, caméras connues en .1, .2, .3 → 2 libres.
+        let fill = fill_of("10.0.50.6/29", &["10.0.50.1", "10.0.50.2", "10.0.50.3"], &[]);
+        let mut r = req("10.0.50.4");
+        r.mask = ip("255.255.255.248");
+        assert_eq!(check_room(2, &r, Some(&fill)), Ok(()));
+        assert_eq!(check_room(3, &r, Some(&fill)), Err(BatchError::NotEnoughFree { needed: 3, free: 2 }));
+        assert_eq!(serde_json::to_value(BatchError::NotEnoughFree { needed: 3, free: 2 }).unwrap()["code"], "not_enough_free");
+        // Lot vers un autre réseau que celui du compte, ou compte sans réseau : rien à dire ici.
+        assert_eq!(check_room(3, &req("192.168.0.10"), Some(&fill)), Ok(()));
+        assert_eq!(check_room(3, &r, None), Ok(()));
+    }
+
+    #[test]
+    fn known_cameras_are_skipped_like_exclusions() {
+        let ex = Exclusions::default().with_addresses([ip("10.0.50.12")]);
+        let rows = plan_batch(&[axis(200), axis(201)], &req("10.0.50.11"), &[], &[], &ex).unwrap();
+        assert_eq!(rows.iter().map(|r| r.new_ip).collect::<Vec<_>>(), [ip("10.0.50.11"), ip("10.0.50.13")]);
     }
 
     #[test]

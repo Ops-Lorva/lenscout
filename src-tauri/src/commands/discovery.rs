@@ -9,6 +9,7 @@ use lenscout_core::discovery::scanner::{
 };
 use lenscout_core::discovery::sadp::SadpProbe;
 use lenscout_core::http_client::ReqwestCameraHttp;
+use lenscout_core::accounts::{AccountBook, KnownCamera, unix_now};
 use lenscout_core::actions::{SeenState, row_key};
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use lenscout_core::model::{Activation, Addressing, Camera, Family};
@@ -132,6 +133,24 @@ impl ScanState {
     }
 }
 
+/// Les caméras listées par un scan, par clé de ligne, dans leur dernier
+/// état : la mémoire du compte retenu les reçoit une fois le scan fini (un
+/// seul enregistrement du carnet, pas un par événement).
+#[derive(Default)]
+struct Sightings(HashMap<String, Camera>);
+
+impl Sightings {
+    fn keep(&mut self, ev: &ScanEvent) {
+        if let ScanEvent::Upsert { camera } = ev {
+            self.0.insert(row_key(camera), camera.clone());
+        }
+    }
+
+    fn cameras(&self, at: u64) -> Vec<KnownCamera> {
+        self.0.values().map(|c| KnownCamera::of(c, c.ip, at)).collect()
+    }
+}
+
 type ProbeSocket = (Arc<dyn Probe>, Arc<dyn Datagram>);
 
 /// La liste des sondes de la découverte. Une sonde dont le socket ne s'ouvre pas est ignorée (port déjà
@@ -177,13 +196,18 @@ fn control_target(base: &ScanInterface, scanned: &ScanInterface, gateway: Option
 ///
 /// Lance un scan et rend la main à sa fin. Un scan déjà en cours est annulé
 /// d'abord. L'interface vient du front : elle doit figurer parmi les liens
-/// actifs.
+/// actifs. `account_id` : le compte retenu au sélecteur de réseau ; les
+/// caméras listées dans son réseau entrent dans sa mémoire à la fin du scan
+/// (absent, DHCP : aucune).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_scan_start(
     iface: String,
+    account_id: Option<String>,
     on_event: Channel<ScanEvent>,
     state: State<'_, ScanState>,
     join: State<'_, super::join::JoinState>,
+    accounts: State<'_, Mutex<AccountBook>>,
 ) -> Result<(), String> {
     let token = CancellationToken::new();
     if let Some(old) = state.cancel.lock().unwrap().replace(token.clone()) {
@@ -224,8 +248,10 @@ pub async fn cmd_scan_start(
     let cfg = ScanConfig { iface: scan_iface, listen: LISTEN, routed };
     let http = Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT));
     let scan = tokio::spawn(run_scan(probes, http, Arc::new(SystemArp), cfg, tx, token.clone()));
+    let mut found = Sightings::default();
     while let Some(ev) = rx.recv().await {
         state.record(generation, &ev);
+        found.keep(&ev);
         // Interne : l'adresse entendue ne part pas au webview.
         if matches!(ev, ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. } | ScanEvent::HeardRouted { .. }) {
             continue;
@@ -237,6 +263,10 @@ pub async fn cmd_scan_start(
         }
     }
     let summary = scan.await.unwrap_or_default();
+    // Même un scan interrompu a vu ce qu'il a listé.
+    if let Some(id) = account_id.as_deref().filter(|id| !id.is_empty()) {
+        super::accounts::remember_cameras(&accounts, id, found.cameras(unix_now()), true);
+    }
     let witness = match control.filter(|_| summary.local_network_denied) {
         Some((from, gw)) => tauri::async_runtime::spawn_blocking(move || presence::control_send(from, gw)).await.ok(),
         None => None,
@@ -629,6 +659,24 @@ mod tests {
             addressing: None,
             declared_mac: None,
         }
+    }
+
+    /// Chaque ligne listée par le scan, dans son dernier état (un
+    /// enrichissement complète le modèle et le n° de série).
+    #[test]
+    fn le_scan_retient_chaque_camera_dans_son_dernier_etat() {
+        let mut found = Sightings::default();
+        let mut a = axis("10.0.8.20", "AC:CC:8E:00:00:20", Activation::Activated);
+        found.keep(&ScanEvent::Upsert { camera: a.clone() });
+        a.serial = Some("S20".into());
+        found.keep(&ScanEvent::Upsert { camera: a });
+        found.keep(&ScanEvent::Upsert { camera: axis("10.0.8.21", "AC:CC:8E:00:00:21", Activation::New) });
+        found.keep(&ScanEvent::Heard { ip: "10.0.8.22".parse().unwrap() });
+        let mut cams = found.cameras(7);
+        cams.sort_by_key(|c| c.ip);
+        assert_eq!(cams.len(), 2);
+        assert_eq!((cams[0].serial.as_deref(), cams[0].last_seen), (Some("S20"), 7));
+        assert_eq!(cams[1].mac.as_deref(), Some("AC:CC:8E:00:00:21"));
     }
 
     /// Le compte ne part que vers une Axis activée que le dernier scan a

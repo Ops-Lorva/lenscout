@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::Mutex;
 
 use lenscout_core::accounts::{
     Account, AccountBook, AccountError, AccountNetwork, Choice, Exclusions, ImportKind, ImportPlan, ImportSummary,
-    Startup, write_file_private,
+    KnownCamera, NetworkFill, Startup, write_file_private,
 };
 use lenscout_core::secret::Secret;
 use lenscout_core::transport::Credentials;
@@ -323,6 +324,53 @@ pub(crate) fn exclusions_for(state: &Mutex<AccountBook>, id: Option<&str>) -> Ex
     book.list().into_iter().find(|a| a.id == id).map(|a| a.net.excluded()).unwrap_or_default()
 }
 
+/// Ce qu'une feuille ne doit pas proposer pour le compte retenu : ses IP
+/// exclues et les adresses de ses caméras connues, sauf `own` (les adresses
+/// actuelles des caméras qu'on réadresse, libres pour elles). Sans compte :
+/// rien, la feuille reste utilisable.
+pub(crate) fn reserved_for(state: &Mutex<AccountBook>, id: Option<&str>, own: &[Ipv4Addr]) -> Exclusions {
+    let excluded = exclusions_for(state, id);
+    let Some(id) = id else { return excluded };
+    let Ok(cameras) = lock(state).and_then(|b| b.known_cameras(id).map_err(code)) else { return excluded };
+    excluded.with_addresses(cameras.into_iter().map(|c| c.ip).filter(|a| !own.contains(a)))
+}
+
+/// Remplissage du réseau du compte retenu, `own` comptées libres ; `None` sans
+/// compte, compte disparu ou sans réseau.
+pub(crate) fn fill_for(state: &Mutex<AccountBook>, id: Option<&str>, own: &[Ipv4Addr]) -> Option<NetworkFill> {
+    lock(state).ok()?.fill(id?, own).ok().flatten()
+}
+
+pub(crate) fn account_cameras(book: &AccountBook, id: &str) -> Result<Vec<KnownCamera>, String> {
+    book.known_cameras(id).map_err(code)
+}
+
+pub(crate) fn account_fill(book: &AccountBook, id: &str) -> Result<Option<NetworkFill>, String> {
+    book.fill(id, &[]).map_err(code)
+}
+
+pub(crate) fn account_forget_camera(book: &mut AccountBook, id: &str, key: &str) -> Result<(), String> {
+    book.forget_camera(id, key).map_err(code)
+}
+
+/// Caméras posées ou vues avec un compte, retenues dans sa mémoire. Un
+/// échec (compte supprimé entre-temps, carnet en lecture seule) ne fait pas
+/// échouer l'action ni le scan : c'est une mémoire, elle se rattrapera.
+/// `seen_only` : un scan, qui ne retient que les caméras du réseau du compte.
+pub(crate) fn remember_cameras(state: &Mutex<AccountBook>, id: &str, cameras: Vec<KnownCamera>, seen_only: bool) {
+    if cameras.is_empty() {
+        return;
+    }
+    let Ok(mut book) = lock(state) else { return };
+    let r = match seen_only {
+        true => book.remember_seen(id, cameras).map(|_| ()),
+        false => book.remember(id, cameras),
+    };
+    if let Err(e) = r {
+        lenscout_core::debug_log::log(&format!("caméras connues non retenues : {e}"));
+    }
+}
+
 // `async` : le trousseau peut bloquer (D-Bus, invite de l'OS), ce qui ne doit
 // pas geler le thread principal.
 
@@ -382,6 +430,27 @@ pub async fn cmd_account_remove(
 ) -> Result<(), String> {
     let mut book = lock(&state)?;
     account_remove(&mut book, &id)
+}
+
+/// Caméras connues du compte (jamais de secret : adresse, identité, modèle, date).
+#[tauri::command]
+pub async fn cmd_account_cameras(id: String, state: State<'_, Mutex<AccountBook>>) -> Result<Vec<KnownCamera>, String> {
+    let book = lock(&state)?;
+    account_cameras(&book, &id)
+}
+
+/// Remplissage du réseau du compte ; `null` sans IP du PC.
+#[tauri::command]
+pub async fn cmd_account_fill(id: String, state: State<'_, Mutex<AccountBook>>) -> Result<Option<NetworkFill>, String> {
+    let book = lock(&state)?;
+    account_fill(&book, &id)
+}
+
+/// Oublie une caméra connue (`key` : n° de série, sinon MAC).
+#[tauri::command]
+pub async fn cmd_account_forget_camera(id: String, key: String, state: State<'_, Mutex<AccountBook>>) -> Result<(), String> {
+    let mut book = lock(&state)?;
+    account_forget_camera(&mut book, &id, &key)
 }
 
 // Le chemin vient de la boîte Enregistrer / Ouvrir du plugin dialog, jamais
@@ -518,6 +587,52 @@ mod tests {
         // Aucun compte, ou un compte disparu : rien d'exclu, la recherche continue.
         assert_eq!(exclusions_for(&state, None), Exclusions::default());
         assert_eq!(exclusions_for(&state, Some("zzz")), Exclusions::default());
+    }
+
+    fn site() -> AccountNetwork {
+        AccountNetwork { pc_ip: Some("10.0.8.250/24".into()), gateway: Some("10.0.8.1".into()), ..no_net() }
+    }
+
+    fn cam(ip: &str, serial: &str) -> KnownCamera {
+        KnownCamera { ip: ip.parse().unwrap(), serial: Some(serial.into()), mac: None, model: None, last_seen: 1 }
+    }
+
+    #[test]
+    fn known_cameras_are_reserved_except_the_ones_being_moved() {
+        let (mut book, _g_book) = book();
+        let n = AccountNetwork { exclusions: Some("10.0.8.5".into()), ..site() };
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), n).unwrap();
+        book.remember(&acc.id, vec![cam("10.0.8.20", "S1"), cam("10.0.8.21", "S2")]).unwrap();
+        let state = Mutex::new(book);
+        let ip = |s: &str| s.parse::<std::net::Ipv4Addr>().unwrap();
+        let r = reserved_for(&state, Some(&acc.id), &[ip("10.0.8.21")]);
+        assert!(r.contains(ip("10.0.8.5")) && r.contains(ip("10.0.8.20")));
+        // La caméra qu'on réadresse : son adresse actuelle reste libre pour elle.
+        assert!(!r.contains(ip("10.0.8.21")));
+        assert_eq!(reserved_for(&state, None, &[]), Exclusions::default());
+        assert_eq!(reserved_for(&state, Some("zzz"), &[]), Exclusions::default());
+        // Le remplissage compte de même.
+        let f = fill_for(&state, Some(&acc.id), &[ip("10.0.8.21")]).unwrap();
+        assert_eq!((f.cameras, f.free), (1, 254 - 4));
+        assert!(fill_for(&state, None, &[]).is_none());
+    }
+
+    #[test]
+    fn cameras_of_an_account_are_listed_and_forgotten_by_key() {
+        let (mut book, _g_book) = book();
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), site()).unwrap();
+        book.remember(&acc.id, vec![cam("10.0.8.20", "S1")]).unwrap();
+        let json = serde_json::to_value(account_cameras(&book, &acc.id).unwrap()).unwrap();
+        assert_eq!(json[0]["ip"], "10.0.8.20");
+        assert_eq!(json[0]["serial"], "S1");
+        assert_eq!(json[0]["last_seen"], 1);
+        assert_eq!(account_forget_camera(&mut book, &acc.id, "S2").unwrap_err(), "not_found");
+        account_forget_camera(&mut book, &acc.id, "S1").unwrap();
+        assert!(account_cameras(&book, &acc.id).unwrap().is_empty());
+        assert_eq!(account_cameras(&book, "zzz").unwrap_err(), "not_found");
+        let fill = serde_json::to_value(account_fill(&book, &acc.id).unwrap()).unwrap();
+        assert_eq!(fill["free"], 252);
+        assert_eq!(fill["segments"][0]["kind"], "gateway");
     }
 
     fn uuid_like() -> String {

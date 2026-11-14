@@ -98,6 +98,14 @@ impl Exclusions {
         Some(n)
     }
 
+    /// Ces exclusions, plus les adresses `ips` (celles des caméras connues du
+    /// compte) : la recherche d'IP libres et le plan en lot les sautent pareil.
+    pub fn with_addresses(&self, ips: impl IntoIterator<Item = Ipv4Addr>) -> Exclusions {
+        let mut out = self.clone();
+        out.0.extend(ips.into_iter().map(|a| (u32::from(a), u32::from(a))));
+        out
+    }
+
     /// Forme enregistrée : `a`, `a-b`, séparés par `, `.
     fn normalized(&self) -> Option<String> {
         let items: Vec<String> = self
@@ -298,6 +306,217 @@ impl AccountNetwork {
     }
 }
 
+/// Caméra que LenScout a vue ou adressée avec un compte : son adresse n'est
+/// plus proposée comme libre, même caméra éteinte. Rien de secret : adresse,
+/// identité, modèle, date. Clé : le n° de série, sinon la MAC (une caméra
+/// sans l'un ni l'autre n'est pas retenue : on ne la reconnaîtrait pas).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct KnownCamera {
+    pub ip: Ipv4Addr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Dernière vue, en secondes depuis l'époque Unix.
+    pub last_seen: u64,
+}
+
+impl KnownCamera {
+    /// La caméra `cam`, vue (ou posée) en `ip` à l'instant `at`.
+    pub fn of(cam: &crate::model::Camera, ip: Ipv4Addr, at: u64) -> KnownCamera {
+        KnownCamera { ip, serial: cam.serial.clone(), mac: cam.mac.clone(), model: cam.model.clone(), last_seen: at }
+    }
+
+    /// Champs vides retirés, MAC en majuscules ; `None` sans n° de série ni MAC.
+    fn normalized(mut self) -> Option<KnownCamera> {
+        let clean = |f: Option<String>| f.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        self.serial = clean(self.serial);
+        self.mac = clean(self.mac).map(|m| m.to_uppercase());
+        self.model = clean(self.model);
+        (self.serial.is_some() || self.mac.is_some()).then_some(self)
+    }
+
+    /// Le n° de série, sinon la MAC.
+    pub fn key(&self) -> String {
+        self.serial.clone().or_else(|| self.mac.clone()).unwrap_or_default()
+    }
+
+    /// Même caméra : même n° de série (casse ignorée) quand les deux en ont
+    /// un, sinon même MAC.
+    fn same_as(&self, other: &KnownCamera) -> bool {
+        match (&self.serial, &other.serial) {
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+            _ => self.mac.is_some() && self.mac == other.mac,
+        }
+    }
+}
+
+/// Secondes depuis l'époque Unix : la date de dernière vue d'une caméra.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Ajoute `incoming` à `list` ou met à jour sa ligne (jamais de doublon : une
+/// caméra qui change d'adresse libère l'ancienne). La ligne n'est remplacée
+/// que si `incoming` est plus récente (`ties` : ou du même instant) ; ce que
+/// `incoming` ne dit pas (MAC, modèle…) reste. Rend `true` si `list` change.
+fn merge_camera(list: &mut Vec<KnownCamera>, incoming: KnownCamera, ties: bool) -> bool {
+    let Some(incoming) = incoming.normalized() else { return false };
+    let Some(mine) = list.iter_mut().find(|c| c.same_as(&incoming)) else {
+        list.push(incoming);
+        return true;
+    };
+    if incoming.last_seen < mine.last_seen || (incoming.last_seen == mine.last_seen && !ties) {
+        return false;
+    }
+    let merged = KnownCamera {
+        serial: incoming.serial.or(mine.serial.take()),
+        mac: incoming.mac.or(mine.mac.take()),
+        model: incoming.model.or(mine.model.take()),
+        ..incoming
+    };
+    let changed = *mine != merged;
+    *mine = merged;
+    changed
+}
+
+/// Fusion d'un import : par caméra, la ligne la plus récente gagne.
+fn merge_cameras(list: &mut Vec<KnownCamera>, incoming: Vec<KnownCamera>) -> bool {
+    incoming.into_iter().fold(false, |changed, c| merge_camera(list, c, false) | changed)
+}
+
+/// Caméras lues dans un objet JSON (carnet, import) : une ligne illisible est
+/// ignorée, comme un champ qui n'est pas une liste — une mémoire, jamais une
+/// raison de perdre un compte.
+fn read_cameras(a: &serde_json::Value) -> Vec<KnownCamera> {
+    let mut out = Vec::new();
+    for c in a.get("cameras").and_then(|v| v.as_array()).into_iter().flatten() {
+        if let Ok(cam) = serde_json::from_value::<KnownCamera>(c.clone()) {
+            merge_camera(&mut out, cam, false);
+        }
+    }
+    out
+}
+
+/// Ce qu'occupe une portion de la barre du réseau d'un compte.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum SegmentKind {
+    Gateway,
+    Pc,
+    Excluded,
+    Camera,
+}
+
+/// `first`..=`last` : décalages depuis l'adresse de réseau (0 = le réseau).
+#[derive(Serialize, Clone, PartialEq, Debug)]
+pub struct Segment {
+    pub kind: SegmentKind,
+    pub first: u32,
+    pub last: u32,
+}
+
+/// Remplissage du réseau d'un compte. `usable` = adresses d'hôte (sans réseau
+/// ni diffusion) ; chacune n'est comptée qu'une fois, dans cet ordre :
+/// passerelle, PC, exclues, caméras connues, libres.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+pub struct NetworkFill {
+    pub network: String,
+    /// Adresses du réseau, réseau et diffusion compris : l'échelle de la barre.
+    pub size: u32,
+    pub usable: u32,
+    pub gateway: u32,
+    pub pc: u32,
+    pub excluded: u32,
+    pub cameras: u32,
+    pub free: u32,
+    /// Moins de 10 % d'adresses libres.
+    pub almost_full: bool,
+    /// Triés par adresse.
+    pub segments: Vec<Segment>,
+}
+
+/// Seuil « bientôt complet » : moins d'une adresse libre sur dix.
+const ALMOST_FULL_RATIO: u32 = 10;
+
+/// Remplissage du réseau de `net` avec les caméras `cameras` ; `own` : les
+/// adresses actuelles des caméras qu'on est en train de réadresser, libres
+/// pour elles (comme dans la recherche d'IP libres). `None` sans IP du PC.
+pub fn network_fill(net: &AccountNetwork, cameras: &[KnownCamera], own: &[Ipv4Addr]) -> Option<NetworkFill> {
+    let (pc, prefix) = parse_cidr(net.pc_ip.as_deref()?.trim())?;
+    let mask = mask_bits(prefix);
+    let base = u32::from(pc) & mask;
+    let size = (!mask).checked_add(1)?;
+    // /31, /32 : refusés par `validated`, rien à mesurer.
+    if size < 4 {
+        return None;
+    }
+    let (first, last) = (base + 1, base + size - 2);
+    let host = |n: u32| (first..=last).contains(&n);
+    let gw = net.gateway.as_deref().and_then(|g| g.parse::<Ipv4Addr>().ok()).map(u32::from).filter(|&g| host(g));
+    let pc = Some(u32::from(pc)).filter(|&p| host(p));
+    // Plages exclues bornées au réseau et fusionnées : jamais dépliées.
+    let mut ranges: Vec<(u32, u32)> = net
+        .excluded()
+        .0
+        .into_iter()
+        .filter(|&(a, b)| b >= first && a <= last)
+        .map(|(a, b)| (a.max(first), b.min(last)))
+        .collect();
+    ranges.sort_unstable();
+    let mut merged: Vec<(u32, u32)> = Vec::new();
+    for (a, b) in ranges {
+        match merged.last_mut() {
+            Some((_, end)) if a <= end.saturating_add(1) => *end = (*end).max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    let in_ex = |n: u32| merged.iter().any(|&(a, b)| a <= n && n <= b);
+    let special = [gw, pc];
+    let excluded: u32 = merged.iter().map(|&(a, b)| b - a + 1).sum::<u32>()
+        - special.iter().flatten().filter(|&&n| in_ex(n)).count() as u32;
+    let mut cams: Vec<u32> = cameras
+        .iter()
+        .map(|c| u32::from(c.ip))
+        .filter(|&n| host(n) && !in_ex(n) && !special.contains(&Some(n)) && !own.contains(&Ipv4Addr::from(n)))
+        .collect();
+    cams.sort_unstable();
+    cams.dedup();
+    let (n_gw, n_pc) = (gw.is_some() as u32, pc.is_some() as u32);
+    let usable = size - 2;
+    let free = usable - n_gw - n_pc - excluded - cams.len() as u32;
+
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut push = |kind, a: u32, b: u32| segments.push(Segment { kind, first: a - base, last: b - base });
+    gw.into_iter().for_each(|g| push(SegmentKind::Gateway, g, g));
+    pc.into_iter().for_each(|p| push(SegmentKind::Pc, p, p));
+    merged.iter().for_each(|&(a, b)| push(SegmentKind::Excluded, a, b));
+    // Caméras consécutives : une seule portion.
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for n in cams.iter().copied() {
+        match runs.last_mut() {
+            Some((_, end)) if *end + 1 == n => *end = n,
+            _ => runs.push((n, n)),
+        }
+    }
+    runs.into_iter().for_each(|(a, b)| push(SegmentKind::Camera, a, b));
+    segments.sort_by_key(|s| s.first);
+    Some(NetworkFill {
+        network: format!("{}/{prefix}", Ipv4Addr::from(base)),
+        size,
+        usable,
+        gateway: n_gw,
+        pc: n_pc,
+        excluded,
+        cameras: cams.len() as u32,
+        free,
+        almost_full: free * ALMOST_FULL_RATIO < usable,
+        segments,
+    })
+}
+
 // L'identifiant est scellé dans le fichier : il n'apparaît pas non plus dans les journaux.
 impl fmt::Debug for Account {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -434,6 +653,8 @@ struct Entry {
     // Repris de l'ancien format sans son secret : on le redemande au trousseau
     // à chaque lancement tant que le compte n'a pas de mot de passe.
     legacy: bool,
+    // Caméras vues ou adressées avec ce compte (voir `KnownCamera`).
+    cameras: Vec<KnownCamera>,
 }
 
 pub struct AccountBook {
@@ -542,6 +763,7 @@ struct Imported {
     password: Option<Secret>,
     net: AccountNetwork,
     gateway_dropped: bool,
+    cameras: Vec<KnownCamera>,
 }
 
 /// Écriture atomique d'un fichier lisible par l'utilisateur seul (0600 sous
@@ -613,6 +835,7 @@ fn parse_import(data: &str) -> Result<Vec<Imported>, AccountError> {
             password: password.filter(|p| !p.expose().is_empty()),
             net,
             gateway_dropped,
+            cameras: read_cameras(a),
         });
     }
     Ok(out)
@@ -683,6 +906,7 @@ impl AccountBook {
                     legacy: password.is_none(),
                     account,
                     password,
+                    cameras: Vec::new(),
                 });
             }
             if complete {
@@ -720,6 +944,7 @@ impl AccountBook {
                 },
                 password: Some(Secret::new(text("password")?)).filter(|p| !p.expose().is_empty()),
                 legacy: a["legacy"] == true,
+                cameras: read_cameras(a),
             };
             // Compte repris sans secret : le trousseau a peut-être répondu depuis.
             let again = (entry.legacy && entry.password.is_none())
@@ -807,6 +1032,7 @@ impl AccountBook {
             account: account.clone(),
             password: Some(password),
             legacy: false,
+            cameras: Vec::new(),
         });
         self.write(&next)?;
         self.entries = next;
@@ -896,6 +1122,9 @@ impl AccountBook {
                     a["password"] = seal::seal(p.expose().as_bytes()).into();
                 }
                 e.account.net.write_into(&mut a);
+                if !e.cameras.is_empty() {
+                    a["cameras"] = serde_json::to_value(&e.cameras).expect("json");
+                }
                 a
             })
             .collect();
@@ -934,6 +1163,7 @@ impl AccountBook {
         let imports = parse_import(data)?;
         let mut next = self.entries.clone();
         let mut summary = ImportSummary::default();
+        let mut cameras_changed = false;
         // Noms que « Garder les deux » ne doit pas prendre : tous ceux du fichier.
         let mut reserved: Vec<String> = imports.iter().map(|i| i.name.to_lowercase()).collect();
         for imp in imports {
@@ -946,6 +1176,7 @@ impl AccountBook {
                 },
                 password: imp.password,
                 legacy: false,
+                cameras: imp.cameras,
             };
             let Some(i) = position_of(&next, &imp.name) else {
                 next.push(fresh(imp.name.clone(), imp));
@@ -953,6 +1184,8 @@ impl AccountBook {
                 continue;
             };
             if classify(&next[i], &imp) == ImportKind::Identical {
+                // Un compte identique reçoit quand même les caméras du fichier.
+                cameras_changed |= merge_cameras(&mut next[i].cameras, imp.cameras);
                 summary.identical += 1;
                 continue;
             }
@@ -965,6 +1198,7 @@ impl AccountBook {
                     next[i].account.name = imp.name;
                     next[i].account.login = imp.login;
                     next[i].account.net.merge(imp.net);
+                    cameras_changed |= merge_cameras(&mut next[i].cameras, imp.cameras);
                     if imp.password.is_some() {
                         next[i].password = imp.password;
                         next[i].legacy = false;
@@ -986,11 +1220,61 @@ impl AccountBook {
                 Choice::Skip => summary.skipped += 1,
             }
         }
-        if summary.added + summary.replaced + summary.kept_both > 0 {
+        if summary.added + summary.replaced + summary.kept_both > 0 || cameras_changed {
             self.write(&next)?;
             self.entries = next;
         }
         Ok(summary)
+    }
+
+    pub fn known_cameras(&self, id: &str) -> Result<Vec<KnownCamera>, AccountError> {
+        Ok(self.entries[self.index_of(id)?].cameras.clone())
+    }
+
+    /// Caméras dont LenScout vient de poser l'adresse avec ce compte : retenues
+    /// quel que soit le réseau saisi (il peut changer, ou manquer).
+    pub fn remember(&mut self, id: &str, seen: Vec<KnownCamera>) -> Result<(), AccountError> {
+        let index = self.index_of(id)?;
+        let mut next = self.entries.clone();
+        let mut changed = false;
+        for cam in seen {
+            changed |= merge_camera(&mut next[index].cameras, cam, true);
+        }
+        if changed {
+            self.write(&next)?;
+            self.entries = next;
+        }
+        Ok(())
+    }
+
+    /// Caméras vues au scan avec ce compte : seules celles du réseau du compte
+    /// sont retenues (un compte sans IP du PC n'en retient aucune). Rend le
+    /// nombre de caméras du réseau.
+    pub fn remember_seen(&mut self, id: &str, seen: Vec<KnownCamera>) -> Result<usize, AccountError> {
+        let net = &self.entries[self.index_of(id)?].account.net;
+        let Some(scope) = net.pc_ip.as_deref().and_then(|p| parse_cidr(p.trim())) else { return Ok(0) };
+        let inside: Vec<KnownCamera> = seen.into_iter().filter(|c| contains(scope, c.ip) && is_host(c.ip, scope.1)).collect();
+        let n = inside.len();
+        self.remember(id, inside)?;
+        Ok(n)
+    }
+
+    /// Oublie la caméra de clé `key` (n° de série, sinon MAC, comme
+    /// `KnownCamera::key`). `NotFound` : compte ou caméra inconnus.
+    pub fn forget_camera(&mut self, id: &str, key: &str) -> Result<(), AccountError> {
+        let index = self.index_of(id)?;
+        let at = self.entries[index].cameras.iter().position(|c| c.key() == key).ok_or(AccountError::NotFound)?;
+        let mut next = self.entries.clone();
+        next[index].cameras.remove(at);
+        self.write(&next)?;
+        self.entries = next;
+        Ok(())
+    }
+
+    /// Remplissage du réseau du compte (voir `network_fill`) ; `None` sans IP du PC.
+    pub fn fill(&self, id: &str, own: &[Ipv4Addr]) -> Result<Option<NetworkFill>, AccountError> {
+        let e = &self.entries[self.index_of(id)?];
+        Ok(network_fill(&e.account.net, &e.cameras, own))
     }
 
     fn index_of(&self, id: &str) -> Result<usize, AccountError> {
@@ -1028,6 +1312,9 @@ impl AccountBook {
                     a["legacy"] = true.into();
                 }
                 e.account.net.write_into(&mut a);
+                if !e.cameras.is_empty() {
+                    a["cameras"] = serde_json::to_value(&e.cameras).expect("json");
+                }
                 a
             })
             .collect();
@@ -1258,6 +1545,188 @@ mod tests {
         .to_string();
         assert!(matches!(book.import_plan(&data), Err(AccountError::ImportInvalid)));
         assert_eq!(book.list(), before);
+    }
+
+    // ---- Caméras connues ----
+
+    fn known(ip_: &str, serial: Option<&str>, mac: Option<&str>, at: u64) -> KnownCamera {
+        KnownCamera {
+            ip: ip(ip_),
+            serial: serial.map(str::to_string),
+            mac: mac.map(str::to_string),
+            model: Some("P3245-LVE".into()),
+            last_seen: at,
+        }
+    }
+
+    fn site() -> AccountNetwork {
+        with_exclusions(net("10.0.8.250/24", "", "10.0.8.1"), "10.0.8.2-9, 10.0.8.100")
+    }
+
+    #[test]
+    fn a_known_camera_that_moves_keeps_one_line() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.remember(&acc.id, vec![known("10.0.8.20", Some("ACCC8E01"), Some("AC:CC:8E:00:00:01"), 100)]).unwrap();
+        book.remember(&acc.id, vec![known("10.0.8.21", Some("accc8e01 "), None, 200)]).unwrap();
+        let cams = book.known_cameras(&acc.id).unwrap();
+        assert_eq!(cams.len(), 1);
+        assert_eq!(cams[0].ip, ip("10.0.8.21"));
+        assert_eq!(cams[0].last_seen, 200);
+        // Ce que la nouvelle observation ne dit pas reste : la MAC.
+        assert_eq!(cams[0].mac.as_deref(), Some("AC:CC:8E:00:00:01"));
+    }
+
+    #[test]
+    fn a_camera_without_serial_is_known_by_its_mac_and_without_either_not_at_all() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.remember(&acc.id, vec![known("10.0.8.30", None, Some("ac:cc:8e:00:00:02"), 100)]).unwrap();
+        book.remember(&acc.id, vec![known("10.0.8.31", None, Some("AC:CC:8E:00:00:02"), 200)]).unwrap();
+        book.remember(&acc.id, vec![known("10.0.8.32", None, None, 200)]).unwrap();
+        let cams = book.known_cameras(&acc.id).unwrap();
+        assert_eq!(cams.len(), 1);
+        assert_eq!((cams[0].ip, cams[0].key()), (ip("10.0.8.31"), "AC:CC:8E:00:00:02".to_string()));
+        // Le n° de série appris plus tard devient la clé, sans doublon.
+        book.remember(&acc.id, vec![known("10.0.8.31", Some("S1"), Some("AC:CC:8E:00:00:02"), 300)]).unwrap();
+        let cams = book.known_cameras(&acc.id).unwrap();
+        assert_eq!((cams.len(), cams[0].key()), (1, "S1".to_string()));
+    }
+
+    #[test]
+    fn a_scan_only_feeds_cameras_of_the_account_network() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        let bare = book.create("Sans réseau", "root", pwd(PWD), no_net()).unwrap();
+        let seen = vec![known("10.0.8.40", Some("A"), None, 1), known("192.168.0.90", Some("B"), None, 1)];
+        assert_eq!(book.remember_seen(&acc.id, seen.clone()).unwrap(), 1);
+        assert_eq!(book.known_cameras(&acc.id).unwrap()[0].ip, ip("10.0.8.40"));
+        assert_eq!(book.remember_seen(&bare.id, seen).unwrap(), 0);
+        assert!(book.known_cameras(&bare.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn known_cameras_are_stored_and_reload_and_older_files_have_none() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        assert!(!fx.raw().contains("cameras"));
+        book.remember(&acc.id, vec![known("10.0.8.20", Some("S1"), None, 100)]).unwrap();
+        assert!(fx.raw().contains("\"cameras\""));
+        assert_eq!(fx.book().known_cameras(&acc.id).unwrap(), vec![known("10.0.8.20", Some("S1"), None, 100)]);
+        // Une ligne illisible est ignorée, jamais le carnet.
+        let mut v: serde_json::Value = serde_json::from_str(&fx.raw()).unwrap();
+        v["accounts"][0]["cameras"].as_array_mut().unwrap().push(serde_json::json!({"ip": "x"}));
+        std::fs::write(fx.path(), v.to_string()).unwrap();
+        assert_eq!(fx.book().known_cameras(&acc.id).unwrap().len(), 1);
+        v["accounts"][0]["cameras"] = "pas une liste".into();
+        std::fs::write(fx.path(), v.to_string()).unwrap();
+        assert!(fx.book().known_cameras(&acc.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_update_keeps_the_known_cameras() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.remember(&acc.id, vec![known("10.0.8.20", Some("S1"), None, 100)]).unwrap();
+        book.update(&acc.id, "Site 2", "root", None, site()).unwrap();
+        assert_eq!(book.known_cameras(&acc.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_known_camera_can_be_forgotten() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.remember(&acc.id, vec![known("10.0.8.20", Some("S1"), None, 1), known("10.0.8.21", None, Some("AA:BB:CC:00:00:01"), 1)]).unwrap();
+        book.forget_camera(&acc.id, "AA:BB:CC:00:00:01").unwrap();
+        assert_eq!(book.known_cameras(&acc.id).unwrap().len(), 1);
+        assert!(matches!(book.forget_camera(&acc.id, "inconnue"), Err(AccountError::NotFound)));
+        assert!(matches!(book.forget_camera("zzz", "S1"), Err(AccountError::NotFound)));
+    }
+
+    #[test]
+    fn export_and_import_merge_known_cameras_the_latest_wins() {
+        let (mut src, _fx_src) = empty_book();
+        let a = src.create("Site", "root", pwd(PWD), site()).unwrap();
+        src.remember(&a.id, vec![
+            known("10.0.8.20", Some("S1"), None, 300),
+            known("10.0.8.21", Some("S2"), None, 100),
+            known("10.0.8.22", Some("S3"), None, 100),
+        ]).unwrap();
+        let data = src.export();
+        assert!(data.contains("\"cameras\""));
+        let (mut dst, _fx_dst) = empty_book();
+        let b = dst.create("Site", "root", pwd(PWD), site()).unwrap();
+        dst.remember(&b.id, vec![known("10.0.8.30", Some("S1"), None, 200), known("10.0.8.31", Some("S2"), None, 200)]).unwrap();
+        // Comptes identiques par ailleurs : les caméras se fusionnent quand même.
+        assert_eq!(dst.import_plan(&data).unwrap().items[0].kind, ImportKind::Identical);
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        let mut cams = dst.known_cameras(&b.id).unwrap();
+        cams.sort_by_key(|c| c.key());
+        let ips: Vec<_> = cams.iter().map(|c| (c.key(), c.ip)).collect();
+        assert_eq!(ips, [("S1".into(), ip("10.0.8.20")), ("S2".into(), ip("10.0.8.31")), ("S3".into(), ip("10.0.8.22"))]);
+        // Survit au rechargement ; un nouveau compte importé arrive avec ses caméras.
+        let (mut fresh, _fx_fresh) = empty_book();
+        fresh.import_apply(&data, &HashMap::new()).unwrap();
+        let id = fresh.list()[0].id.clone();
+        assert_eq!(fresh.known_cameras(&id).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn the_fill_counts_every_kind_of_address_once() {
+        // /24 : 254 adresses. Passerelle .1, PC .250, exclues .2–.9 et .100 (9),
+        // caméras .20, .21 et .100 (déjà exclue), .5 (exclue), une hors réseau.
+        let cams = [
+            known("10.0.8.20", Some("A"), None, 1),
+            known("10.0.8.21", Some("B"), None, 1),
+            known("10.0.8.100", Some("C"), None, 1),
+            known("10.0.8.5", Some("D"), None, 1),
+            known("192.168.0.90", Some("E"), None, 1),
+        ];
+        let f = network_fill(&site().validated().unwrap(), &cams, &[]).unwrap();
+        assert_eq!(f.network, "10.0.8.0/24");
+        assert_eq!((f.size, f.usable, f.gateway, f.pc, f.excluded, f.cameras, f.free), (256, 254, 1, 1, 9, 2, 241));
+        assert!(!f.almost_full);
+        let kinds: Vec<_> = f.segments.iter().map(|s| (s.kind, s.first, s.last)).collect();
+        assert_eq!(
+            kinds,
+            [
+                (SegmentKind::Gateway, 1, 1),
+                (SegmentKind::Excluded, 2, 9),
+                (SegmentKind::Camera, 20, 21),
+                (SegmentKind::Excluded, 100, 100),
+                (SegmentKind::Pc, 250, 250),
+            ]
+        );
+        // L'adresse actuelle de la caméra qu'on modifie compte libre.
+        let f = network_fill(&site().validated().unwrap(), &cams, &[ip("10.0.8.20")]).unwrap();
+        assert_eq!((f.cameras, f.free), (1, 242));
+        // Sans réseau : rien à mesurer.
+        assert!(network_fill(&no_net(), &cams, &[]).is_none());
+    }
+
+    #[test]
+    fn known_addresses_join_the_exclusions() {
+        let ex = Exclusions::parse("10.0.8.2-9").unwrap().with_addresses([ip("10.0.8.20"), ip("10.0.8.21")]);
+        assert!(ex.contains(ip("10.0.8.5")) && ex.contains(ip("10.0.8.21")) && !ex.contains(ip("10.0.8.22")));
+        assert_eq!(ex.next_free(u32::from(ip("10.0.8.20"))), Some(u32::from(ip("10.0.8.22"))));
+    }
+
+    #[test]
+    fn under_ten_percent_free_is_almost_full() {
+        // /28 : 14 adresses ; PC .14, 12 caméras → 1 libre.
+        let n = net("10.0.9.14/28", "", "").validated().unwrap();
+        let cams: Vec<_> = (1..=12).map(|i| known(&format!("10.0.9.{i}"), Some(&format!("S{i}")), None, 1)).collect();
+        let f = network_fill(&n, &cams, &[]).unwrap();
+        assert_eq!((f.usable, f.cameras, f.free), (14, 12, 1));
+        assert!(f.almost_full);
+        let f = network_fill(&n, &cams[..10], &[]).unwrap();
+        assert_eq!(f.free, 3);
+        assert!(!f.almost_full);
+        // Une grande plage exclue sur un /8 se compte sans être dépliée.
+        let big = with_exclusions(net("10.0.0.250/8", "", ""), "10.0.0.0-10.255.255.255");
+        let f = network_fill(&big.validated().unwrap(), &[], &[]).unwrap();
+        assert_eq!((f.usable, f.excluded, f.free), (16_777_214, 16_777_213, 0));
     }
 
     // ---- Champs réseau ----

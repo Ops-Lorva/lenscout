@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use lenscout_core::accounts::AccountBook;
-use lenscout_core::actions::{Action, ActionContext, ActionResult, apply_all, apply_batch, on_subnet};
-use lenscout_core::batch::{Assignment, BatchError, BatchRequest, plan_batch};
+use lenscout_core::accounts::{AccountBook, KnownCamera, unix_now};
+use lenscout_core::actions::{Action, ActionContext, ActionResult, apply_all, apply_batch, on_subnet, row_key};
+use lenscout_core::batch::{Assignment, BatchError, BatchRequest, check_room, plan_batch};
 use lenscout_core::discovery::arp::{ScanInterface, SystemNeighbours, read_neighbours};
 use lenscout_core::discovery::sadp;
 use lenscout_core::discovery::socket::open_multicast;
@@ -20,7 +20,7 @@ use lenscout_core::vapix::{NetworkSettings, ResetMode, TimeSettings};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::accounts::credentials_for;
+use super::accounts::{credentials_for, fill_for, remember_cameras, reserved_for};
 use super::discovery::ScanState;
 
 /// `<app_data_dir>/temp-ip.json` : l'IP temporaire en cours, à retirer au
@@ -179,6 +179,26 @@ async fn build_context(
     })
 }
 
+/// L'adresse qu'une action pose sur la caméra : une IP fixe ; le DHCP n'en
+/// pose aucune que l'on connaisse.
+fn posed_ip(action: &Action) -> Option<Ipv4Addr> {
+    match action {
+        Action::Network(NetworkSettings::Static { ip, .. }) => Some(*ip),
+        _ => None,
+    }
+}
+
+/// Les caméras dont l'adresse a été posée : `new_ips[i]` pour `cameras[i]`,
+/// retenues seulement si leur résultat (par `row_key`) est réussi.
+fn posed(cameras: &[Camera], new_ips: &[Ipv4Addr], results: &[ActionResult], at: u64) -> Vec<KnownCamera> {
+    cameras
+        .iter()
+        .zip(new_ips)
+        .filter(|(c, _)| results.iter().any(|r| r.ok && r.key == row_key(c)))
+        .map(|(c, ip)| KnownCamera::of(c, *ip, at))
+        .collect()
+}
+
 /// Applique une action aux seules caméras reçues, dans l'ordre. Le front passe
 /// la sélection visible ; le cœur revérifie la marque et l'identité de chaque
 /// caméra avant d'écrire. Hors du sous-réseau de l'interface, une IP
@@ -204,6 +224,11 @@ pub async fn cmd_apply_action(
     // Activée à l'instant : les actions suivantes voient l'état juste.
     if matches!(action, Action::Activate | Action::ActivateCleartext) {
         results.iter().filter(|r| r.ok).for_each(|r| scan.mark_activated(&r.key));
+    }
+    // IP fixe posée avec ce compte : la caméra entre dans sa mémoire.
+    if let Some(ip) = posed_ip(&action) {
+        let new_ips = vec![ip; cameras.len()];
+        remember_cameras(&accounts, &account_id, posed(&cameras, &new_ips, &results, unix_now()), false);
     }
     Ok(results)
 }
@@ -330,7 +355,11 @@ pub async fn cmd_batch_preview(
     // Les deux adresses du poste sont réservées : la principale et celle d'un compte.
     let primary = host.ip;
     let host = join.scope(host);
-    let excluded = super::accounts::exclusions_for(&accounts, account_id.as_deref());
+    // Les adresses actuelles du lot sont libres pour lui ; celles des autres
+    // caméras connues du compte sont sautées comme les IP exclues.
+    let own: Vec<Ipv4Addr> = selection.iter().map(|c| c.ip).collect();
+    check_room(selection.len(), &req, fill_for(&accounts, account_id.as_deref(), &own).as_ref())?;
+    let excluded = reserved_for(&accounts, account_id.as_deref(), &own);
     let rows = plan_batch(&selection, &req, &others, &[primary, host.ip], &excluded)?;
     let id = remember_preview(&store, selection, rows.clone(), req, &host, Instant::now());
     Ok(BatchPreview { id, rows })
@@ -372,7 +401,11 @@ pub async fn cmd_batch_apply(
     let ctx = build_context(iface, &cameras, &scan, &journal.0, &join).await?;
     // Noms système des deux côtés : celui du contexte, celui du dernier scan.
     let preview = store.take(&preview_id, &ctx.iface.name, scan.seen().iface.as_deref(), Instant::now())?;
-    apply_batch(ctx, &preview.cameras, &preview.rows, &creds, &preview.req).await
+    let results = apply_batch(ctx, &preview.cameras, &preview.rows, &creds, &preview.req).await?;
+    // Les lignes du plan suivent l'ordre des caméras de l'aperçu.
+    let new_ips: Vec<Ipv4Addr> = preview.rows.iter().map(|r| r.new_ip).collect();
+    remember_cameras(&accounts, &account_id, posed(&preview.cameras, &new_ips, &results, unix_now()), false);
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -542,6 +575,47 @@ mod tests {
         assert!(store.cameras_of(&id).is_ok());
         assert!(store.take(&id, "eth0", Some("eth0"), Instant::now()).is_ok());
         assert_eq!(store.cameras_of(&id).err().as_deref(), Some("preview_unknown"));
+    }
+
+    fn camera(ip: &str, mac: &str, serial: Option<&str>) -> Camera {
+        Camera {
+            ip: ip.parse().unwrap(),
+            mac: Some(mac.into()),
+            family: Family::Axis,
+            brand: Some("AXIS".into()),
+            model: Some("P3245-LVE".into()),
+            serial: serial.map(Into::into),
+            firmware: None,
+            activation: lenscout_core::model::Activation::Activated,
+            http_port: 80,
+            sources: vec![],
+            addressing: None,
+            declared_mac: None,
+        }
+    }
+
+    fn result(key: &str, ok: bool) -> ActionResult {
+        ActionResult { key: key.into(), ok, error: None }
+    }
+
+    #[test]
+    fn seules_les_cameras_reussies_sont_retenues_a_leur_nouvelle_adresse() {
+        let cams = [camera("10.0.8.50", "AA:00:00:00:00:01", Some("S1")), camera("10.0.8.51", "AA:00:00:00:00:02", None)];
+        let new_ips: Vec<Ipv4Addr> = vec!["10.0.8.20".parse().unwrap(), "10.0.8.21".parse().unwrap()];
+        let results = [result("AA:00:00:00:00:01", true), result("AA:00:00:00:00:02", false)];
+        let kept = posed(&cams, &new_ips, &results, 42);
+        assert_eq!(kept.len(), 1);
+        assert_eq!((kept[0].ip, kept[0].serial.as_deref(), kept[0].last_seen), ("10.0.8.20".parse().unwrap(), Some("S1"), 42));
+        assert_eq!(kept[0].model.as_deref(), Some("P3245-LVE"));
+    }
+
+    #[test]
+    fn seule_une_ip_fixe_posee_se_retient() {
+        let ip: Ipv4Addr = "10.0.8.20".parse().unwrap();
+        let fixed = Action::Network(NetworkSettings::Static { ip, mask: "255.255.255.0".parse().unwrap(), gateway: None, dns: vec![] });
+        assert_eq!(posed_ip(&fixed), Some(ip));
+        assert_eq!(posed_ip(&Action::Network(NetworkSettings::Dhcp)), None);
+        assert_eq!(posed_ip(&Action::Activate), None);
     }
 
     #[test]

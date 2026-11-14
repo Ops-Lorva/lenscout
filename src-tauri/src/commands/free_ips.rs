@@ -97,8 +97,8 @@ fn exclusions(
 /// Balaie le sous-réseau de l'interface et envoie `Progress` puis `Done`. Un
 /// balayage annulé (`cmd_free_ips_cancel`, feuille fermée, balayage remplacé)
 /// rend `Ok` sans `Done` : plus rien ne doit viser la feuille disparue.
-/// `account_id` : le compte retenu par la feuille, dont les IP exclues ne sont
-/// jamais proposées ; `own` : les adresses actuelles des caméras à réadresser,
+/// `account_id` : le compte retenu par la feuille, dont les IP exclues et les
+/// caméras connues ne sont jamais proposées ; `own` : les adresses actuelles des caméras à réadresser,
 /// proposées comme libres (pour elles).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -137,8 +137,10 @@ pub async fn cmd_free_ips(
         (None, None) if join.temp().is_some_and(|t| t.iface == iface.name) => (join.scope(iface), None),
         (None, None) => (iface, gateway),
     };
-    let account = super::accounts::exclusions_for(&accounts, account_id.as_deref());
-    let own: HashSet<Ipv4Addr> = own.unwrap_or_default().into_iter().collect();
+    let own: Vec<Ipv4Addr> = own.unwrap_or_default();
+    // IP exclues et caméras connues du compte (sauf celles qu'on réadresse).
+    let account = super::accounts::reserved_for(&accounts, account_id.as_deref(), &own);
+    let own: HashSet<Ipv4Addr> = own.into_iter().collect();
     let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref(), &account, &own);
     // Sans mode routé, le ping part de l'adresse balayée (celle du compte posée).
     let probe = if routed.is_some() { probe } else { Arc::new(SystemProbe { iface: iface.clone() }) };
