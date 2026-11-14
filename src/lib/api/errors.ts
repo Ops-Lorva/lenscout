@@ -37,6 +37,8 @@ export const CODES = [
   'pc_ip_in_use',
   'network_overlaps_other_iface',
   'join_lost',
+  'pc_ip_not_present',
+  'account_address_denied',
   'elevation_refused',
   'temp_ip_busy',
   'temp_ip_failed',

@@ -29,7 +29,7 @@
     "open_failed": "No se puede abrir",
     "internal": "Error interno",
     "unknown": "Error",
-    "local_network_denied": "Acceso a la red local denegado",
+    "local_network_denied": "Acceso a la red local denegado (Ajustes del Sistema › Privacidad › Red local)",
     "not_found": "Cuenta no encontrada",
     "account_no_pc_ip": "Esta cuenta no tiene IP del PC",
     "pc_ip_prefix_unsupported": "Prefijo de la IP del PC no aceptado (de /8 a /30): edite la cuenta",
@@ -40,9 +40,12 @@
     "temp_ip_failed": "No se pudo añadir la IP de la cuenta al equipo",
     "temp_ip_left": "La IP de la cuenta sigue en el equipo; se quitará al cerrar",
     "network_overlaps_other_iface": "Esta red ya es la de otra interfaz del equipo",
-    "join_lost": "No se pudo añadir la nueva IP ni restablecer la anterior: ya no queda ninguna IP de cuenta en el equipo"
+    "join_lost": "No se pudo añadir la nueva IP ni restablecer la anterior: ya no queda ninguna IP de cuenta en el equipo",
+    "pc_ip_not_present": "La IP de la cuenta no apareció en la interfaz",
+    "account_address_denied": "Envíos rechazados desde la IP de la cuenta (la red principal responde)"
   },
   "scanning": "Buscando en {iface}, {count} cámara(s)",
   "account": "Red de la cuenta",
-  "dhcp": "DHCP"
+  "dhcp": "DHCP",
+  "posing": "Asignando la IP…"
 }

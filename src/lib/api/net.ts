@@ -62,6 +62,8 @@ export const joined = writable<Joined | null>(null);
 export const joinNetwork = (accountId: string, iface: string) => invoke<Joined>('cmd_join_network', { accountId, iface });
 export const leaveNetwork = () => invoke<void>('cmd_leave_network');
 export const joinedNetwork = () => invoke<Joined | null>('cmd_joined_network');
+/** Attend que l'adresse posée soit sur le poste (code `pc_ip_not_present` au-delà du délai). */
+export const joinReady = () => invoke<void>('cmd_join_ready');
 
 /** Adresse et masque du poste vus par le scan : ceux du compte posé sur cette interface, sinon ceux de l'interface. */
 export function activeAddress(

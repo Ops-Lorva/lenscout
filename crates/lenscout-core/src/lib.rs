@@ -16,6 +16,7 @@ pub mod mjpeg;
 pub mod model;
 pub mod oui;
 pub mod permissions;
+pub mod presence;
 pub mod proc;
 pub mod seal;
 pub mod secret;

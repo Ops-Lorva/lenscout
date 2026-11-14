@@ -32,8 +32,9 @@ tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = "0.7.20"
 uuid = { version = "1.29.2", features = ["v4"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# getuid → getpwuid : le nom d'utilisateur de la règle sudoers.
+[target.'cfg(unix)'.dependencies]
+# getuid → getpwuid : le nom d'utilisateur de la règle sudoers (macOS) ;
+# getifaddrs : l'interface qui porte une adresse posée (presence.rs).
 libc = "0.2"
 
 [dev-dependencies]

@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  activeAddress, createJoinSwitch, DEFAULT_MASK, joinStep, maskOf, networkOf, prefillFor, type Joined,
+  activeAddress, createJoinSwitch, DEFAULT_MASK, joinReady, joinStep, maskOf, networkOf, prefillFor, type Joined,
 } from './net';
 
 test('le réseau se déduit de l’IP du PC', () => {
@@ -153,4 +153,10 @@ test('feuilles IP : le compte remplit masque et passerelle, jamais un champ touc
   expect(f).toEqual({ mask: '255.255.255.0', gateway: '192.168.1.254' });
   // Compte sans réseau : retour au défaut pour ce qui n'est pas touché.
   expect(prefillFields({ mask: '255.255.0.0', gateway: '10.0.0.1' }, none, null)).toEqual(INITIAL_PREFILL);
+});
+
+test('après une pose, le scan attend que Rust voie l’adresse sur le poste', async () => {
+  invoke.mockResolvedValue(undefined);
+  await joinReady();
+  expect(invoke).toHaveBeenLastCalledWith('cmd_join_ready');
 });

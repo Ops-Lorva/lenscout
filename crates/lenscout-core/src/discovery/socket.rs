@@ -42,7 +42,7 @@ impl Datagram for UdpDatagram {
 /// Erreur d'envoi → `NetError`. EPERM et EHOSTUNREACH sur un envoi
 /// multicast, c'est le système qui refuse (macOS : permission « Réseau
 /// local » refusée à l'app) : `Denied`.
-fn send_error(e: std::io::Error) -> NetError {
+pub(crate) fn send_error(e: std::io::Error) -> NetError {
     match e.kind() {
         std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::HostUnreachable => NetError::Denied,
         _ => NetError::Io(e.to_string()),

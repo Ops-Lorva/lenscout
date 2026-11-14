@@ -29,7 +29,7 @@
     "open_failed": "Cannot open",
     "internal": "Internal error",
     "unknown": "Error",
-    "local_network_denied": "Local network access denied",
+    "local_network_denied": "Local network access denied (System Settings › Privacy › Local Network)",
     "not_found": "Account not found",
     "account_no_pc_ip": "This account has no PC IP",
     "pc_ip_prefix_unsupported": "PC IP prefix not accepted (/8 to /30): edit the account",
@@ -40,9 +40,12 @@
     "temp_ip_failed": "Could not add the account IP to this computer",
     "temp_ip_left": "The account IP is still on this computer; it will be removed on exit",
     "network_overlaps_other_iface": "This network is already used by another interface of this computer",
-    "join_lost": "The new IP could not be added and the previous one could not be restored: no account IP is left on this computer"
+    "join_lost": "The new IP could not be added and the previous one could not be restored: no account IP is left on this computer",
+    "pc_ip_not_present": "The account IP did not appear on the interface",
+    "account_address_denied": "Sends refused from the account IP (the main network answers)"
   },
   "scanning": "Searching on {iface}, {count} camera(s)",
   "account": "Account network",
-  "dhcp": "DHCP"
+  "dhcp": "DHCP",
+  "posing": "Setting the IP…"
 }

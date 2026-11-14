@@ -12,7 +12,7 @@
   import CameraRow from './CameraRow.svelte';
   import { actionResults, resultFor } from '$lib/api/configure';
   import { joinable, listAccounts, type Account } from '$lib/api/accounts';
-  import { createJoinSwitch, joined, joinedNetwork, joinNetwork, leaveNetwork, type JoinChoice } from '$lib/api/net';
+  import { createJoinSwitch, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice } from '$lib/api/net';
 
   const IFACE_KEY = 'lenscout.iface';
   const RESCAN_DELAYS_MS = [3000, 15000];
@@ -27,6 +27,8 @@
   let accounts = $state<Account[]>([]);
   let account = $state('');
   let switching = $state(false);
+  // L'IP du compte vient d'être posée : on attend de la voir sur le poste avant de scanner.
+  let posing = $state(false);
   const choices = $derived(joinable(accounts));
   // DHCP : l'adresse actuelle de l'interface ; compte : l'IP réellement posée.
   const shownAddr = $derived(account ? ($joined?.account_id === account ? $joined.cidr : '') : ifaceAddr);
@@ -108,7 +110,23 @@
     switching = false;
     try { localStorage.setItem(IFACE_KEY, iface); } catch {}
     void loadAddr(iface);
+    if (r.kind === 'done' && r.applied.account && !(await ready())) return;
     if (r.kind === 'done' || iface !== wanted.iface || account !== r.applied.account) void scan();
+  }
+
+  /** L'adresse posée est-elle sur le poste ? Sinon message clair, et pas de scan. */
+  async function ready(): Promise<boolean> {
+    posing = true;
+    error = '';
+    try {
+      await joinReady();
+      return true;
+    } catch (e) {
+      error = $_(`network.${errorKey(e)}`);
+      return false;
+    } finally {
+      posing = false;
+    }
   }
 
   function onIface(e: Event) {
@@ -217,8 +235,10 @@
   {#if switching}<span class="spin"></span>{:else if shownAddr}<span class="iface">{shownAddr}</span>{/if}
   {#if scanning}
     <button class="btn" onclick={stop}><span class="spin"></span>{$_('network.stop')}</button>
+  {:else if posing}
+    <button class="btn def" disabled><span class="spin"></span>{$_('network.posing')}</button>
   {:else}
-    <button class="btn def" onclick={() => scan()} disabled={!iface}>{$_('network.rescan')}</button>
+    <button class="btn def" onclick={() => scan()} disabled={!iface || switching}>{$_('network.rescan')}</button>
   {/if}
   <input type="search" bind:value={$query} placeholder={$_('network.search')} aria-label={$_('network.search')} />
 </div>

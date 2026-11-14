@@ -10,6 +10,7 @@ use lenscout_core::discovery::scanner::{
 use lenscout_core::discovery::sadp::SadpProbe;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
+use lenscout_core::presence;
 use lenscout_core::transport::Datagram;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
@@ -93,22 +94,45 @@ impl ScanState {
 type ProbeSocket = (Arc<dyn Probe>, Arc<dyn Datagram>);
 
 /// La liste des sondes de la découverte. Une sonde dont le socket ne s'ouvre pas est ignorée (port déjà
-/// pris par un autre programme) : les autres sources suffisent à remplir la
-/// liste, et l'ARP complète le reste.
+/// pris par un autre programme, adresse pas encore là) : les autres sources
+/// suffisent à remplir la liste, et l'ARP complète le reste.
 fn probes(iface: &ScanInterface) -> Vec<ProbeSocket> {
     let all: Vec<Arc<dyn Probe>> = vec![Arc::new(MdnsProbe), Arc::new(WsdProbe), Arc::new(SadpProbe)];
-    all.into_iter()
-        .filter_map(|p| match open_probe_socket(p.as_ref(), iface) {
-            Ok(dg) => Some((p, dg)),
-            Err(_) => None,
+    let opened = all
+        .into_iter()
+        .map(|p| (format!("{:?}", p.source()), open_probe_socket(p.as_ref(), iface).map(|dg| (p, dg))))
+        .collect();
+    keep_opened(opened, lenscout_core::debug_log::log)
+}
+
+/// Les sockets ouverts ; chaque échec est une ligne de journal, sans arrêter les autres.
+fn keep_opened<T>(opened: Vec<(impl std::fmt::Display, std::io::Result<T>)>, log: impl FnMut(&str)) -> Vec<T> {
+    let mut log = log;
+    opened
+        .into_iter()
+        .filter_map(|(name, r)| match r {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log(&format!("scan : socket {name} non lié : {e}"));
+                None
+            }
         })
         .collect()
 }
 
+/// Envoi témoin d'un scan refusé : depuis l'adresse principale vers sa
+/// passerelle, seulement si le scan partait de l'adresse d'un compte.
+fn control_target(base: &ScanInterface, scanned: &ScanInterface, gateway: Option<Ipv4Addr>) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    (scanned.ip != base.ip).then_some(())?;
+    Some((base.ip, gateway?))
+}
+
 /// Erreurs : codes stables (`iface_unknown`, `iface_no_ipv4`, `no_socket`,
 /// `local_network_denied` — tous les envois de découverte refusés par le
-/// système, permission « Réseau local » de macOS —, `internal`), traduits par
-/// le front.
+/// système, permission « Réseau local » de macOS —, `account_address_denied`
+/// — refusés depuis l'adresse du compte seulement, l'envoi témoin depuis
+/// l'adresse principale passant (voir `presence::denial_code`) —,
+/// `internal`), traduits par le front.
 ///
 /// Lance un scan et rend la main à sa fin. Un scan déjà en cours est annulé
 /// d'abord. L'interface vient du front : elle doit figurer parmi les liens
@@ -126,17 +150,21 @@ pub async fn cmd_scan_start(
     }
 
     let name = iface.clone();
-    let scan_iface = tauri::async_runtime::spawn_blocking(move || {
+    let (base, gateway) = tauri::async_runtime::spawn_blocking(move || {
         if !list_interfaces_up().contains(&name) {
             return Err("iface_unknown".to_string());
         }
-        ScanInterface::from_details(&name, &get_interface_details(&name))
+        let details = get_interface_details(&name);
+        let gateway = details.gateway.as_deref().and_then(|g| g.trim().parse::<Ipv4Addr>().ok());
+        ScanInterface::from_details(&name, &details)
+            .map(|i| (i, gateway))
             .ok_or_else(|| "iface_no_ipv4".to_string())
     })
     .await
     .map_err(|_| "internal".to_string())??;
     // Dans le réseau d'un compte : le scan part de l'adresse posée.
-    let scan_iface = join.scope(scan_iface);
+    let scan_iface = join.scope(base.clone());
+    let control = control_target(&base, &scan_iface, gateway);
 
     // Les sockets s'ouvrent ici, dans le runtime, pas dans un thread bloquant :
     // tokio doit les enregistrer.
@@ -163,10 +191,17 @@ pub async fn cmd_scan_start(
         }
     }
     let summary = scan.await.unwrap_or_default();
-    if summary.local_network_denied {
-        return Err("local_network_denied".to_string());
+    let witness = match control.filter(|_| summary.local_network_denied) {
+        Some((from, gw)) => tauri::async_runtime::spawn_blocking(move || presence::control_send(from, gw)).await.ok(),
+        None => None,
+    };
+    match presence::denial_code(summary.local_network_denied, witness.as_ref()) {
+        Some(code) => {
+            lenscout_core::debug_log::log(&format!("scan : envois refusés, témoin {witness:?} → {code}"));
+            Err(code.to_string())
+        }
+        None => Ok(()),
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -203,6 +238,34 @@ mod tests {
 
     fn eth0() -> ScanInterface {
         ScanInterface { name: "eth0".into(), ip: "10.0.50.2".parse().unwrap(), mask: "255.255.255.0".parse().unwrap() }
+    }
+
+    #[test]
+    fn un_socket_lie_suffit_les_echecs_sont_journalises() {
+        let mut logged = Vec::new();
+        let kept = keep_opened(
+            vec![
+                ("mdns", Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))),
+                ("wsd", Ok(2)),
+                ("sadp", Err(std::io::Error::from(std::io::ErrorKind::AddrInUse))),
+            ],
+            |l| logged.push(l.to_string()),
+        );
+        assert_eq!(kept, vec![2]);
+        assert_eq!(logged.len(), 2);
+        assert!(logged[0].contains("mdns") && logged[1].contains("sadp"), "{logged:?}");
+        assert!(keep_opened::<u8>(vec![("mdns", Err(std::io::Error::other("x")))], |_| {}).is_empty());
+    }
+
+    #[test]
+    fn le_temoin_ne_part_que_d_une_adresse_de_compte_avec_passerelle() {
+        let base = eth0();
+        let joined = ScanInterface { ip: "192.168.1.10".parse().unwrap(), ..eth0() };
+        let gw: Ipv4Addr = "10.0.50.1".parse().unwrap();
+        assert_eq!(control_target(&base, &joined, Some(gw)), Some((base.ip, gw)));
+        // Scan sur l'adresse principale : pas de témoin, le refus vaut pour l'app.
+        assert_eq!(control_target(&base, &base, Some(gw)), None);
+        assert_eq!(control_target(&base, &joined, None), None);
     }
 
     #[test]

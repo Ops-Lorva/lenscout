@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use lenscout_core::accounts::{AccountBook, AccountNetwork};
 use lenscout_core::discovery::arp::{ScanInterface, read_neighbours};
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
+use lenscout_core::presence;
 use lenscout_core::temp_ip::{
     HeldTempIp, SwitchFailure, SystemElevator, TempIp, TempIpError, hold_temp_ip, joined_scope, needs_temp_ip,
     subnets_overlap, switch_held,
@@ -301,6 +302,40 @@ pub async fn cmd_leave_network(state: State<'_, JoinState>) -> Result<(), String
     release_current(&state).await
 }
 
+/// Délai laissé au système pour faire apparaître l'adresse posée.
+const PRESENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const PRESENCE_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Attend que l'adresse posée soit utilisable (`present`), au plus
+/// `PRESENCE_TIMEOUT`. Code : `pc_ip_not_present`.
+async fn wait_present(t: &TempIp, mut present: impl FnMut(Ipv4Addr) -> bool) -> Result<(), String> {
+    let ip = t.ip;
+    if presence::wait_until(|| present(ip), PRESENCE_TIMEOUT, PRESENCE_EVERY).await {
+        Ok(())
+    } else {
+        Err("pc_ip_not_present".to_string())
+    }
+}
+
+/// Après une pose, avant le scan qui suit : l'adresse du compte est-elle
+/// bien sur le poste ? (macOS : le service dupliqué la fait apparaître un
+/// peu après la fin de `networksetup`.) Rien de posé : tout de suite `Ok`.
+/// Code : `pc_ip_not_present`. L'adresse reste tenue dans tous les cas.
+#[tauri::command]
+pub async fn cmd_join_ready(state: State<'_, JoinState>) -> Result<(), String> {
+    let Some(t) = state.temp() else {
+        return Ok(());
+    };
+    let r = wait_present(&t, presence::address_present).await;
+    // L'interface qui porte l'adresse, pour le journal : un nom BSD autre que
+    // celui visé dirait que le service dupliqué l'a posée ailleurs.
+    let on = presence::interface_of(t.ip);
+    if r.is_err() || on.as_deref() != Some(t.iface.as_str()) {
+        lenscout_core::debug_log::log(&format!("pose : {} attendue sur {}, vue sur {on:?} ({r:?})", t.ip, t.iface));
+    }
+    r
+}
+
 /// Lu après la pose ou le retrait en cours : jamais un état intermédiaire.
 #[tauri::command]
 pub async fn cmd_joined_network(state: State<'_, JoinState>) -> Result<Option<JoinedOut>, String> {
@@ -318,6 +353,24 @@ mod tests {
 
     fn en0(ip: &str, mask: &str) -> ScanInterface {
         iface("en0", ip, mask)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn l_adresse_posee_est_attendue_avant_le_scan() {
+        let t = TempIp { iface: "en0".into(), ip: "192.168.1.10".parse().unwrap(), mask: "255.255.255.0".parse().unwrap() };
+        let mut seen = 0;
+        let r = wait_present(&t, |ip| {
+            assert_eq!(ip, t.ip);
+            seen += 1;
+            seen >= 3
+        })
+        .await;
+        assert_eq!(r, Ok(()));
+        assert_eq!(seen, 3);
+        // Jamais là : erreur claire au bout du délai.
+        let start = tokio::time::Instant::now();
+        assert_eq!(wait_present(&t, |_| false).await, Err("pc_ip_not_present".to_string()));
+        assert!(start.elapsed() <= PRESENCE_TIMEOUT);
     }
 
     fn net(pc_ip: Option<&str>) -> AccountNetwork {
