@@ -57,7 +57,15 @@ const shown: Record<string, string[]> = {
     rust('src-tauri/src/commands/discovery.rs') + rust('src-tauri/src/commands/app.rs') + rust('src-tauri/src/commands/join.rs') +
       rust('crates/lenscout-core/src/presence.rs'),
   ),
-  framing: [...new Set([...codesIn(rust('src-tauri/src/commands/stream.rs')), ...credentials, ...lock])].sort(),
+  framing: [
+    ...new Set([
+      ...codesIn(rust('src-tauri/src/commands/stream.rs')),
+      ...codesIn(rust('src-tauri/src/commands/imaging.rs')),
+      ...codesIn(fnBody(rust('crates/lenscout-core/src/imaging.rs'), 'error_code')),
+      ...credentials,
+      ...lock,
+    ]),
+  ].sort(),
   free: codesIn(rust('src-tauri/src/commands/free_ips.rs')),
   configure: [...new Set([...codesIn(rust('src-tauri/src/commands/configure.rs')), ...credentials, ...lock, ...front])].sort(),
 };

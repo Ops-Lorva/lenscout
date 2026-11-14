@@ -16,11 +16,26 @@
     "unknown": "Erreur inattendue",
     "keyring": "Trousseau inaccessible",
     "bad_ip": "Adresse IP invalide",
-    "not_a_camera": "Pas une caméra prise en charge (ni Axis ni Hikvision)"
+    "not_a_camera": "Pas une caméra prise en charge (ni Axis ni Hikvision)",
+    "bad_value": "Valeur refusée",
+    "unsupported": "Réglage indisponible pour cette vue",
+    "setting_failed": "Réglage refusé par la caméra"
   },
   "ip": "IP de la caméra",
   "open": "Ouvrir",
   "view": "Vue {n}",
   "viewNamed": "Vue {n} : {name}",
-  "viewPicker": "Vue"
+  "viewPicker": "Vue",
+  "settings": {
+    "title": "Réglages",
+    "zoom": "Zoom",
+    "wide": "Grand angle",
+    "tele": "Télé",
+    "focus": "Mise au point",
+    "autofocus": "Autofocus",
+    "afArea": "Zone d'autofocus",
+    "resetFocus": "Réinitialiser la mise au point",
+    "rotation": "Rotation",
+    "bdc": "Correction de distorsion (BDC)"
+  }
 }

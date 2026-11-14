@@ -5,6 +5,8 @@
   import { ackFrame, FramePresenter, identifyCamera, listViews, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
   import { framingTarget, page, suspendStep } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
+  import ImageSettings from './ImageSettings.svelte';
+  import { normRect } from '#lib/api/imaging.ts';
 
   let accountId = $state('');
   let playing = $state(false);
@@ -127,6 +129,40 @@
     if (playing) void play();
   }
 
+  // Panneau de réglages (Axis) : il suit la vue choisie.
+  const chosenView = $derived(views.find((v) => v.n === view) ?? null);
+  let panel = $state<ReturnType<typeof ImageSettings> | null>(null);
+  let drawing = $state(false);
+  // Rectangle de la zone d'autofocus en cours de tracé, en coordonnées de la page.
+  let dragFrom = $state<{ x: number; y: number } | null>(null);
+  let dragTo = $state<{ x: number; y: number } | null>(null);
+  let frameEl = $state<HTMLElement | null>(null);
+
+  function dragStart(e: PointerEvent) {
+    if (!drawing) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragFrom = dragTo = { x: e.clientX, y: e.clientY };
+  }
+  function dragMove(e: PointerEvent) {
+    if (dragFrom) dragTo = { x: e.clientX, y: e.clientY };
+  }
+  function dragEnd() {
+    const box = frameEl?.getBoundingClientRect();
+    const w = dragFrom && dragTo && box ? normRect(dragFrom, dragTo, box) : null;
+    dragFrom = dragTo = null;
+    if (w) void panel?.applyWindow(w);
+  }
+  // Le tracé dans le repère du cadre, pour l'afficher.
+  const dragged = $derived.by(() => {
+    const box = frameEl?.getBoundingClientRect();
+    return dragFrom && dragTo && box ? normRect(dragFrom, dragTo, box) : null;
+  });
+
+  // Rotation écrite : l'image change de géométrie, le flux repart.
+  function rotated() {
+    if (playing) void play();
+  }
+
   // Onglet caché (il reste monté) : le flux est coupé, pas de bande
   // passante dans le dos ; il reprend au retour sur l'onglet.
   $effect(() => {
@@ -187,16 +223,30 @@
 {#if !cam}
   <div class="none">{$_('framing.none')}</div>
 {:else}
-  <!-- Sans flux, la zone reste à sa place, vide et claire, pour que la fenêtre ne saute pas. -->
-  <div class="view" class:off={!src} ondblclick={fullscreen} role="presentation">
-    {#if src}
-      <!-- Le cadre a le ratio réel de l'image : la grille des tiers et le
-           réticule tombent sur l'image, jamais sur les bandes. -->
-      <div class="frame" style:--r={ratio}>
-        <img {src} alt={$_('framing.image')} onload={onLoad} />
-        <div class="grid"></div>
-        <div class="ret"></div>
-      </div>
+  <div class="stage">
+    <!-- Sans flux, la zone reste à sa place, vide et claire, pour que la fenêtre ne saute pas. -->
+    <div class="view" class:off={!src} ondblclick={fullscreen} role="presentation">
+      {#if src}
+        <!-- Le cadre a le ratio réel de l'image : la grille des tiers et le
+             réticule tombent sur l'image, jamais sur les bandes. -->
+        <div class="frame" style:--r={ratio} bind:this={frameEl}>
+          <img {src} alt={$_('framing.image')} onload={onLoad} />
+          <div class="grid"></div>
+          <div class="ret"></div>
+          {#if drawing}
+            <div class="draw" role="presentation" onpointerdown={dragStart} onpointermove={dragMove} onpointerup={dragEnd}
+              ondblclick={(e) => e.stopPropagation()}>
+              {#if dragged}
+                <div class="zone" style:left="{dragged.x * 100}%" style:top="{dragged.y * 100}%"
+                  style:width="{dragged.width * 100}%" style:height="{dragged.height * 100}%"></div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+    {#if accountId}
+      <ImageSettings bind:this={panel} bind:drawing camera={cam} {accountId} view={chosenView} onRotated={rotated} />
     {/if}
   </div>
 {/if}
@@ -216,4 +266,7 @@
     .frame .grid, .frame .ret { display: none; }
   }
   .view:fullscreen { border-radius: 0; background: #000; }
+  .stage { flex: 1; display: flex; gap: 14px; min-height: 0; }
+  .draw { position: absolute; inset: 0; cursor: crosshair; }
+  .zone { position: absolute; border: 1.5px solid var(--view-line); background: #ffffff1a; pointer-events: none; }
 </style>

@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod free_ips;
 pub mod http_client;
 pub mod identify;
+pub mod imaging;
 // Code repris tel quel d'un autre projet : le lint est toléré ici.
 #[allow(clippy::collapsible_if)]
 pub mod interfaces;

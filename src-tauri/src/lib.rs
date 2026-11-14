@@ -10,6 +10,7 @@ use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_bat
 use commands::stream::{StreamState, cmd_identify_camera, cmd_stream_ack, cmd_stream_start, cmd_stream_stop, cmd_stream_views};
 use commands::update::{cmd_apply_update, cmd_check_update};
 use commands::app::{cmd_app_version, cmd_debug_get, cmd_debug_set, cmd_interface_details, cmd_list_interfaces};
+use commands::imaging::{cmd_image_settings, cmd_optics, cmd_set_bdc, cmd_set_rotation};
 use commands::free_ips::{FreeIpsState, cmd_free_ips, cmd_free_ips_cancel};
 use commands::join::{JoinState, cmd_join_network, cmd_join_ready, cmd_joined_network, cmd_leave_network};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_read_addressing, cmd_scan_cancel, cmd_scan_start};
@@ -101,6 +102,10 @@ pub fn run() {
             cmd_batch_apply,
             cmd_stream_start,
             cmd_stream_views,
+            cmd_image_settings,
+            cmd_optics,
+            cmd_set_rotation,
+            cmd_set_bdc,
             cmd_identify_camera,
             cmd_stream_stop,
             cmd_stream_ack,

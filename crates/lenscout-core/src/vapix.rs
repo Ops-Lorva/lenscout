@@ -45,7 +45,7 @@ use serde_json::{Value, json};
 use crate::model::{Activation, Addressing};
 use crate::transport::{CameraHttp, Credentials, HttpRequest, HttpResponse, Method, NetError};
 
-const FORM: &str = "application/x-www-form-urlencoded";
+pub(crate) const FORM: &str = "application/x-www-form-urlencoded";
 const JSON: &str = "application/json";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,11 +101,11 @@ pub enum VapixError {
 }
 
 /// `base` est `http://hôte[:port]`, avec ou sans barre finale.
-fn url(base: &str, path: &str) -> String {
+pub(crate) fn url(base: &str, path: &str) -> String {
     format!("{}{path}", base.trim_end_matches('/'))
 }
 
-fn post(base: &str, path: &str, content_type: &str, body: String) -> HttpRequest {
+pub(crate) fn post(base: &str, path: &str, content_type: &str, body: String) -> HttpRequest {
     HttpRequest {
         method: Method::Post,
         url: url(base, path),
@@ -114,7 +114,7 @@ fn post(base: &str, path: &str, content_type: &str, body: String) -> HttpRequest
     }
 }
 
-fn json_post(base: &str, path: &str, body: Value) -> HttpRequest {
+pub(crate) fn json_post(base: &str, path: &str, body: Value) -> HttpRequest {
     post(base, path, JSON, body.to_string())
 }
 
@@ -138,7 +138,7 @@ fn debug(msg: &str) {
     crate::debug_log::log(&format!("[vapix] {msg}"));
 }
 
-fn require_success(resp: &HttpResponse) -> Result<(), VapixError> {
+pub(crate) fn require_success(resp: &HttpResponse) -> Result<(), VapixError> {
     if (200..300).contains(&resp.status) {
         Ok(())
     } else {
@@ -148,7 +148,7 @@ fn require_success(resp: &HttpResponse) -> Result<(), VapixError> {
 
 /// Première ligne d'un message de la caméra, bornée : sert aux erreurs
 /// affichées. La caméra ne renvoie jamais le mot de passe.
-fn short(text: &str) -> String {
+pub(crate) fn short(text: &str) -> String {
     text.lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
@@ -160,7 +160,7 @@ fn short(text: &str) -> String {
 
 /// CGI texte (`pwdgrp.cgi`, `param.cgi`) : un échec est un 200 dont le corps
 /// contient `Error` (`# Error: …` / `Error: …`).
-fn require_text_ok(resp: &HttpResponse) -> Result<(), VapixError> {
+pub(crate) fn require_text_ok(resp: &HttpResponse) -> Result<(), VapixError> {
     require_success(resp)?;
     let body = String::from_utf8_lossy(&resp.body);
     // Seule une ligne qui commence par `# Error` (param.cgi) ou `Error`
@@ -176,7 +176,7 @@ fn require_text_ok(resp: &HttpResponse) -> Result<(), VapixError> {
 }
 
 /// API JSON : un échec est un 200 avec `"error": {code, message}`.
-fn parse_json_reply(resp: &HttpResponse) -> Result<Value, VapixError> {
+pub(crate) fn parse_json_reply(resp: &HttpResponse) -> Result<Value, VapixError> {
     require_success(resp)?;
     let v: Value =
         serde_json::from_slice(&resp.body).map_err(|e| VapixError::Parse(e.to_string()))?;
@@ -450,7 +450,7 @@ pub fn image_views(image: &str, props: &str) -> Vec<View> {
 
 /// `param.cgi?action=list&group=<group>` avec le compte ; le corps si 2xx sans
 /// `# Error`, sinon `None`.
-async fn list_params(http: &dyn CameraHttp, base: &str, creds: &Credentials, group: &str) -> Option<String> {
+pub(crate) async fn list_params(http: &dyn CameraHttp, base: &str, creds: &Credentials, group: &str) -> Option<String> {
     let req = HttpRequest {
         method: Method::Get,
         url: url(base, &format!("/axis-cgi/param.cgi?action=list&group={group}")),

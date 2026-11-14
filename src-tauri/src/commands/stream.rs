@@ -275,7 +275,7 @@ pub(crate) fn guard_interfaces(
 
 /// `guard_interfaces` sur l'état réel du poste (bloquant : à lancer hors du
 /// runtime).
-fn guard_interfaces_now(held: Option<TempIp>) -> Vec<ScanInterface> {
+pub(crate) fn guard_interfaces_now(held: Option<TempIp>) -> Vec<ScanInterface> {
     guard_interfaces(&active_interfaces(), &presence::local_addresses(), held.as_ref(), presence::address_present)
 }
 

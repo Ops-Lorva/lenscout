@@ -16,11 +16,26 @@
     "unknown": "Error inesperado",
     "keyring": "Llavero inaccesible",
     "bad_ip": "Dirección IP no válida",
-    "not_a_camera": "No es una cámara compatible (ni Axis ni Hikvision)"
+    "not_a_camera": "No es una cámara compatible (ni Axis ni Hikvision)",
+    "bad_value": "Valor rechazado",
+    "unsupported": "Ajuste no disponible para esta vista",
+    "setting_failed": "Ajuste rechazado por la cámara"
   },
   "ip": "IP de la cámara",
   "open": "Abrir",
   "view": "Vista {n}",
   "viewNamed": "Vista {n}: {name}",
-  "viewPicker": "Vista"
+  "viewPicker": "Vista",
+  "settings": {
+    "title": "Ajustes",
+    "zoom": "Zoom",
+    "wide": "Gran angular",
+    "tele": "Tele",
+    "focus": "Enfoque",
+    "autofocus": "Autoenfoque",
+    "afArea": "Zona de autoenfoque",
+    "resetFocus": "Restablecer enfoque",
+    "rotation": "Rotación",
+    "bdc": "Corrección de distorsión (BDC)"
+  }
 }

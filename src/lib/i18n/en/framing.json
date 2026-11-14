@@ -16,11 +16,26 @@
     "unknown": "Unexpected error",
     "keyring": "Keychain unavailable",
     "bad_ip": "Invalid IP address",
-    "not_a_camera": "Not a supported camera (neither Axis nor Hikvision)"
+    "not_a_camera": "Not a supported camera (neither Axis nor Hikvision)",
+    "bad_value": "Value rejected",
+    "unsupported": "Setting unavailable for this view",
+    "setting_failed": "Setting rejected by the camera"
   },
   "ip": "Camera IP",
   "open": "Open",
   "view": "View {n}",
   "viewNamed": "View {n}: {name}",
-  "viewPicker": "View"
+  "viewPicker": "View",
+  "settings": {
+    "title": "Settings",
+    "zoom": "Zoom",
+    "wide": "Wide",
+    "tele": "Tele",
+    "focus": "Focus",
+    "autofocus": "Autofocus",
+    "afArea": "Autofocus area",
+    "resetFocus": "Reset focus",
+    "rotation": "Rotation",
+    "bdc": "Distortion correction (BDC)"
+  }
 }
