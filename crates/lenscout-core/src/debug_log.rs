@@ -14,7 +14,9 @@
 //! Fichier `<app_data_dir>/lenscout-debug.log`, plafonné à 5 Mo : au-delà il
 //! devient `lenscout-debug.log.1` (l'ancien `.1` est remplacé). Les captures
 //! de découverte vont dans `<app_data_dir>/captures` quand
-//! `LENSCOUT_CAPTURE_DIR` n'est pas défini.
+//! `LENSCOUT_CAPTURE_DIR` n'est pas défini ; plafonnées elles aussi
+//! (`CAPTURE_MAX_FILES` fichiers ou `CAPTURE_MAX_BYTES`, au premier atteint),
+//! après quoi plus rien n'y est écrit.
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
@@ -29,6 +31,9 @@ pub const FILE: &str = "lenscout-debug.log";
 /// Présence de ce fichier dans `app_data_dir` : journal actif.
 pub const SWITCH: &str = "debug";
 pub const MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// Plafonds du dossier des captures de découverte, au premier atteint.
+pub const CAPTURE_MAX_FILES: usize = 1000;
+pub const CAPTURE_MAX_BYTES: u64 = 20 * 1024 * 1024;
 const BODY_PREVIEW: usize = 300;
 
 /// `LENSCOUT_DEBUG=1`, ou un fichier `debug` dans `data_dir`.

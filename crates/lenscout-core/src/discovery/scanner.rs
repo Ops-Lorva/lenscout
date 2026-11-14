@@ -7,8 +7,8 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -108,23 +108,73 @@ fn source_name(s: Source) -> &'static str {
     }
 }
 
-/// Écrit le datagramme en `<source>-<ip>-<n>.bin` ; ne remplace jamais un
-/// fichier existant. Les erreurs d'écriture sont ignorées : la capture ne doit
-/// pas gêner la découverte.
-fn capture(dir: &std::path::Path, source: Source, ip: Ipv4Addr, packet: &[u8]) {
-    use std::io::Write;
-    if std::fs::create_dir_all(dir).is_err() {
-        return;
-    }
-    for n in 0.. {
-        let path = dir.join(format!("{}-{ip}-{n}.bin", source_name(source)));
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut f) => {
-                let _ = f.write_all(packet);
-                return;
+/// Le dossier des captures d'un scan, plafonné en fichiers et en octets (ce
+/// qu'il contenait déjà compte). Chaque datagramme va en
+/// `<source>-<ip>-<n>.bin`, `n` tenu par (source, IP) et repris après les
+/// fichiers déjà là ; un fichier existant n'est jamais remplacé. Les erreurs
+/// d'écriture sont ignorées : la capture ne doit pas gêner la découverte.
+pub(crate) struct Captures {
+    dir: PathBuf,
+    max_files: usize,
+    max_bytes: u64,
+    files: usize,
+    bytes: u64,
+    /// Clé : (`source_name`, IP).
+    next: HashMap<(&'static str, Ipv4Addr), u64>,
+    full: bool,
+}
+
+/// `<source>-<ip>-<n>.bin` → (source, ip, n).
+fn capture_name(name: &str) -> Option<(&'static str, Ipv4Addr, u64)> {
+    let stem = name.strip_suffix(".bin")?;
+    let (source, rest) = stem.split_once('-')?;
+    let (ip, n) = rest.rsplit_once('-')?;
+    let source = [Source::Mdns, Source::Wsd, Source::Sadp, Source::Oui].into_iter().map(source_name).find(|s| *s == source)?;
+    Some((source, ip.parse().ok()?, n.parse().ok()?))
+}
+
+impl Captures {
+    /// Lit une fois ce que le dossier contient déjà (nombre, taille, numéros).
+    pub(crate) fn open(dir: PathBuf, max_files: usize, max_bytes: u64) -> Captures {
+        let mut c = Captures { dir, max_files, max_bytes, files: 0, bytes: 0, next: HashMap::new(), full: false };
+        for entry in std::fs::read_dir(&c.dir).into_iter().flatten().flatten() {
+            c.files += 1;
+            c.bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if let Some((source, ip, n)) = capture_name(&entry.file_name().to_string_lossy()) {
+                let next = c.next.entry((source, ip)).or_insert(0);
+                *next = (*next).max(n + 1);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return,
+        }
+        c
+    }
+
+    pub(crate) fn write(&mut self, source: Source, ip: Ipv4Addr, packet: &[u8]) {
+        use std::io::Write;
+        if self.files >= self.max_files || self.bytes + packet.len() as u64 > self.max_bytes {
+            if !self.full {
+                self.full = true;
+                crate::debug_log::log(&format!("scan : captures plafonnées ({} fichiers, {} octets)", self.files, self.bytes));
+            }
+            return;
+        }
+        if std::fs::create_dir_all(&self.dir).is_err() {
+            return;
+        }
+        let next = self.next.entry((source_name(source), ip)).or_insert(0);
+        // Un fichier posé entre-temps par un autre scan : quelques numéros de plus, pas une recherche.
+        for _ in 0..16 {
+            let path = self.dir.join(format!("{}-{ip}-{next}.bin", source_name(source)));
+            *next += 1;
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut f) => {
+                    let _ = f.write_all(packet);
+                    self.files += 1;
+                    self.bytes += packet.len() as u64;
+                    return;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return,
+            }
         }
     }
 }
@@ -179,7 +229,7 @@ async fn recv_loop(
     dg: Arc<dyn Datagram>,
     iface: ScanInterface,
     events: mpsc::Sender<Event>,
-    capture_dir: Option<PathBuf>,
+    captures: Option<Arc<Mutex<Captures>>>,
 ) {
     let mut buf = vec![0u8; RECV_BUF];
     let mut errors = 0;
@@ -201,10 +251,14 @@ async fn recv_loop(
         };
         let IpAddr::V4(src) = from.ip() else { continue };
         let packet = &buf[..n];
-        if let Some(dir) = &capture_dir {
-            capture(dir, probe.source(), src, packet);
+        let sightings = probe.parse(packet, src, &iface);
+        // Seul un paquet reconnu est gardé : un hôte qui arrose les ports ne remplit rien.
+        if let (Some(c), false) = (&captures, sightings.is_empty())
+            && let Ok(mut c) = c.lock()
+        {
+            c.write(probe.source(), src, packet);
         }
-        for sighting in probe.parse(packet, src, &iface) {
+        for sighting in sightings {
             if events.send(Event::Seen(sighting, src)).await.is_err() {
                 return;
             }
@@ -510,12 +564,19 @@ pub async fn run_scan_with_capture(
         tasks: JoinSet::new(),
     };
 
+    let captures = capture_dir.map(|dir| {
+        Arc::new(Mutex::new(Captures::open(
+            dir,
+            crate::debug_log::CAPTURE_MAX_FILES,
+            crate::debug_log::CAPTURE_MAX_BYTES,
+        )))
+    });
     let start = Instant::now();
     let count = Arc::new(SendCount::default());
     let mut probe_tasks = JoinSet::new();
     for (probe, dg) in probes {
         probe_tasks.spawn(send_loop(probe.clone(), dg.clone(), start, count.clone()));
-        probe_tasks.spawn(recv_loop(probe, dg, cfg.iface.clone(), etx.clone(), capture_dir.clone()));
+        probe_tasks.spawn(recv_loop(probe, dg, cfg.iface.clone(), etx.clone(), captures.clone()));
     }
 
     let deadline = start + cfg.listen;
@@ -841,6 +902,85 @@ mod tests {
         // Le sous-dossier n'existait pas : le scanner le crée.
         let written = std::fs::read(dir.join("captures").join("mdns-192.0.2.21-0.bin")).unwrap();
         assert_eq!(written, axis_response_packet());
+    }
+
+    /// Seul un paquet que la sonde reconnaît devient un fichier.
+    #[tokio::test(start_paused = true)]
+    async fn only_recognised_packets_are_captured() {
+        let dir = crate::testing::TmpDir::new("lenscout-capture");
+        let (p, _) = probe_pair(
+            Arc::new(MdnsProbe),
+            vec![
+                (vec![0xff; 40], from("192.0.2.30", 5353)),
+                (axis_response_packet(), from("192.0.2.21", 5353)),
+                (vec![], from("192.0.2.31", 5353)),
+            ],
+        );
+        let (tx, _rx) = mpsc::channel(256);
+        run_scan_with_capture(vec![p], axis_http(), arp(&[]), cfg(), tx, CancellationToken::new(), Some(dir.join("captures"))).await;
+        let names: Vec<String> = std::fs::read_dir(dir.join("captures"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["mdns-192.0.2.21-0.bin"]);
+    }
+
+    fn files_in(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|d| d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn captures_are_capped_like_the_log() {
+        assert_eq!(crate::debug_log::CAPTURE_MAX_FILES, 1000);
+        assert_eq!(crate::debug_log::CAPTURE_MAX_BYTES, 20 * 1024 * 1024);
+    }
+
+    /// Plafond en nombre de fichiers : au-delà, plus rien n'est écrit.
+    #[test]
+    fn captures_stop_at_the_file_cap() {
+        let dir = crate::testing::TmpDir::new("lenscout-capture");
+        let mut c = Captures::open(dir.join("captures"), 3, 1 << 20);
+        for _ in 0..5 {
+            c.write(Source::Mdns, "192.0.2.21".parse().unwrap(), b"abc");
+        }
+        assert_eq!(files_in(&dir.join("captures")).len(), 3);
+    }
+
+    /// Plafond en octets, le premier atteint l'emporte.
+    #[test]
+    fn captures_stop_at_the_byte_cap() {
+        let dir = crate::testing::TmpDir::new("lenscout-capture");
+        let mut c = Captures::open(dir.join("captures"), 1000, 10);
+        for _ in 0..5 {
+            c.write(Source::Wsd, "192.0.2.21".parse().unwrap(), b"abcd");
+        }
+        assert_eq!(files_in(&dir.join("captures")), ["wsd-192.0.2.21-0.bin", "wsd-192.0.2.21-1.bin"]);
+    }
+
+    /// Un compteur par (source, IP), qui reprend après les fichiers d'un scan
+    /// précédent ; ceux-ci comptent dans le plafond.
+    #[test]
+    fn capture_numbers_follow_a_counter_per_source_and_ip() {
+        let dir = crate::testing::TmpDir::new("lenscout-capture");
+        let captures = dir.join("captures");
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::write(captures.join("mdns-192.0.2.21-0.bin"), b"old").unwrap();
+        std::fs::write(captures.join("mdns-192.0.2.21-4.bin"), b"old").unwrap();
+        let mut c = Captures::open(captures.clone(), 5, 1 << 20);
+        let (a, b): (Ipv4Addr, Ipv4Addr) = ("192.0.2.21".parse().unwrap(), "192.0.2.22".parse().unwrap());
+        c.write(Source::Mdns, a, b"x");
+        c.write(Source::Mdns, b, b"x");
+        c.write(Source::Sadp, a, b"x");
+        c.write(Source::Mdns, a, b"x");
+        assert_eq!(
+            files_in(&captures),
+            ["mdns-192.0.2.21-0.bin", "mdns-192.0.2.21-4.bin", "mdns-192.0.2.21-5.bin", "mdns-192.0.2.22-0.bin", "sadp-192.0.2.21-0.bin"]
+        );
+        assert_eq!(std::fs::read(captures.join("mdns-192.0.2.21-4.bin")).unwrap(), b"old", "jamais remplacé");
     }
 
     fn heard(events: &[ScanEvent]) -> Vec<Ipv4Addr> {
