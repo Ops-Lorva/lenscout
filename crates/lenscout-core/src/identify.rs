@@ -15,6 +15,9 @@ pub enum IdentifyError {
     Unreachable,
     /// Un appareil répond mais refuse le compte.
     AuthFailed,
+    /// L'appareil n'accepte que Basic sur HTTP : le mot de passe n'est pas
+    /// envoyé en clair.
+    AuthInsecure,
     /// Un appareil répond, ce n'est ni une Axis ni une Hikvision.
     NotACamera,
 }
@@ -37,7 +40,8 @@ fn camera(ip: Ipv4Addr, family: Family, brand: &str) -> Camera {
 fn net_error(e: &NetError) -> Option<IdentifyError> {
     match e {
         NetError::Timeout | NetError::Unreachable(_) | NetError::Denied => Some(IdentifyError::Unreachable),
-        NetError::Auth | NetError::InsecureBasic | NetError::Status(401 | 403) => Some(IdentifyError::AuthFailed),
+        NetError::Auth | NetError::Status(401 | 403) => Some(IdentifyError::AuthFailed),
+        NetError::InsecureBasic => Some(IdentifyError::AuthInsecure),
         _ => None,
     }
 }
@@ -65,12 +69,20 @@ pub async fn identify(http: &dyn CameraHttp, ip: Ipv4Addr, creds: &Credentials) 
         Err(VapixError::Net(e)) if net_error(&e) == Some(IdentifyError::Unreachable) => {
             return Err(IdentifyError::Unreachable);
         }
-        Err(VapixError::Net(NetError::Status(404))) => {
-            if let Ok(serial) = vapix::serial_from_params(http, &base, creds).await {
+        Err(VapixError::Net(NetError::Status(404))) => match vapix::serial_from_params(http, &base, creds).await {
+            Ok(serial) => {
                 cam.serial = Some(serial);
                 return Ok(cam);
             }
-        }
+            // Ancienne Axis (< 8.40) qui refuse le compte : ne pas aller
+            // chercher une Hikvision, qui répondrait « pas une caméra ».
+            Err(VapixError::Net(e)) => {
+                if let Some(refused @ (IdentifyError::AuthFailed | IdentifyError::AuthInsecure)) = net_error(&e) {
+                    return Err(refused);
+                }
+            }
+            Err(_) => {}
+        },
         Err(_) => {}
     }
     let req = HttpRequest {
@@ -159,6 +171,40 @@ mod tests {
             .on(Method::Get, "/axis-cgi/param.cgi", 404, "")
             .on(Method::Get, "/ISAPI/System/deviceInfo", 401, "");
         assert_eq!(identify(&http, ip(), &creds()).await, Err(IdentifyError::AuthFailed));
+    }
+
+    #[tokio::test]
+    async fn ancienne_axis_mauvais_mot_de_passe_refusee_sans_essayer_isapi() {
+        let http = FakeHttp::new()
+            .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 404, "")
+            .on(Method::Get, "/axis-cgi/param.cgi", 401, "")
+            .on(Method::Get, "/ISAPI/System/deviceInfo", 404, "");
+        assert_eq!(identify(&http, ip(), &creds()).await, Err(IdentifyError::AuthFailed));
+        assert!(http.requests().iter().all(|r| !r.url.contains("ISAPI")));
+    }
+
+    #[tokio::test]
+    async fn basic_en_clair_refuse_a_son_propre_code() {
+        // L'appareil n'accepte que Basic sur HTTP : le transport refuse
+        // d'envoyer le mot de passe en clair.
+        struct BasicOnly;
+        #[async_trait::async_trait]
+        impl CameraHttp for BasicOnly {
+            async fn send(&self, req: HttpRequest, creds: Option<&Credentials>) -> Result<crate::transport::HttpResponse, NetError> {
+                if creds.is_some() && req.url.contains("ISAPI") {
+                    return Err(NetError::InsecureBasic);
+                }
+                Ok(crate::transport::HttpResponse { status: 404, headers: vec![], body: vec![] })
+            }
+            async fn stream(
+                &self,
+                _: HttpRequest,
+                _: Option<&Credentials>,
+            ) -> Result<(crate::transport::HttpResponse, crate::transport::ByteStream), NetError> {
+                Err(NetError::Cancelled)
+            }
+        }
+        assert_eq!(identify(&BasicOnly, ip(), &creds()).await, Err(IdentifyError::AuthInsecure));
     }
 
     #[tokio::test]

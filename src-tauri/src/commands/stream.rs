@@ -118,6 +118,7 @@ pub(crate) async fn identify_guarded(
         match e {
             IdentifyError::Unreachable => "unreachable",
             IdentifyError::AuthFailed => "auth_failed",
+            IdentifyError::AuthInsecure => "auth_insecure",
             IdentifyError::NotACamera => "not_a_camera",
         }
         .to_string()
