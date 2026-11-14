@@ -12,6 +12,9 @@ use crate::transport::{Datagram, NetError};
 
 pub struct UdpDatagram {
     socket: UdpSocket,
+    /// Groupes multicast : socket d'envoi lié à l'adresse du scan (voir
+    /// `open_multicast`). `None` : on envoie par `socket`.
+    sender: Option<UdpSocket>,
 }
 
 impl UdpDatagram {
@@ -24,7 +27,9 @@ impl UdpDatagram {
 #[async_trait]
 impl Datagram for UdpDatagram {
     async fn send_to(&self, buf: &[u8], dest: SocketAddr) -> Result<(), NetError> {
-        self.socket
+        self.sender
+            .as_ref()
+            .unwrap_or(&self.socket)
             .send_to(buf, dest)
             .await
             .map(|_| ())
@@ -32,10 +37,22 @@ impl Datagram for UdpDatagram {
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
-        self.socket
-            .recv_from(buf)
-            .await
-            .map_err(|e| NetError::Io(e.to_string()))
+        let io = |e: std::io::Error| NetError::Io(e.to_string());
+        let Some(sender) = &self.sender else {
+            return self.socket.recv_from(buf).await.map_err(io);
+        };
+        // Réponses au groupe sur `socket`, réponses unicast vers l'adresse
+        // source sur `sender` : le premier prêt.
+        loop {
+            let ready = tokio::select! {
+                r = self.socket.readable() => r.map(|()| &self.socket),
+                r = sender.readable() => r.map(|()| sender),
+            };
+            match ready.map_err(io)?.try_recv_from(buf) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                r => return r.map_err(io),
+            }
+        }
     }
 }
 
@@ -75,7 +92,25 @@ pub fn open_multicast(iface: &ScanInterface, group: SocketAddrV4) -> std::io::Re
     socket.join_multicast_v4(group.ip(), &iface.ip)?;
     socket.set_multicast_if_v4(&iface.ip)?;
     socket.set_nonblocking(true)?;
-    finish(socket)
+    let mut dg = finish(socket)?;
+    dg.sender = multicast_sender(iface, group.port()).ok();
+    Ok(dg)
+}
+
+/// Socket d'envoi d'un groupe : lié à `iface.ip` sur le port du groupe. Lié
+/// à `0.0.0.0`, macOS et Windows choisiraient l'adresse principale de la
+/// carte comme source, pas celle du compte posée en plus (comme pour
+/// `open_ephemeral`). Échec (port refusé par le système) : l'envoi passe par
+/// le socket d'écoute, comme avant.
+fn multicast_sender(iface: &ScanInterface, port: u16) -> std::io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(all(unix, not(any(target_os = "solaris", target_os = "illumos", target_os = "cygwin"))))]
+    socket.set_reuse_port(true)?;
+    socket.bind(&SocketAddrV4::new(iface.ip, port).into())?;
+    socket.set_multicast_if_v4(&iface.ip)?;
+    socket.set_nonblocking(true)?;
+    UdpSocket::from_std(socket.into())
 }
 
 /// Socket à port éphémère, émettant par l'interface choisie, sans abonnement.
@@ -95,7 +130,7 @@ pub fn open_ephemeral(iface: &ScanInterface) -> std::io::Result<UdpDatagram> {
 }
 
 fn finish(socket: Socket) -> std::io::Result<UdpDatagram> {
-    Ok(UdpDatagram { socket: UdpSocket::from_std(socket.into())? })
+    Ok(UdpDatagram { socket: UdpSocket::from_std(socket.into())?, sender: None })
 }
 
 #[cfg(test)]
@@ -152,6 +187,29 @@ mod tests {
         let (n, from) = got.expect("datagramme écarté").unwrap();
         assert_eq!(&buf[..n], b"hello");
         assert_eq!(from.ip(), Ipv4Addr::new(127, 1, 0, 1));
+    }
+
+    /// mDNS, SADP : le socket du groupe écoute sur `0.0.0.0`, mais les envois
+    /// partent de l'adresse du scan (celle d'un compte posée en plus), sur le
+    /// port du groupe ; une réponse unicast vers elle est reçue aussi.
+    #[tokio::test]
+    async fn multicast_socket_sends_from_the_scan_address() {
+        let mut i = iface();
+        i.ip = Ipv4Addr::LOCALHOST;
+        let port = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port();
+        let group = SocketAddrV4::new(Ipv4Addr::new(239, 255, 42, 99), port);
+        let dg = open_multicast(&i, group).unwrap();
+        let from = dg.sender.as_ref().expect("socket d'envoi").local_addr().unwrap();
+        assert_eq!(from, SocketAddr::V4(SocketAddrV4::new(i.ip, port)));
+        let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        dg.send_to(b"q", peer.local_addr().unwrap()).await.unwrap();
+        let mut buf = [0u8; 16];
+        let (_, seen) = peer.recv_from(&mut buf).await.unwrap();
+        assert_eq!(seen, from);
+        peer.send_to(b"r", seen).await.unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), dg.recv_from(&mut buf)).await;
+        let (n, _) = got.expect("réponse unicast perdue").unwrap();
+        assert_eq!(&buf[..n], b"r");
     }
 
     #[tokio::test]
