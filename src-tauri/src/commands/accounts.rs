@@ -35,8 +35,8 @@ fn lock(state: &Mutex<AccountBook>) -> Result<std::sync::MutexGuard<'_, AccountB
 // Les fonctions pures portent la logique ; les commandes ne font que
 // verrouiller l'état. Aucune ne renvoie de mot de passe.
 
-/// Entrée de liste : le compte et un booléen disant si son mot de passe est
-/// au trousseau (jamais le mot de passe).
+/// Entrée de liste : le compte et un booléen disant s'il a un mot de passe
+/// (jamais le mot de passe) ; sinon il est à ressaisir.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct AccountEntry {
     pub id: String,

@@ -162,11 +162,30 @@ impl PingOs {
     }
 }
 
+/// Fragments ASCII (sans accent : la sortie de ping.exe arrive en page de code
+/// OEM) des échecs d'envoi de ping.exe, en minuscules : anglais, français, espagnol.
+const WINDOWS_SEND_FAILED: [&str; 4] = ["transmit failed", "chec de la transmission", "error en la transmis", "general failure"];
+
+/// Nombre d'échos envoyés d'après la ligne de statistiques de ping.exe
+/// (« Sent = 1, Received = 0… », « envoyés = 1, reçus = 0… » : seul le premier
+/// nombre après un `=` compte, aucun mot n'est lu). La ligne des temps
+/// (« Minimum = … ») vient après et n'est pas regardée.
+fn windows_echoes_sent(text: &str) -> Option<u32> {
+    let line = text.lines().find(|l| l.matches('=').count() >= 3)?;
+    let after = &line[line.find('=')? + 1..];
+    let digits: String = after.trim_start().chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 /// Ce que dit un `ping` système. ⚠️ Seul un écho parti sans réponse est
 /// `Silent` : toute autre erreur (socket refusé, adresse source disparue…)
 /// est `Unsent`, sans quoi une panne locale ferait passer le réseau pour vide.
-/// Linux : 0 réponse, 1 silence, autre erreur. macOS : 0 réponse, 2 silence.
-/// Windows rend 0 même pour un hôte injoignable : on lit le texte (anglais, français).
+/// `output` mêle stdout et stderr.
+/// Linux : 0 réponse, 1 silence, autre erreur. macOS : 0 réponse, 2 silence,
+/// mais un envoi refusé (« sendto: No route to host » quand l'accès au réseau
+/// local est refusé) sort aussi en 2 : on lit le texte.
+/// Windows rend 0 même pour un hôte injoignable et localise son texte en page
+/// de code OEM : `TTL=` pour une réponse, sinon la ligne de statistiques.
 fn classify_ping(os: PingOs, code: Option<i32>, output: &str) -> Reply {
     let Some(code) = code else {
         return Reply::Unsent;
@@ -177,19 +196,24 @@ fn classify_ping(os: PingOs, code: Option<i32>, output: &str) -> Reply {
             1 => Reply::Silent,
             _ => Reply::Unsent,
         },
-        PingOs::Mac => match code {
-            0 => Reply::Alive,
-            2 => Reply::Silent,
-            _ => Reply::Unsent,
-        },
+        PingOs::Mac => {
+            let text = output.to_lowercase();
+            if text.contains("no route to host") || text.contains("sendto:") {
+                return Reply::Unsent;
+            }
+            match code {
+                0 => Reply::Alive,
+                2 => Reply::Silent,
+                _ => Reply::Unsent,
+            }
+        }
         PingOs::Windows => {
             let text = output.to_lowercase();
             if text.contains("ttl=") {
                 Reply::Alive
-            } else if ["request timed out", "destination host unreachable", "délai d'attente", "hôte de destination inaccessible"]
-                .iter()
-                .any(|m| text.contains(m))
-            {
+            } else if WINDOWS_SEND_FAILED.iter().any(|m| text.contains(m)) {
+                Reply::Unsent
+            } else if windows_echoes_sent(&text).is_some_and(|sent| sent >= 1) {
                 Reply::Silent
             } else {
                 Reply::Unsent
@@ -222,7 +246,7 @@ async fn system_ping(ip: Ipv4Addr, src: Ipv4Addr) -> Option<Reply> {
         let _ = &timeout;
     }
     let out = cmd.output().await.ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
+    let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     Some(classify_ping(PingOs::current(), out.status.code(), &text))
 }
 
@@ -491,6 +515,29 @@ mod tests {
         assert_eq!(r, Err(FreeError::PingUnavailable));
     }
 
+    // Sorties de ping.exe localisées : les accents arrivent en page de code OEM
+    // (ici U+FFFD), seuls les fragments ASCII et les nombres sont fiables.
+    #[test]
+    fn windows_ping_in_oem_code_page_is_read_without_accents() {
+        let cases: &[(Option<i32>, &str, Reply)] = &[
+            // Français.
+            (Some(0), "R\u{FFFD}ponse de 192.0.2.1 : octets=32 temps<1ms TTL=64\r\nStatistiques Ping pour 192.0.2.1:\r\n    Paquets : envoy\u{FFFD}s = 1, re\u{FFFD}us = 1, perdus = 0 (perte 0%),", Reply::Alive),
+            (Some(1), "D\u{FFFD}lai d'attente de la demande d\u{FFFD}pass\u{FFFD}.\r\n\r\nStatistiques Ping pour 192.0.2.10:\r\n    Paquets : envoy\u{FFFD}s = 1, re\u{FFFD}us = 0, perdus = 1 (perte 100%),", Reply::Silent),
+            (Some(0), "R\u{FFFD}ponse de 192.0.2.5 : H\u{FFFD}te de destination inaccessible.\r\n\r\nStatistiques Ping pour 192.0.2.10:\r\n    Paquets : envoy\u{FFFD}s = 1, re\u{FFFD}us = 1, perdus = 0 (perte 0%),\r\nDur\u{FFFD}e approximative des boucles en millisecondes :\r\n    Minimum = 0ms, Maximum = 0ms, Moyenne = 0ms", Reply::Silent),
+            (Some(1), "PING : \u{FFFD}chec de la transmission. D\u{FFFD}faillance g\u{FFFD}n\u{FFFD}rale.\r\n\r\nStatistiques Ping pour 192.0.2.10:\r\n    Paquets : envoy\u{FFFD}s = 1, re\u{FFFD}us = 0, perdus = 1 (perte 100%),", Reply::Unsent),
+            // Espagnol.
+            (Some(0), "Respuesta desde 192.0.2.1: bytes=32 tiempo<1m TTL=64\r\nEstad\u{FFFD}sticas de ping para 192.0.2.1:\r\n    Paquetes: enviados = 1, recibidos = 1, perdidos = 0", Reply::Alive),
+            (Some(1), "Tiempo de espera agotado para esta solicitud.\r\n\r\nEstad\u{FFFD}sticas de ping para 192.0.2.10:\r\n    Paquetes: enviados = 1, recibidos = 0, perdidos = 1 (100% perdidos),", Reply::Silent),
+            (Some(1), "PING: error en la transmisi\u{FFFD}n. Error general.\r\n\r\nEstad\u{FFFD}sticas de ping para 192.0.2.10:\r\n    Paquetes: enviados = 1, recibidos = 0, perdidos = 1 (100% perdidos),", Reply::Unsent),
+            // Rien d'exploitable : on ne devine pas « libre ».
+            (Some(1), "\u{FFFD}\u{FFFD}\u{FFFD}", Reply::Unsent),
+            (Some(1), "", Reply::Unsent),
+        ];
+        for (code, out, want) in cases {
+            assert_eq!(classify_ping(PingOs::Windows, *code, out), *want, "{code:?} {out}");
+        }
+    }
+
     #[test]
     fn system_ping_output_is_classified_by_os_code_and_text() {
         use PingOs::*;
@@ -505,12 +552,14 @@ mod tests {
             (Mac, Some(68), "", Reply::Unsent),
             (Windows, Some(0), "Reply from 192.0.2.1: bytes=32 time<1ms TTL=64", Reply::Alive),
             (Windows, Some(1), "Réponse de 192.0.2.1 : octets=32 temps<1ms TTL=64", Reply::Alive),
-            (Windows, Some(1), "Request timed out.", Reply::Silent),
-            (Windows, Some(1), "Reply from 192.0.2.10: Destination host unreachable.", Reply::Silent),
-            (Windows, Some(1), "Délai d'attente de la demande dépassé.", Reply::Silent),
-            (Windows, Some(1), "Réponse de 192.0.2.10 : Hôte de destination inaccessible.", Reply::Silent),
+            (Windows, Some(1), "Request timed out.\r\n\r\nPing statistics for 192.0.2.10:\r\n    Packets: Sent = 1, Received = 0, Lost = 1 (100% loss),", Reply::Silent),
+            (Windows, Some(0), "Reply from 192.0.2.10: Destination host unreachable.\r\n\r\nPing statistics for 192.0.2.10:\r\n    Packets: Sent = 1, Received = 1, Lost = 0 (0% loss),", Reply::Silent),
+            (Windows, Some(1), "Request timed out.", Reply::Unsent),
             (Windows, Some(1), "PING: transmit failed. General failure.", Reply::Unsent),
             (Windows, Some(1), "Bad IP address 192.0.2.1.", Reply::Unsent),
+            // macOS : l'envoi refusé (accès Réseau local) sort en code 2 comme un silence.
+            (Mac, Some(2), "ping: sendto: No route to host\n1 packets transmitted, 0 packets received", Reply::Unsent),
+            (Mac, Some(2), "ping: sendto: Host is down", Reply::Unsent),
         ];
         for (os, code, out, want) in cases {
             assert_eq!(classify_ping(*os, *code, out), *want, "{os:?} {code:?} {out}");

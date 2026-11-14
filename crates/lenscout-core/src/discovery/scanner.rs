@@ -830,8 +830,9 @@ mod tests {
         let dir = crate::testing::TmpDir::new("lenscout-capture");
         let (p, _) = probe_pair(Arc::new(MdnsProbe), vec![(axis_response_packet(), from("192.0.2.21", 5353))]);
         let (tx, _rx) = mpsc::channel(256);
-        run_scan_with_capture(vec![p], axis_http(), arp(&[]), cfg(), tx, CancellationToken::new(), Some(dir.to_path_buf())).await;
-        let written = std::fs::read(dir.join("mdns-192.0.2.21-0.bin")).unwrap();
+        run_scan_with_capture(vec![p], axis_http(), arp(&[]), cfg(), tx, CancellationToken::new(), Some(dir.join("captures"))).await;
+        // Le sous-dossier n'existait pas : le scanner le crée.
+        let written = std::fs::read(dir.join("captures").join("mdns-192.0.2.21-0.bin")).unwrap();
         assert_eq!(written, axis_response_packet());
     }
 

@@ -111,6 +111,20 @@ test('« Garder les deux » évite aussi tous les noms du fichier et du carnet',
   expect(keepBothNames(file, { X: 'replace', Y: 'skip' }, ['X', 'Y'])).toEqual([]);
 });
 
+test('« Garder les deux » compare les noms sans tenir compte de la casse, comme le core', () => {
+  const file: ImportPlan = {
+    items: [
+      { name: 'cam', kind: 'differs', login_differs: true, password_differs: false },
+      { name: 'CAM 2', kind: 'new', login_differs: false, password_differs: false },
+      { name: 'Nvr', kind: 'differs', login_differs: true, password_differs: false },
+      { name: 'nvr', kind: 'differs', login_differs: true, password_differs: false },
+    ],
+  };
+  const both = { cam: 'keep_both', Nvr: 'keep_both', nvr: 'keep_both' } as const;
+  // « cam 2 » est pris par « CAM 2 » du fichier ; « nvr 2 » est réservé pour le suivant.
+  expect(keepBothNames(file, { ...both }, ['CAM', 'NVR'])).toEqual(['cam 3', 'Nvr 2', 'nvr 3']);
+});
+
 test('le fichier exporté porte l’extension .lenscout', () => {
   expect(withExtension('/tmp/sauvegarde')).toBe('/tmp/sauvegarde.lenscout');
   expect(withExtension('/tmp/a.lenscout')).toBe('/tmp/a.lenscout');
