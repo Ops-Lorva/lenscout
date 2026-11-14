@@ -148,6 +148,7 @@ impl SendCount {
 async fn send_loop(probe: Arc<dyn Probe>, dg: Arc<dyn Datagram>, start: Instant, count: Arc<SendCount>) {
     let query = probe.build();
     let dest = SocketAddr::V4(probe.group());
+    let mut logged = false;
     for at in SEND_AT {
         tokio::time::sleep_until(start + at).await;
         // Un envoi perdu est repris au tour suivant.
@@ -155,6 +156,12 @@ async fn send_loop(probe: Arc<dyn Probe>, dg: Arc<dyn Datagram>, start: Instant,
         count.sent.fetch_add(1, Ordering::Relaxed);
         if matches!(r, Err(NetError::Denied)) {
             count.denied.fetch_add(1, Ordering::Relaxed);
+        }
+        // Le premier échec de chaque sonde au journal : c'est lui qui dit
+        // d'où vient un refus (code de l'OS), le reste répète.
+        if let (Err(e), false) = (&r, logged) {
+            logged = true;
+            crate::debug_log::log(&format!("scan : envoi {} vers {dest} : {e:?}", source_name(probe.source())));
         }
     }
 }

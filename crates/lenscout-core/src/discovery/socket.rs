@@ -39,12 +39,18 @@ impl Datagram for UdpDatagram {
     }
 }
 
-/// Erreur d'envoi → `NetError`. EPERM et EHOSTUNREACH sur un envoi
-/// multicast, c'est le système qui refuse (macOS : permission « Réseau
-/// local » refusée à l'app) : `Denied`.
+/// Erreur d'envoi → `NetError`. Sous macOS, EPERM et EHOSTUNREACH sur un
+/// envoi multicast, c'est le système qui refuse (NECP : permission « Réseau
+/// local », mais aussi tout autre filtre NECP — d'où l'envoi témoin de
+/// `presence::denial_code`) : `Denied`. Ailleurs ces codes disent un pare-feu
+/// ou une absence de route, jamais cette permission : `Io`.
 pub(crate) fn send_error(e: std::io::Error) -> NetError {
+    send_error_on(e, cfg!(target_os = "macos"))
+}
+
+fn send_error_on(e: std::io::Error, macos: bool) -> NetError {
     match e.kind() {
-        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::HostUnreachable => NetError::Denied,
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::HostUnreachable if macos => NetError::Denied,
         _ => NetError::Io(e.to_string()),
     }
 }
@@ -75,10 +81,14 @@ pub fn open_multicast(iface: &ScanInterface, group: SocketAddrV4) -> std::io::Re
 /// Socket à port éphémère, émettant par l'interface choisie, sans abonnement.
 /// Pour les protocoles dont la réponse revient en unicast sur le port source
 /// (WS-Discovery) : partir du port 3702 ferait récupérer la réponse par le
-/// service WSD du système (Windows) qui y écoute déjà.
+/// service WSD du système (Windows) qui y écoute déjà. Lié à l'adresse du
+/// scan : la réponse revient à l'adresse source, qui doit être celle du
+/// compte quand elle est posée en plus de l'adresse principale (sinon macOS
+/// et Windows prennent la première adresse de l'interface, et la caméra
+/// répond vers un réseau qu'elle ne joint pas).
 pub fn open_ephemeral(iface: &ScanInterface) -> std::io::Result<UdpDatagram> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0).into())?;
+    socket.bind(&SocketAddrV4::new(iface.ip, 0).into())?;
     socket.set_multicast_if_v4(&iface.ip)?;
     socket.set_nonblocking(true)?;
     finish(socket)
@@ -91,12 +101,28 @@ fn finish(socket: Socket) -> std::io::Result<UdpDatagram> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_send_refused_by_the_system_is_denied() {
+    fn a_send_refused_by_the_system_is_denied_only_on_macos() {
         use std::io::{Error, ErrorKind};
         for kind in [ErrorKind::PermissionDenied, ErrorKind::HostUnreachable] {
-            assert!(matches!(send_error(Error::from(kind)), NetError::Denied), "{kind:?}");
+            assert!(matches!(send_error_on(Error::from(kind), true), NetError::Denied), "{kind:?}");
+            // Linux, Windows : pare-feu, absence de route — pas une permission « Réseau local ».
+            assert!(matches!(send_error_on(Error::from(kind), false), NetError::Io(_)), "{kind:?}");
         }
-        assert!(matches!(send_error(Error::from(ErrorKind::WouldBlock)), NetError::Io(_)));
+        assert!(matches!(send_error_on(Error::from(ErrorKind::WouldBlock), true), NetError::Io(_)));
+        assert!(matches!(send_error_on(Error::from(ErrorKind::AddrNotAvailable), true), NetError::Io(_)));
+    }
+
+    /// Le WS-Discovery répond en unicast à l'adresse source : elle doit être
+    /// l'IP du scan (celle d'un compte posée en plus), pas l'adresse principale.
+    #[tokio::test]
+    async fn ephemeral_socket_sends_from_the_scan_address() {
+        let mut i = iface();
+        i.ip = Ipv4Addr::new(127, 0, 0, 1);
+        let dg = open_ephemeral(&i).unwrap();
+        assert_eq!(dg.socket.local_addr().unwrap().ip(), std::net::IpAddr::V4(i.ip));
+        // Adresse absente du poste : le socket ne s'ouvre pas (pas d'envoi depuis une autre).
+        i.ip = Ipv4Addr::new(192, 0, 2, 123);
+        assert!(open_ephemeral(&i).is_err());
     }
 
     use super::*;
