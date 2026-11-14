@@ -259,12 +259,7 @@
     rescanTimers = rescanDelaysAfter(kind).map((d) => setTimeout(() => void scan(true), d));
   }
 
-  // Menu « … » d'une ligne : la réinitialisation vise cette caméra seule.
   let barOpen = $state<'activate' | 'network' | 'batch' | 'time' | 'reset' | null>(null);
-  function resetOne(c: Camera) {
-    selection.set(new Set([cameraKey(c)]));
-    barOpen = 'reset';
-  }
 
   onDestroy(() => {
     rescanTimers.forEach(clearTimeout);
@@ -322,7 +317,6 @@
           onToggle={() => toggle(c)}
           onOpenWeb={() => openWeb(c)}
           onFrame={() => frame(c)}
-          onReset={() => resetOne(c)}
         />
       {/each}
     </tbody>

@@ -56,6 +56,5 @@
     "static": "IP fixe",
     "unknown": "—"
   },
-  "via": "via {gateway}",
-  "more": "Plus d'actions"
+  "via": "via {gateway}"
 }
