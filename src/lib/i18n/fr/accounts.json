@@ -14,7 +14,10 @@
   "field": {
     "name": "Nom",
     "login": "Identifiant",
-    "password": "Mot de passe"
+    "password": "Mot de passe",
+    "pc_ip": "IP du PC",
+    "network": "Réseau",
+    "gateway": "Passerelle"
   },
   "error": {
     "empty_field": "Champ vide",
@@ -27,7 +30,12 @@
     "unknown": "Erreur",
     "import_invalid": "Fichier d'import illisible",
     "file_unwritable": "Impossible d'écrire le fichier choisi",
-    "file_unreadable": "Impossible de lire le fichier choisi"
+    "file_unreadable": "Impossible de lire le fichier choisi",
+    "invalid_pc_ip": "IP du PC invalide (ex. 192.168.1.250/24)",
+    "invalid_network": "Réseau invalide (ex. 192.168.1.0/24)",
+    "invalid_gateway": "Passerelle invalide",
+    "pc_ip_outside_network": "L'IP du PC n'est pas dans le réseau",
+    "gateway_outside_network": "La passerelle n'est pas dans le réseau"
   },
   "notice": {
     "quarantined": "Fichier des comptes illisible, mis de côté",
@@ -49,7 +57,8 @@
   "why": {
     "login": "identifiant différent",
     "password": "mot de passe différent",
-    "both": "identifiant et mot de passe différents"
+    "both": "identifiant et mot de passe différents",
+    "network": "réseau différent"
   },
   "choice": {
     "replace": "Remplacer",
@@ -62,5 +71,7 @@
   },
   "keepNote": "Garder les deux crée {names}.",
   "doImport": "Importer",
-  "quoted": "« {name} »"
+  "quoted": "« {name} »",
+  "showPassword": "Afficher le mot de passe",
+  "hidePassword": "Masquer le mot de passe"
 }

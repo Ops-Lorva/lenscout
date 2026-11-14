@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,130 @@ pub struct Account {
     pub id: String,
     pub name: String,
     pub login: String,
+    /// Champs réseau facultatifs, en clair (absents des anciens fichiers).
+    #[serde(flatten)]
+    pub net: AccountNetwork,
+}
+
+/// Réseau du site d'un compte, tout facultatif et en clair : `pc_ip` = IPv4 +
+/// préfixe que prend le poste (`192.168.1.250/24`), `network` = CIDR
+/// (`192.168.1.0/24`), `gateway` = IPv4. Normalisé par `validated`.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct AccountNetwork {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pc_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+}
+
+/// `a.b.c.d/n` → adresse et préfixe (1 à 32).
+fn parse_cidr(s: &str) -> Option<(Ipv4Addr, u8)> {
+    let (ip, prefix) = s.split_once('/')?;
+    let prefix: u8 = prefix.parse().ok()?;
+    ((1..=32).contains(&prefix)).then_some(())?;
+    Some((ip.parse().ok()?, prefix))
+}
+
+fn mask_bits(prefix: u8) -> u32 {
+    if prefix == 0 { 0 } else { !0u32 << (32 - u32::from(prefix)) }
+}
+
+/// Adresse d'hôte du réseau : ni l'adresse de réseau ni la diffusion (sauf
+/// /31 et /32, qui n'en ont pas).
+fn is_host(ip: Ipv4Addr, prefix: u8) -> bool {
+    let (ip, mask) = (u32::from(ip), mask_bits(prefix));
+    prefix >= 31 || (ip & !mask != 0 && ip | mask != u32::MAX)
+}
+
+/// Réseau `(adresse de réseau, préfixe)` contenant-il `ip` ?
+fn contains(net: (Ipv4Addr, u8), ip: Ipv4Addr) -> bool {
+    let mask = mask_bits(net.1);
+    u32::from(ip) & mask == u32::from(net.0) & mask
+}
+
+impl AccountNetwork {
+    /// Champs vides retirés, espaces ôtés, `network` ramené à son adresse de
+    /// réseau. `pc_ip` doit appartenir à `network` ; `gateway` à `network`, ou
+    /// à défaut au réseau de `pc_ip`.
+    pub fn validated(&self) -> Result<AccountNetwork, AccountError> {
+        let clean = |f: &Option<String>| {
+            f.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let (pc_ip, network, gateway) = (clean(&self.pc_ip), clean(&self.network), clean(&self.gateway));
+        let pc = match &pc_ip {
+            None => None,
+            Some(s) => {
+                let (ip, prefix) = parse_cidr(s).ok_or(AccountError::InvalidPcIp)?;
+                if !is_host(ip, prefix) {
+                    return Err(AccountError::InvalidPcIp);
+                }
+                Some((ip, prefix))
+            }
+        };
+        let net = match &network {
+            None => None,
+            Some(s) => {
+                let (ip, prefix) = parse_cidr(s).ok_or(AccountError::InvalidNetwork)?;
+                Some((Ipv4Addr::from(u32::from(ip) & mask_bits(prefix)), prefix))
+            }
+        };
+        if let (Some((ip, _)), Some(n)) = (pc, net)
+            && !contains(n, ip)
+        {
+            return Err(AccountError::PcIpOutsideNetwork);
+        }
+        if let Some(g) = &gateway {
+            let g: Ipv4Addr = g.parse().map_err(|_| AccountError::InvalidGateway)?;
+            if pc.is_some_and(|(ip, _)| ip == g) {
+                return Err(AccountError::InvalidGateway);
+            }
+            if let Some(scope) = net.or(pc) {
+                if !contains(scope, g) {
+                    return Err(AccountError::GatewayOutsideNetwork);
+                }
+                if !is_host(g, scope.1) {
+                    return Err(AccountError::InvalidGateway);
+                }
+            }
+        }
+        Ok(AccountNetwork {
+            pc_ip,
+            network: net.map(|(ip, prefix)| format!("{ip}/{prefix}")),
+            gateway,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pc_ip.is_none() && self.network.is_none() && self.gateway.is_none()
+    }
+
+    /// Champs présents ajoutés à un objet JSON (fichier, export).
+    fn write_into(&self, a: &mut serde_json::Value) {
+        for (key, value) in [("pc_ip", &self.pc_ip), ("network", &self.network), ("gateway", &self.gateway)] {
+            if let Some(v) = value {
+                a[key] = v.clone().into();
+            }
+        }
+    }
+
+    /// Champs lus dans un objet JSON ; un champ présent qui n'est pas une
+    /// chaîne → `None` (rendu `Err` par l'appelant).
+    fn read_from(a: &serde_json::Value) -> Option<AccountNetwork> {
+        let field = |key: &str| match a.get(key) {
+            None | Some(serde_json::Value::Null) => Some(None),
+            Some(v) => v.as_str().map(|s| Some(s.to_string())),
+        };
+        Some(AccountNetwork {
+            pc_ip: field("pc_ip")?,
+            network: field("network")?,
+            gateway: field("gateway")?,
+        })
+    }
 }
 
 // L'identifiant est scellé dans le fichier : il n'apparaît pas non plus dans les journaux.
@@ -25,6 +150,7 @@ impl fmt::Debug for Account {
             .field("id", &self.id)
             .field("name", &self.name)
             .field("login", &"***")
+            .field("net", &self.net)
             .finish()
     }
 }
@@ -49,6 +175,16 @@ pub enum AccountError {
     // Fichier d'import illisible, tronqué ou d'un autre logiciel.
     #[error("fichier d'import invalide")]
     ImportInvalid,
+    #[error("IP du PC invalide")]
+    InvalidPcIp,
+    #[error("réseau invalide")]
+    InvalidNetwork,
+    #[error("passerelle invalide")]
+    InvalidGateway,
+    #[error("IP du PC hors du réseau")]
+    PcIpOutsideNetwork,
+    #[error("passerelle hors du réseau")]
+    GatewayOutsideNetwork,
 }
 
 /// Ancien trousseau : ne sert plus qu'à la reprise des comptes du format 1.
@@ -204,6 +340,7 @@ pub enum ImportKind {
     Differs {
         login_differs: bool,
         password_differs: bool,
+        network_differs: bool,
     },
 }
 
@@ -241,6 +378,7 @@ struct Imported {
     name: String,
     login: String,
     password: Option<Secret>,
+    net: AccountNetwork,
 }
 
 /// Écriture atomique d'un fichier lisible par l'utilisateur seul (0600 sous
@@ -296,6 +434,10 @@ fn parse_import(data: &str) -> Result<Vec<Imported>, AccountError> {
         if name.is_empty() || login.is_empty() {
             return Err(invalid());
         }
+        let net = AccountNetwork::read_from(a)
+            .ok_or_else(invalid)?
+            .validated()
+            .map_err(|_| invalid())?;
         if out
             .iter()
             .any(|o: &Imported| o.name.to_lowercase() == name.to_lowercase())
@@ -306,6 +448,7 @@ fn parse_import(data: &str) -> Result<Vec<Imported>, AccountError> {
             name,
             login,
             password: password.filter(|p| !p.expose().is_empty()),
+            net,
         });
     }
     Ok(out)
@@ -318,10 +461,13 @@ fn classify(existing: &Entry, imported: &Imported) -> ImportKind {
         .password
         .as_ref()
         .is_some_and(|p| Some(p.expose()) != existing.password.as_ref().map(Secret::expose));
-    if login_differs || password_differs {
+    // De même, un import sans champs réseau ne vide pas ceux du carnet.
+    let network_differs = !imported.net.is_empty() && imported.net != existing.account.net;
+    if login_differs || password_differs || network_differs {
         ImportKind::Differs {
             login_differs,
             password_differs,
+            network_differs,
         }
     } else {
         ImportKind::Identical
@@ -406,6 +552,8 @@ impl AccountBook {
                     id: field("id")?,
                     name: field("name")?,
                     login: text("login")?,
+                    net: AccountNetwork::read_from(a)
+                        .ok_or_else(|| io("champs réseau illisibles".into()))?,
                 },
                 password: Some(Secret::new(text("password")?)).filter(|p| !p.expose().is_empty()),
                 legacy: a["legacy"] == true,
@@ -444,6 +592,7 @@ impl AccountBook {
         name: &str,
         login: &str,
         password: Secret,
+        net: AccountNetwork,
     ) -> Result<Account, AccountError> {
         let (name, login) = (name.trim(), login.trim());
         if name.is_empty() || login.is_empty() || password.expose().is_empty() {
@@ -452,10 +601,12 @@ impl AccountBook {
         if self.name_taken(name, None) {
             return Err(AccountError::DuplicateName);
         }
+        let net = net.validated()?;
         let account = Account {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
             login: login.to_string(),
+            net,
         };
         let mut next = self.entries.clone();
         next.push(Entry {
@@ -474,6 +625,7 @@ impl AccountBook {
         name: &str,
         login: &str,
         password: Option<Secret>,
+        net: AccountNetwork,
     ) -> Result<Account, AccountError> {
         let (name, login) = (name.trim(), login.trim());
         let index = self.index_of(id)?;
@@ -491,10 +643,12 @@ impl AccountBook {
         if password.is_none() && self.entries[index].password.is_none() {
             return Err(AccountError::SecretMissing);
         }
+        let net = net.validated()?;
         let account = Account {
             id: id.to_string(),
             name: name.to_string(),
             login: login.to_string(),
+            net,
         };
         let mut next = self.entries.clone();
         next[index].account = account.clone();
@@ -541,6 +695,7 @@ impl AccountBook {
                 if let Some(p) = &e.password {
                     a["password"] = seal::seal(p.expose().as_bytes()).into();
                 }
+                e.account.net.write_into(&mut a);
                 a
             })
             .collect();
@@ -586,6 +741,7 @@ impl AccountBook {
                     id: uuid::Uuid::new_v4().to_string(),
                     name,
                     login: imp.login,
+                    net: imp.net,
                 },
                 password: imp.password,
                 legacy: false,
@@ -607,6 +763,9 @@ impl AccountBook {
                     }
                     next[i].account.name = imp.name;
                     next[i].account.login = imp.login;
+                    if !imp.net.is_empty() {
+                        next[i].account.net = imp.net;
+                    }
                     if imp.password.is_some() {
                         next[i].password = imp.password;
                         next[i].legacy = false;
@@ -669,6 +828,7 @@ impl AccountBook {
                 if e.legacy && e.password.is_none() {
                     a["legacy"] = true.into();
                 }
+                e.account.net.write_into(&mut a);
                 a
             })
             .collect();
@@ -749,11 +909,226 @@ mod tests {
         (fx.book(), fx)
     }
 
+    fn no_net() -> AccountNetwork {
+        AccountNetwork::default()
+    }
+
+    fn net(pc_ip: &str, network: &str, gateway: &str) -> AccountNetwork {
+        let some = |s: &str| (!s.is_empty()).then(|| s.to_string());
+        AccountNetwork {
+            pc_ip: some(pc_ip),
+            network: some(network),
+            gateway: some(gateway),
+        }
+    }
+
+    // ---- Champs réseau ----
+
+    #[test]
+    fn network_fields_are_stored_in_clear_and_reload() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book
+            .create(
+                "Mairie",
+                "root",
+                pwd(PWD),
+                net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1"),
+            )
+            .unwrap();
+        assert_eq!(acc.net.pc_ip.as_deref(), Some("192.168.1.250/24"));
+        let raw = fx.raw();
+        assert!(raw.contains("\"pc_ip\": \"192.168.1.250/24\""));
+        assert!(raw.contains("\"network\": \"192.168.1.0/24\""));
+        assert!(raw.contains("\"gateway\": \"192.168.1.1\""));
+        assert_eq!(fx.book().list()[0].net, acc.net);
+    }
+
+    #[test]
+    fn account_without_network_writes_no_network_keys() {
+        let fx = Fixture::new();
+        fx.book().create("A", "root", pwd(PWD), no_net()).unwrap();
+        let raw = fx.raw();
+        assert!(!raw.contains("pc_ip") && !raw.contains("gateway") && !raw.contains("\"network\""));
+    }
+
+    #[test]
+    fn v2_file_without_network_fields_loads() {
+        let fx = Fixture::new();
+        let file = serde_json::json!({"version": 2, "accounts": [{
+            "id": "1", "name": "A",
+            "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes()),
+        }]});
+        std::fs::write(fx.path(), file.to_string()).unwrap();
+        let book = fx.book();
+        assert_eq!(book.list()[0].net, no_net());
+        assert_eq!(book.credentials("1").unwrap().password.expose(), PWD);
+    }
+
+    #[test]
+    fn legacy_v1_file_loads_without_network_fields() {
+        let fx = Fixture::new();
+        fx.write_v1(&[("id-1", "Mairie", "root")]);
+        fx.store.set("id-1", &pwd(PWD)).unwrap();
+        assert_eq!(fx.book().list()[0].net, no_net());
+    }
+
+    #[test]
+    fn network_fields_are_normalized() {
+        let n = net(" 192.168.1.250/24 ", "192.168.1.77/24", " ")
+            .validated()
+            .unwrap();
+        assert_eq!(n, net("192.168.1.250/24", "192.168.1.0/24", ""));
+        assert_eq!(net("", "", "").validated().unwrap(), no_net());
+    }
+
+    #[test]
+    fn network_fields_are_validated_with_stable_errors() {
+        let err = |n: AccountNetwork| n.validated().unwrap_err();
+        for bad in ["192.168.1.250", "192.168.1.250/33", "192.168.1.0/24", "192.168.1.255/24", "x/24", "192.168.1.250/0"] {
+            assert!(matches!(err(net(bad, "", "")), AccountError::InvalidPcIp), "{bad}");
+        }
+        for bad in ["192.168.1.0", "192.168.1.0/40", "réseau"] {
+            assert!(matches!(err(net("", bad, "")), AccountError::InvalidNetwork), "{bad}");
+        }
+        for bad in ["192.168.1.1/24", "x", "192.168.1.0", "192.168.1.255"] {
+            assert!(
+                matches!(err(net("192.168.1.250/24", "192.168.1.0/24", bad)), AccountError::InvalidGateway),
+                "{bad}"
+            );
+        }
+        assert!(matches!(
+            err(net("192.168.1.250/24", "192.168.1.250/24", "192.168.1.250")),
+            AccountError::InvalidGateway
+        ));
+        assert!(matches!(
+            err(net("192.168.2.250/24", "192.168.1.0/24", "")),
+            AccountError::PcIpOutsideNetwork
+        ));
+        assert!(matches!(
+            err(net("", "192.168.1.0/24", "192.168.2.1")),
+            AccountError::GatewayOutsideNetwork
+        ));
+        // Sans réseau, la passerelle doit appartenir à celui de l'IP du PC.
+        assert!(matches!(
+            err(net("192.168.1.250/24", "", "192.168.2.1")),
+            AccountError::GatewayOutsideNetwork
+        ));
+        assert!(net("192.168.1.250/24", "", "192.168.1.1").validated().is_ok());
+        assert!(net("", "", "10.0.0.1").validated().is_ok());
+    }
+
+    #[test]
+    fn invalid_network_fields_change_nothing() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let err = book
+            .create("A", "root", pwd(PWD), net("192.168.2.250/24", "192.168.1.0/24", ""))
+            .unwrap_err();
+        assert!(matches!(err, AccountError::PcIpOutsideNetwork));
+        assert!(book.list().is_empty());
+        let acc = book.create("A", "root", pwd(PWD), no_net()).unwrap();
+        let err = book
+            .update(&acc.id, "A", "root", None, net("", "", "pas une ip"))
+            .unwrap_err();
+        assert!(matches!(err, AccountError::InvalidGateway));
+        assert_eq!(fx.book().list()[0].net, no_net());
+    }
+
+    #[test]
+    fn update_replaces_network_fields() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book
+            .create("A", "root", pwd(PWD), net("10.1.0.250/16", "", ""))
+            .unwrap();
+        book.update(&acc.id, "A", "root", None, net("", "192.168.1.0/24", ""))
+            .unwrap();
+        assert_eq!(fx.book().list()[0].net, net("", "192.168.1.0/24", ""));
+    }
+
+    #[test]
+    fn export_and_import_carry_network_fields() {
+        let (mut src, _fx_src) = empty_book();
+        let full = net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1");
+        src.create("Mairie", "root", pwd(PWD), full.clone()).unwrap();
+        src.create("Gare", "admin", pwd(PWD), no_net()).unwrap();
+        let data = src.export();
+        assert!(data.contains("192.168.1.250/24"));
+        let v: serde_json::Value = serde_json::from_str(&data).unwrap();
+        let gare = v["accounts"].as_array().unwrap().iter().find(|a| a["name"] == "Gare").unwrap();
+        assert!(gare.get("pc_ip").is_none() && gare.get("network").is_none() && gare.get("gateway").is_none());
+        let (mut dst, _fx_dst) = empty_book();
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        let by = |n: &str| dst.list().into_iter().find(|a| a.name == n).unwrap();
+        assert_eq!(by("Mairie").net, full);
+        assert_eq!(by("Gare").net, no_net());
+    }
+
+    #[test]
+    fn import_compares_network_fields() {
+        let (mut src, _fx_src) = empty_book();
+        src.create("Mairie", "root", pwd(PWD), net("192.168.1.250/24", "", ""))
+            .unwrap();
+        let data = src.export();
+        let (mut dst, _fx_dst) = empty_book();
+        let id = dst
+            .create("Mairie", "root", pwd(PWD), net("10.0.0.250/24", "", ""))
+            .unwrap()
+            .id;
+        let plan = dst.import_plan(&data).unwrap();
+        assert_eq!(
+            plan.items[0].kind,
+            ImportKind::Differs { login_differs: false, password_differs: false, network_differs: true }
+        );
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        assert_eq!(dst.list()[0].net, net("192.168.1.250/24", "", ""));
+        assert_eq!(dst.list()[0].id, id);
+        // Identique, réseau compris.
+        let plan = dst.import_plan(&data).unwrap();
+        assert_eq!(plan.items[0].kind, ImportKind::Identical);
+    }
+
+    #[test]
+    fn import_without_network_fields_keeps_existing_ones() {
+        let (mut src, _fx_src) = empty_book();
+        src.create("Mairie", "autre", pwd(PWD), no_net()).unwrap();
+        let data = src.export();
+        let (mut dst, _fx_dst) = empty_book();
+        let full = net("192.168.1.250/24", "192.168.1.0/24", "192.168.1.1");
+        dst.create("Mairie", "root", pwd(PWD), full.clone()).unwrap();
+        let plan = dst.import_plan(&data).unwrap();
+        assert_eq!(
+            plan.items[0].kind,
+            ImportKind::Differs { login_differs: true, password_differs: false, network_differs: false }
+        );
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        assert_eq!(dst.list()[0].login, "autre");
+        assert_eq!(dst.list()[0].net, full);
+    }
+
+    #[test]
+    fn import_rejects_invalid_network_fields() {
+        let mut book = sample_book();
+        let before = book.list();
+        let data = serde_json::json!({
+            "format": "lenscout-accounts", "version": 1,
+            "accounts": [{"name": "X", "login": seal::seal(b"root"), "pc_ip": "999.1.1.1/24"}],
+        })
+        .to_string();
+        assert!(matches!(book.import_plan(&data), Err(AccountError::ImportInvalid)));
+        assert!(matches!(
+            book.import_apply(&data, &HashMap::new()),
+            Err(AccountError::ImportInvalid)
+        ));
+        assert_eq!(book.list(), before);
+    }
+
     #[test]
     fn file_never_contains_login_or_password_in_clear() {
         let fx = Fixture::new();
         let mut book = fx.book();
-        book.create("Défaut LORVA", "root-unique", pwd(PWD))
+        book.create("Défaut LORVA", "root-unique", pwd(PWD), no_net())
             .unwrap();
         let raw = fx.raw();
         assert!(!raw.contains("S3cr3t"));
@@ -766,7 +1141,7 @@ mod tests {
     fn credentials_after_reload() {
         let fx = Fixture::new();
         let mut book = fx.book();
-        let acc = book.create("Défaut LORVA", "root", pwd(PWD)).unwrap();
+        let acc = book.create("Défaut LORVA", "root", pwd(PWD), no_net()).unwrap();
         let creds = fx.book().credentials(&acc.id).unwrap();
         assert_eq!(creds.login, "root");
         assert_eq!(creds.password.expose(), PWD);
@@ -777,8 +1152,8 @@ mod tests {
     fn reload_keeps_accounts() {
         let fx = Fixture::new();
         let mut book = fx.book();
-        book.create("A", "root", pwd(PWD)).unwrap();
-        book.create("B", "admin", pwd(PWD)).unwrap();
+        book.create("A", "root", pwd(PWD), no_net()).unwrap();
+        book.create("B", "admin", pwd(PWD), no_net()).unwrap();
         assert_eq!(fx.book().list(), book.list());
         assert_eq!(fx.book().list().len(), 2);
     }
@@ -792,8 +1167,8 @@ mod tests {
     fn duplicate_name_rejected() {
         let fx = Fixture::new();
         let mut book = fx.book();
-        book.create("Client X", "root", pwd(PWD)).unwrap();
-        let err = book.create("client x", "root", pwd(PWD)).unwrap_err();
+        book.create("Client X", "root", pwd(PWD), no_net()).unwrap();
+        let err = book.create("client x", "root", pwd(PWD), no_net()).unwrap_err();
         assert!(matches!(err, AccountError::DuplicateName));
         assert_eq!(book.list().len(), 1);
     }
@@ -801,27 +1176,27 @@ mod tests {
     #[test]
     fn update_rejects_name_of_another_account() {
         let (mut book, _fx_book) = empty_book();
-        book.create("A", "root", pwd(PWD)).unwrap();
-        let b = book.create("B", "root", pwd(PWD)).unwrap();
-        let err = book.update(&b.id, "a", "root", None).unwrap_err();
+        book.create("A", "root", pwd(PWD), no_net()).unwrap();
+        let b = book.create("B", "root", pwd(PWD), no_net()).unwrap();
+        let err = book.update(&b.id, "a", "root", None, no_net()).unwrap_err();
         assert!(matches!(err, AccountError::DuplicateName));
         // Garder son propre nom (casse changée) reste permis.
-        assert!(book.update(&b.id, "b", "root", None).is_ok());
+        assert!(book.update(&b.id, "b", "root", None, no_net()).is_ok());
     }
 
     #[test]
     fn empty_fields_rejected() {
         let (mut book, _fx_book) = empty_book();
         assert!(matches!(
-            book.create(" ", "root", pwd(PWD)).unwrap_err(),
+            book.create(" ", "root", pwd(PWD), no_net()).unwrap_err(),
             AccountError::EmptyField
         ));
         assert!(matches!(
-            book.create("A", "", pwd(PWD)).unwrap_err(),
+            book.create("A", "", pwd(PWD), no_net()).unwrap_err(),
             AccountError::EmptyField
         ));
         assert!(matches!(
-            book.create("A", "root", pwd("")).unwrap_err(),
+            book.create("A", "root", pwd(""), no_net()).unwrap_err(),
             AccountError::EmptyField
         ));
         assert!(book.list().is_empty());
@@ -831,8 +1206,8 @@ mod tests {
     fn update_without_password_keeps_secret() {
         let fx = Fixture::new();
         let mut book = fx.book();
-        let acc = book.create("A", "root", pwd(PWD)).unwrap();
-        let upd = book.update(&acc.id, "A2", "admin", None).unwrap();
+        let acc = book.create("A", "root", pwd(PWD), no_net()).unwrap();
+        let upd = book.update(&acc.id, "A2", "admin", None, no_net()).unwrap();
         assert_eq!((upd.name.as_str(), upd.login.as_str()), ("A2", "admin"));
         assert_eq!(upd.id, acc.id);
         assert_eq!(book.credentials(&acc.id).unwrap().password.expose(), PWD);
@@ -847,8 +1222,8 @@ mod tests {
     fn update_with_password_replaces_secret() {
         let fx = Fixture::new();
         let mut book = fx.book();
-        let acc = book.create("A", "root", pwd(PWD)).unwrap();
-        book.update(&acc.id, "A", "root", Some(pwd("Autre-1")))
+        let acc = book.create("A", "root", pwd(PWD), no_net()).unwrap();
+        book.update(&acc.id, "A", "root", Some(pwd("Autre-1")), no_net())
             .unwrap();
         assert_eq!(
             fx.book().credentials(&acc.id).unwrap().password.expose(),
@@ -860,7 +1235,7 @@ mod tests {
     fn remove_deletes_account() {
         let fx = Fixture::new();
         let mut book = fx.book();
-        let acc = book.create("A", "root", pwd(PWD)).unwrap();
+        let acc = book.create("A", "root", pwd(PWD), no_net()).unwrap();
         book.remove(&acc.id).unwrap();
         assert!(book.list().is_empty());
         assert!(fx.book().list().is_empty());
@@ -872,7 +1247,7 @@ mod tests {
         let (mut book, _fx_book) = empty_book();
         assert!(matches!(book.credentials("x"), Err(AccountError::NotFound)));
         assert!(matches!(
-            book.update("x", "A", "r", None),
+            book.update("x", "A", "r", None, no_net()),
             Err(AccountError::NotFound)
         ));
     }
@@ -880,7 +1255,7 @@ mod tests {
     #[test]
     fn account_debug_has_no_password() {
         let (mut book, _fx_book) = empty_book();
-        let acc = book.create("A", "root", pwd(PWD)).unwrap();
+        let acc = book.create("A", "root", pwd(PWD), no_net()).unwrap();
         assert!(!format!("{book:?} {acc:?}").contains("S3cr3t"));
     }
 
@@ -891,7 +1266,7 @@ mod tests {
         std::fs::create_dir_all(fx.path()).unwrap();
         let mut book = AccountBook::load(fx.dir.join("absent.json"), fx.store.clone()).unwrap();
         book.path = fx.path();
-        let err = book.create("A", "root", pwd(PWD)).unwrap_err();
+        let err = book.create("A", "root", pwd(PWD), no_net()).unwrap_err();
         assert!(matches!(err, AccountError::Io(_)));
         assert!(book.list().is_empty());
     }
@@ -916,7 +1291,7 @@ mod tests {
         assert_eq!(std::fs::read(&moved).unwrap(), b"{ pas du json");
         // Le carnet vide reste utilisable.
         let mut book = book;
-        assert!(book.create("A", "root", pwd(PWD)).is_ok());
+        assert!(book.create("A", "root", pwd(PWD), no_net()).is_ok());
     }
 
     #[test]
@@ -944,7 +1319,7 @@ mod tests {
     #[test]
     fn valid_file_is_clean_start() {
         let fx = Fixture::new();
-        fx.book().create("A", "root", pwd(PWD)).unwrap();
+        fx.book().create("A", "root", pwd(PWD), no_net()).unwrap();
         let (book, startup) = load_or_quarantine(fx.path(), fx.store.clone());
         assert_eq!(book.list().len(), 1);
         assert!(matches!(startup, Startup::Clean));
@@ -962,7 +1337,7 @@ mod tests {
         std::fs::set_permissions(&fx.dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(startup, Startup::Unwritable));
         assert!(book.list().is_empty());
-        let err = book.create("A", "root", pwd(PWD)).unwrap_err();
+        let err = book.create("A", "root", pwd(PWD), no_net()).unwrap_err();
         assert!(matches!(err, AccountError::Io(_)));
         assert!(book.list().is_empty());
         // Le fichier d'origine n'a pas été touché.
@@ -1008,11 +1383,11 @@ mod tests {
             Err(AccountError::SecretMissing)
         ));
         assert!(matches!(
-            book.update("id-1", "Mairie", "root", None),
+            book.update("id-1", "Mairie", "root", None, no_net()),
             Err(AccountError::SecretMissing)
         ));
         // Ressaisir le mot de passe répare le compte.
-        book.update("id-1", "Mairie", "root", Some(pwd("Neuf-1")))
+        book.update("id-1", "Mairie", "root", Some(pwd("Neuf-1")), no_net())
             .unwrap();
         assert_eq!(
             book.credentials("id-1").unwrap().password.expose(),
@@ -1050,9 +1425,9 @@ mod tests {
 
     fn sample_book() -> AccountBook {
         let (mut book, _fx_book) = empty_book();
-        book.create("Mairie Arles", "root-unique", pwd(PWD))
+        book.create("Mairie Arles", "root-unique", pwd(PWD), no_net())
             .unwrap();
-        book.create("Gare", "admin", pwd("Autre-1")).unwrap();
+        book.create("Gare", "admin", pwd("Autre-1"), no_net()).unwrap();
         book
     }
 
@@ -1061,7 +1436,7 @@ mod tests {
         let fx = Fixture::new();
         fx.write_v1(&[("id-1", "Sans secret", "root")]);
         let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
-        book.create("Mairie Arles", "root-unique", pwd(PWD))
+        book.create("Mairie Arles", "root-unique", pwd(PWD), no_net())
             .unwrap();
         let out = book.export();
         assert!(!out.contains("root-unique") && !out.contains("S3cr3t"));
@@ -1126,7 +1501,7 @@ mod tests {
     fn differing() -> (AccountBook, String, Fixture) {
         let src = sample_book();
         let (mut dst, fx) = empty_book();
-        dst.create("Mairie Arles", "autre-login", pwd(PWD)).unwrap();
+        dst.create("Mairie Arles", "autre-login", pwd(PWD), no_net()).unwrap();
         (dst, src.export(), fx)
     }
 
@@ -1143,7 +1518,8 @@ mod tests {
             mairie.kind,
             ImportKind::Differs {
                 login_differs: true,
-                password_differs: false
+                password_differs: false,
+                network_differs: false
             }
         );
         let gare = plan.items.iter().find(|i| i.name == "Gare").unwrap();
@@ -1165,11 +1541,11 @@ mod tests {
     fn import_keep_both_avoids_every_name_of_the_file() {
         // Le fichier porte « X » (qui diffère) et « X 2 » : « X » devient « X 3 ».
         let (mut src, _fx_src) = empty_book();
-        src.create("X", "root", pwd("a")).unwrap();
-        src.create("X 2", "admin", pwd("b")).unwrap();
+        src.create("X", "root", pwd("a"), no_net()).unwrap();
+        src.create("X 2", "admin", pwd("b"), no_net()).unwrap();
         let data = src.export();
         let (mut dst, _fx_dst) = empty_book();
-        dst.create("X", "autre", pwd("c")).unwrap();
+        dst.create("X", "autre", pwd("c"), no_net()).unwrap();
         let choices = HashMap::from([("X".to_string(), Choice::KeepBoth)]);
         let summary = dst.import_apply(&data, &choices).unwrap();
         assert_eq!((summary.kept_both, summary.added), (1, 1));
@@ -1183,7 +1559,7 @@ mod tests {
     #[test]
     fn import_keep_both_picks_next_free_suffix() {
         let (mut dst, data, _fx) = differing();
-        dst.create("Mairie Arles 2", "x", pwd("y")).unwrap();
+        dst.create("Mairie Arles 2", "x", pwd("y"), no_net()).unwrap();
         let choices = HashMap::from([("Mairie Arles".to_string(), Choice::KeepBoth)]);
         let summary = dst.import_apply(&data, &choices).unwrap();
         assert_eq!(summary.kept_both, 1);
@@ -1264,7 +1640,7 @@ mod tests {
         let (nopass, _) = load_or_quarantine(fx.path(), fx.store.clone());
         let data = nopass.export();
         let (mut dst, _fx_dst) = empty_book();
-        dst.create("Sans secret", "root", pwd(PWD)).unwrap();
+        dst.create("Sans secret", "root", pwd(PWD), no_net()).unwrap();
         let plan = dst.import_plan(&data).unwrap();
         assert_eq!(plan.items[0].kind, ImportKind::Identical);
         // Sur un carnet vide : ajouté, à ressaisir.
@@ -1295,7 +1671,7 @@ mod tests {
         fx.write_v1(&[("id-1", "Mairie", "root")]);
         // Trousseau vide au démarrage, puis l'utilisateur crée un autre compte.
         let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
-        book.create("Gare", "admin", pwd("Autre-1")).unwrap();
+        book.create("Gare", "admin", pwd("Autre-1"), no_net()).unwrap();
         assert!(fx.raw().contains("\"legacy\": true"));
         fx.store.set("id-1", &pwd(PWD)).unwrap();
         let (book, _) = load_or_quarantine(fx.path(), fx.store.clone());
@@ -1321,7 +1697,7 @@ mod tests {
         fx.write_v1(&[("id-1", "Mairie", "root")]);
         let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
         // Fichier réécrit : le compte porte encore la marque `legacy`.
-        book.create("Gare", "admin", pwd("x")).unwrap();
+        book.create("Gare", "admin", pwd("x"), no_net()).unwrap();
         assert!(fx.raw().contains("\"legacy\": true"));
         let summary = book.import_apply(&data, &HashMap::new()).unwrap();
         assert_eq!(summary.replaced, 1);
@@ -1340,7 +1716,7 @@ mod tests {
         std::fs::write(&tmp, b"vieux").unwrap();
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
         let mut book = fx.book();
-        book.create("A", "root", pwd(PWD)).unwrap();
+        book.create("A", "root", pwd(PWD), no_net()).unwrap();
         let mode = std::fs::metadata(fx.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
@@ -1350,8 +1726,8 @@ mod tests {
         let fx = Fixture::new();
         fx.write_v1(&[("id-1", "Mairie", "root")]);
         let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
-        book.create("Gare", "admin", pwd("x")).unwrap();
-        book.update("id-1", "Mairie", "root", Some(pwd("Neuf-1")))
+        book.create("Gare", "admin", pwd("x"), no_net()).unwrap();
+        book.update("id-1", "Mairie", "root", Some(pwd("Neuf-1")), no_net())
             .unwrap();
         assert!(!fx.raw().contains("legacy"));
         // Le trousseau, même rempli plus tard, ne remplace pas le mot de passe saisi.
@@ -1367,7 +1743,7 @@ mod tests {
         let fx = Fixture::new();
         fx.write_v1(&[("id-1", "Mairie", "root")]);
         let (mut book, _) = load_or_quarantine(fx.path(), fx.store.clone());
-        book.create("Gare", "admin", pwd("x")).unwrap();
+        book.create("Gare", "admin", pwd("x"), no_net()).unwrap();
         let book = fx.book();
         assert!(!book.has_secret("id-1"));
         assert!(matches!(
@@ -1410,7 +1786,7 @@ mod tests {
     #[test]
     fn debug_never_shows_login() {
         let (mut book, _fx_book) = empty_book();
-        let acc = book.create("A", "root-unique", pwd(PWD)).unwrap();
+        let acc = book.create("A", "root-unique", pwd(PWD), no_net()).unwrap();
         let creds = book.credentials(&acc.id).unwrap();
         let out = format!("{book:?} {acc:?} {creds:?}");
         assert!(!out.contains("root-unique") && !out.contains("S3cr3t"));
@@ -1430,7 +1806,7 @@ mod tests {
     fn account_file_is_private_to_the_user() {
         use std::os::unix::fs::PermissionsExt;
         let fx = Fixture::new();
-        fx.book().create("A", "root", pwd(PWD)).unwrap();
+        fx.book().create("A", "root", pwd(PWD), no_net()).unwrap();
         let mode = std::fs::metadata(fx.path()).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
     }

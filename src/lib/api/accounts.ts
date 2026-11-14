@@ -5,7 +5,27 @@ export interface Account {
   id: string;
   name: string;
   login: string;
+  /** Champs réseau facultatifs, en clair : absents s'ils ne sont pas renseignés. */
+  pc_ip?: string;
+  network?: string;
+  gateway?: string;
 }
+
+/** Champs réseau envoyés à Rust : `null` pour un champ vide. */
+export interface AccountNetIn {
+  pc_ip: string | null;
+  network: string | null;
+  gateway: string | null;
+}
+
+const orNull = (s: string) => (s.trim() === '' ? null : s.trim());
+
+/** Les trois champs du formulaire → ce que Rust attend. */
+export const netIn = (pc_ip: string, network: string, gateway: string): AccountNetIn => ({
+  pc_ip: orNull(pc_ip),
+  network: orNull(network),
+  gateway: orNull(gateway),
+});
 
 /** Entrée de liste : `has_secret` dit seulement si le mot de passe est au trousseau. */
 export interface AccountEntry extends Account {
@@ -17,11 +37,11 @@ export const ACCOUNT_KEY = 'lenscout.account';
 export const listAccounts = () => invoke<AccountEntry[]>('cmd_accounts_list');
 /** Code d'un démarrage dégradé (rendu une seule fois), ou `null`. */
 export const accountsStartup = () => invoke<string | null>('cmd_accounts_startup');
-export const createAccount = (name: string, login: string, password: string) =>
-  invoke<Account>('cmd_account_create', { name, login, password });
-/** `password` absent ou `null` : le mot de passe reste inchangé. */
-export const updateAccount = (id: string, name: string, login: string, password: string | null) =>
-  invoke<Account>('cmd_account_update', { id, name, login, password });
+export const createAccount = (name: string, login: string, password: string, net: AccountNetIn) =>
+  invoke<Account>('cmd_account_create', { name, login, password, net });
+/** `password` absent ou `null` : le mot de passe reste inchangé. Les champs réseau sont remplacés. */
+export const updateAccount = (id: string, name: string, login: string, password: string | null, net: AccountNetIn) =>
+  invoke<Account>('cmd_account_update', { id, name, login, password, net });
 export const removeAccount = (id: string) => invoke<void>('cmd_account_remove', { id });
 
 /** Plan d'import (miroir de `ImportPlanOut`) : aucun secret, seulement ce qui diffère. */
@@ -30,7 +50,21 @@ export interface ImportItem {
   kind: 'new' | 'identical' | 'differs';
   login_differs: boolean;
   password_differs: boolean;
+  network_differs: boolean;
 }
+
+/** Clés i18n (sous `accounts.why.`) de ce qui diffère, dans l'ordre. */
+export function whyKeys(i: ImportItem): string[] {
+  const keys: string[] = [];
+  if (i.login_differs && i.password_differs) keys.push('both');
+  else if (i.login_differs) keys.push('login');
+  else if (i.password_differs) keys.push('password');
+  if (i.network_differs) keys.push('network');
+  return keys;
+}
+
+/** Comptes proposés par le sélecteur de l'écran Réseau : ceux qui ont une IP du PC. */
+export const joinable = <T extends Account>(accounts: T[]): T[] => accounts.filter((a) => !!a.pc_ip);
 export interface ImportPlan {
   items: ImportItem[];
 }

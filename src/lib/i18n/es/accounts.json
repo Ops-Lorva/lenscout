@@ -14,7 +14,10 @@
   "field": {
     "name": "Nombre",
     "login": "Usuario",
-    "password": "Contraseña"
+    "password": "Contraseña",
+    "pc_ip": "IP del PC",
+    "network": "Red",
+    "gateway": "Puerta de enlace"
   },
   "error": {
     "empty_field": "Campo vacío",
@@ -27,7 +30,12 @@
     "unknown": "Error",
     "import_invalid": "Archivo de importación ilegible",
     "file_unwritable": "No se puede escribir el archivo elegido",
-    "file_unreadable": "No se puede leer el archivo elegido"
+    "file_unreadable": "No se puede leer el archivo elegido",
+    "invalid_pc_ip": "IP del PC no válida (p. ej. 192.168.1.250/24)",
+    "invalid_network": "Red no válida (p. ej. 192.168.1.0/24)",
+    "invalid_gateway": "Puerta de enlace no válida",
+    "pc_ip_outside_network": "La IP del PC no está en la red",
+    "gateway_outside_network": "La puerta de enlace no está en la red"
   },
   "notice": {
     "quarantined": "Archivo de cuentas ilegible, apartado",
@@ -49,7 +57,8 @@
   "why": {
     "login": "usuario distinto",
     "password": "contraseña distinta",
-    "both": "usuario y contraseña distintos"
+    "both": "usuario y contraseña distintos",
+    "network": "red diferente"
   },
   "choice": {
     "replace": "Reemplazar",
@@ -62,5 +71,7 @@
   },
   "keepNote": "Conservar ambas crea {names}.",
   "doImport": "Importar",
-  "quoted": "«{name}»"
+  "quoted": "«{name}»",
+  "showPassword": "Mostrar la contraseña",
+  "hidePassword": "Ocultar la contraseña"
 }

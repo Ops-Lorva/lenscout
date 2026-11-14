@@ -3,10 +3,11 @@
   import { _ } from 'svelte-i18n';
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
-    accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, listAccounts, noticeKey,
+    accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, listAccounts, netIn, noticeKey,
     passwordRequired, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
+  import { autoFill, networkOf } from '$lib/api/net';
   import { clearStatusIf, status, type Status } from '$lib/stores/nav';
   import Dialog from './Dialog.svelte';
   import ImportSheet from './ImportSheet.svelte';
@@ -20,6 +21,13 @@
   let name = $state('');
   let login = $state('');
   let password = $state('');
+  // Masqué par défaut, remasqué à chaque ouverture et fermeture.
+  let showPassword = $state(false);
+  let pcIp = $state('');
+  let network = $state('');
+  let gateway = $state('');
+  // Dernier réseau déduit de l'IP du PC : une saisie différente n'est jamais écrasée.
+  let autoNetwork = '';
   let confirming = $state('');
   let needPassword = $state(true);
 
@@ -37,7 +45,7 @@
     status.set(s);
   };
 
-  const filters = [{ name: 'Lenscout', extensions: [EXPORT_EXT] }];
+  const filters = [{ name: 'LenScout', extensions: [EXPORT_EXT] }];
 
   async function doExport() {
     error = '';
@@ -94,11 +102,24 @@
     name = a?.name ?? '';
     login = a?.login ?? '';
     password = '';
+    showPassword = false;
+    pcIp = a?.pc_ip ?? '';
+    network = a?.network ?? '';
+    gateway = a?.gateway ?? '';
+    autoNetwork = '';
+  }
+
+  function onPcIp() {
+    const wanted = networkOf(pcIp);
+    if (!wanted) return;
+    network = autoFill(network, autoNetwork, wanted);
+    if (network === wanted) autoNetwork = wanted;
   }
 
   function close() {
     editing = null;
     password = '';
+    showPassword = false;
     error = '';
     errorCode = '';
   }
@@ -107,8 +128,9 @@
     error = '';
     errorCode = '';
     try {
-      if (editing) await updateAccount(editing, name, login, password === '' ? null : password);
-      else await createAccount(name, login, password);
+      const net = netIn(pcIp, network, gateway);
+      if (editing) await updateAccount(editing, name, login, password === '' ? null : password, net);
+      else await createAccount(name, login, password, net);
     } catch (e) {
       fail(e);
       return;
@@ -163,8 +185,9 @@
 <table>
   <thead>
     <tr>
-      <th style="width:44%">{$_('accounts.col.name')}</th>
+      <th style="width:34%">{$_('accounts.col.name')}</th>
       <th style="width:22%">{$_('accounts.col.login')}</th>
+      <th>{$_('accounts.field.pc_ip')}</th>
       <th>{$_('accounts.field.password')}</th>
       <th style="width:1%"></th>
     </tr>
@@ -174,6 +197,7 @@
       <tr>
         <td>{a.name}</td>
         <td>{a.login}</td>
+        <td class="dim-t">{a.pc_ip ?? ''}</td>
         <td>{#if a.has_secret}••••••••{:else}<span class="warn">{$_('accounts.resecret')}</span>{/if}</td>
         <td class="ra">
           <button class="mini" onclick={() => open(a)}>{$_('accounts.edit')}</button>
@@ -201,7 +225,23 @@
         <label for="a-login">{$_('accounts.field.login')}</label>
         <input id="a-login" type="text" bind:value={login} autocomplete="off" />
         <label for="a-password">{$_('accounts.field.password')}</label>
-        <input id="a-password" type="password" bind:value={password} required={needPassword} autocomplete="new-password" />
+        <span class="pw">
+          <input id="a-password" type={showPassword ? 'text' : 'password'} bind:value={password} required={needPassword} autocomplete="new-password" spellcheck="false" />
+          <button class="eye" type="button" onclick={() => (showPassword = !showPassword)}
+            aria-label={$_(showPassword ? 'accounts.hidePassword' : 'accounts.showPassword')} aria-pressed={showPassword}>
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" />
+              <circle cx="8" cy="8" r="2" />
+              {#if showPassword}<path d="M2.5 13.5l11-11" />{/if}
+            </svg>
+          </button>
+        </span>
+        <label for="a-pcip">{$_('accounts.field.pc_ip')}</label>
+        <input id="a-pcip" type="text" bind:value={pcIp} oninput={onPcIp} placeholder="192.168.1.250/24" inputmode="decimal" autocomplete="off" spellcheck="false" />
+        <label for="a-net">{$_('accounts.field.network')}</label>
+        <input id="a-net" type="text" bind:value={network} placeholder="192.168.1.0/24" inputmode="decimal" autocomplete="off" spellcheck="false" />
+        <label for="a-gw">{$_('accounts.field.gateway')}</label>
+        <input id="a-gw" type="text" bind:value={gateway} placeholder="192.168.1.1" inputmode="decimal" autocomplete="off" spellcheck="false" />
       </div>
       <div class="foot">
         <span class="sum" class:e={!!otherError}>{otherError}</span>
@@ -217,4 +257,16 @@
   /* Importer / Exporter à côté du titre, Ajouter à l'autre bout. */
   .tools .title { flex: none; margin-right: 6px; }
   .gap { flex: 1; }
+  /* Œil du mot de passe, dans le champ à droite. */
+  .pw { position: relative; display: block; }
+  .pw input { padding-right: 30px; }
+  .eye {
+    position: absolute; right: 3px; top: 50%; transform: translateY(-50%);
+    width: 24px; height: 22px; padding: 0; border: 0; border-radius: 5px;
+    background: transparent; color: var(--text-2); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .eye:hover { color: var(--text); }
+  .eye:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
+  .eye svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 </style>

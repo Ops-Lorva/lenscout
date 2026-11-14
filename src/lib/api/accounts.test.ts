@@ -3,6 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
+  createAccount, joinable, netIn, updateAccount, whyKeys,
   applyImport, defaultChoices, exportAccounts, groupPlan, importPlan, keepBothNames, noticeKey, passwordRequired,
   pickAccount, suffixedName, withExtension, type ImportPlan,
 } from './accounts';
@@ -47,10 +48,10 @@ test('le signalement de démarrage a son libellé, un code inconnu est ignoré',
 
 const plan: ImportPlan = {
   items: [
-    { name: 'Mairie Arles', kind: 'differs', login_differs: true, password_differs: false },
-    { name: 'Client Dupont', kind: 'differs', login_differs: false, password_differs: true },
-    { name: 'Gare', kind: 'new', login_differs: false, password_differs: false },
-    { name: 'Usine', kind: 'identical', login_differs: false, password_differs: false },
+    { name: 'Mairie Arles', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
+    { name: 'Client Dupont', kind: 'differs', login_differs: false, password_differs: true, network_differs: false },
+    { name: 'Gare', kind: 'new', login_differs: false, password_differs: false, network_differs: false },
+    { name: 'Usine', kind: 'identical', login_differs: false, password_differs: false, network_differs: false },
   ],
 };
 
@@ -100,9 +101,9 @@ test('le code import_invalid a son libellé', () => {
 test('« Garder les deux » évite aussi tous les noms du fichier et du carnet', () => {
   const file: ImportPlan = {
     items: [
-      { name: 'X', kind: 'differs', login_differs: true, password_differs: false },
-      { name: 'X 2', kind: 'new', login_differs: false, password_differs: false },
-      { name: 'Y', kind: 'differs', login_differs: true, password_differs: false },
+      { name: 'X', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
+      { name: 'X 2', kind: 'new', login_differs: false, password_differs: false, network_differs: false },
+      { name: 'Y', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
     ],
   };
   const choices = { X: 'keep_both', Y: 'replace' } as const;
@@ -114,10 +115,10 @@ test('« Garder les deux » évite aussi tous les noms du fichier et du carnet',
 test('« Garder les deux » compare les noms sans tenir compte de la casse, comme le core', () => {
   const file: ImportPlan = {
     items: [
-      { name: 'cam', kind: 'differs', login_differs: true, password_differs: false },
-      { name: 'CAM 2', kind: 'new', login_differs: false, password_differs: false },
-      { name: 'Nvr', kind: 'differs', login_differs: true, password_differs: false },
-      { name: 'nvr', kind: 'differs', login_differs: true, password_differs: false },
+      { name: 'cam', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
+      { name: 'CAM 2', kind: 'new', login_differs: false, password_differs: false, network_differs: false },
+      { name: 'Nvr', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
+      { name: 'nvr', kind: 'differs', login_differs: true, password_differs: false, network_differs: false },
     ],
   };
   const both = { cam: 'keep_both', Nvr: 'keep_both', nvr: 'keep_both' } as const;
@@ -134,4 +135,32 @@ test('le fichier exporté porte l’extension .lenscout', () => {
 test('les codes d’E/S du fichier choisi ont leur libellé', () => {
   expect(errorKey('file_unwritable')).toBe('error.file_unwritable');
   expect(errorKey('file_unreadable')).toBe('error.file_unreadable');
+});
+
+test('champs réseau : vides → null, transmis à la création et à la modification', async () => {
+  invoke.mockResolvedValue({});
+  const net = netIn(' 192.168.1.250/24 ', '', '192.168.1.1');
+  expect(net).toEqual({ pc_ip: '192.168.1.250/24', network: null, gateway: '192.168.1.1' });
+  await createAccount('A', 'root', 'pw', net);
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_create', { name: 'A', login: 'root', password: 'pw', net });
+  await updateAccount('id', 'A', 'root', null, net);
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_update', { id: 'id', name: 'A', login: 'root', password: null, net });
+});
+
+test('ce qui diffère à l’import, réseau compris', () => {
+  const item = (l: boolean, p: boolean, n: boolean) =>
+    ({ name: 'X', kind: 'differs', login_differs: l, password_differs: p, network_differs: n }) as const;
+  expect(whyKeys(item(true, true, false))).toEqual(['both']);
+  expect(whyKeys(item(true, false, true))).toEqual(['login', 'network']);
+  expect(whyKeys(item(false, false, true))).toEqual(['network']);
+  expect(whyKeys(item(false, true, false))).toEqual(['password']);
+});
+
+test('le sélecteur de réseau ne propose que les comptes qui ont une IP du PC', () => {
+  const list = [
+    { id: 'a', name: 'A', login: 'r', pc_ip: '192.168.1.250/24' },
+    { id: 'b', name: 'B', login: 'r' },
+    { id: 'c', name: 'C', login: 'r', pc_ip: '' },
+  ];
+  expect(joinable(list).map((a) => a.id)).toEqual(['a']);
 });

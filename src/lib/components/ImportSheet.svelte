@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
   import {
-    applyImport, CHOICES, defaultChoices, groupPlan, keepBothNames,
+    applyImport, CHOICES, defaultChoices, groupPlan, keepBothNames, whyKeys,
     type Choice, type ImportItem, type ImportPlan, type ImportSummary,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
@@ -33,7 +33,7 @@
   const file = $derived(path.split(/[\\/]/).pop() ?? path);
 
   const why = (i: ImportItem) =>
-    $_(`accounts.why.${i.login_differs && i.password_differs ? 'both' : i.login_differs ? 'login' : 'password'}`);
+    whyKeys(i).map((k) => $_(`accounts.why.${k}`)).join(', ');
 
   // « Garder les deux » crée des noms nouveaux : on les annonce, guillemets de la langue.
   const keepNote = $derived.by(() => {

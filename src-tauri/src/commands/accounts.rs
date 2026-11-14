@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use lenscout_core::accounts::{
-    Account, AccountBook, AccountError, Choice, ImportKind, ImportPlan, ImportSummary, Startup,
+    Account, AccountBook, AccountError, AccountNetwork, Choice, ImportKind, ImportPlan, ImportSummary, Startup,
     write_file_private,
 };
 use lenscout_core::secret::Secret;
@@ -13,7 +13,8 @@ use tauri::State;
 
 /// Erreurs : codes stables (`empty_field`, `duplicate_name`, `not_found`,
 /// `secret_missing`, `keyring`, `io`, `import_invalid`, `file_unwritable`,
-/// `file_unreadable`), traduits par le front. Le message de
+/// `file_unreadable`, `invalid_pc_ip`, `invalid_network`, `invalid_gateway`,
+/// `pc_ip_outside_network`, `gateway_outside_network`), traduits par le front. Le message de
 /// l'OS n'est pas renvoyé.
 fn code(e: AccountError) -> String {
     match e {
@@ -24,6 +25,11 @@ fn code(e: AccountError) -> String {
         AccountError::Keyring(_) => "keyring",
         AccountError::Io(_) => "io",
         AccountError::ImportInvalid => "import_invalid",
+        AccountError::InvalidPcIp => "invalid_pc_ip",
+        AccountError::InvalidNetwork => "invalid_network",
+        AccountError::InvalidGateway => "invalid_gateway",
+        AccountError::PcIpOutsideNetwork => "pc_ip_outside_network",
+        AccountError::GatewayOutsideNetwork => "gateway_outside_network",
     }
     .to_string()
 }
@@ -42,6 +48,8 @@ pub struct AccountEntry {
     pub id: String,
     pub name: String,
     pub login: String,
+    #[serde(flatten)]
+    pub net: AccountNetwork,
     pub has_secret: bool,
 }
 
@@ -53,6 +61,7 @@ pub(crate) fn accounts_list(book: &AccountBook) -> Vec<AccountEntry> {
             id: a.id,
             name: a.name,
             login: a.login,
+            net: a.net,
         })
         .collect()
 }
@@ -68,6 +77,7 @@ pub struct ImportItemOut {
     pub kind: &'static str,
     pub login_differs: bool,
     pub password_differs: bool,
+    pub network_differs: bool,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -81,14 +91,14 @@ impl From<ImportPlan> for ImportPlanOut {
             .items
             .into_iter()
             .map(|i| {
-                let (kind, login_differs, password_differs) = match i.kind {
-                    ImportKind::New => ("new", false, false),
-                    ImportKind::Identical => ("identical", false, false),
-                    ImportKind::Differs { login_differs, password_differs } => {
-                        ("differs", login_differs, password_differs)
+                let (kind, login_differs, password_differs, network_differs) = match i.kind {
+                    ImportKind::New => ("new", false, false, false),
+                    ImportKind::Identical => ("identical", false, false, false),
+                    ImportKind::Differs { login_differs, password_differs, network_differs } => {
+                        ("differs", login_differs, password_differs, network_differs)
                     }
                 };
-                ImportItemOut { name: i.name, kind, login_differs, password_differs }
+                ImportItemOut { name: i.name, kind, login_differs, password_differs, network_differs }
             })
             .collect();
         Self { items }
@@ -203,8 +213,9 @@ pub(crate) fn account_create(
     name: &str,
     login: &str,
     password: Secret,
+    net: AccountNetwork,
 ) -> Result<Account, String> {
-    book.create(name, login, password).map_err(code)
+    book.create(name, login, password, net).map_err(code)
 }
 
 pub(crate) fn account_update(
@@ -213,8 +224,9 @@ pub(crate) fn account_update(
     name: &str,
     login: &str,
     password: Option<Secret>,
+    net: AccountNetwork,
 ) -> Result<Account, String> {
-    book.update(id, name, login, password).map_err(code)
+    book.update(id, name, login, password, net).map_err(code)
 }
 
 pub(crate) fn account_remove(book: &mut AccountBook, id: &str) -> Result<(), String> {
@@ -255,10 +267,12 @@ pub async fn cmd_account_create(
     name: String,
     login: String,
     password: Secret,
+    // Absent (ancien front) : aucun champ réseau.
+    net: Option<AccountNetwork>,
     state: State<'_, Mutex<AccountBook>>,
 ) -> Result<Account, String> {
     let mut book = lock(&state)?;
-    account_create(&mut book, &name, &login, password)
+    account_create(&mut book, &name, &login, password, net.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -267,10 +281,11 @@ pub async fn cmd_account_update(
     name: String,
     login: String,
     password: Option<Secret>,
+    net: Option<AccountNetwork>,
     state: State<'_, Mutex<AccountBook>>,
 ) -> Result<Account, String> {
     let mut book = lock(&state)?;
-    account_update(&mut book, &id, &name, &login, password)
+    account_update(&mut book, &id, &name, &login, password, net.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -337,6 +352,55 @@ mod tests {
         (book, dir)
     }
 
+    fn no_net() -> AccountNetwork {
+        AccountNetwork::default()
+    }
+
+    #[test]
+    fn network_errors_are_stable_codes() {
+        let (mut book, _g_book) = book();
+        let pwd = || Secret::new("x".into());
+        let net = |pc: &str, n: &str, g: &str| AccountNetwork {
+            pc_ip: Some(pc.into()),
+            network: Some(n.into()),
+            gateway: Some(g.into()),
+        };
+        let cases = [
+            (net("x", "", ""), "invalid_pc_ip"),
+            (net("", "x", ""), "invalid_network"),
+            (net("", "", "x"), "invalid_gateway"),
+            (net("10.0.1.5/24", "10.0.0.0/24", ""), "pc_ip_outside_network"),
+            (net("", "10.0.0.0/24", "10.0.1.1"), "gateway_outside_network"),
+        ];
+        for (n, want) in cases {
+            assert_eq!(account_create(&mut book, "A", "r", pwd(), n).unwrap_err(), want);
+        }
+        assert!(book.list().is_empty());
+    }
+
+    #[test]
+    fn list_and_plan_carry_network_fields() {
+        let (mut src, _g_src) = book();
+        let full = AccountNetwork {
+            pc_ip: Some("192.168.1.250/24".into()),
+            network: Some("192.168.1.0/24".into()),
+            gateway: Some("192.168.1.1".into()),
+        };
+        account_create(&mut src, "Mairie", "root", Secret::new("x".into()), full).unwrap();
+        let json = serde_json::to_value(accounts_list(&src)).unwrap();
+        assert_eq!(json[0]["pc_ip"], "192.168.1.250/24");
+        assert_eq!(json[0]["network"], "192.168.1.0/24");
+        assert_eq!(json[0]["gateway"], "192.168.1.1");
+        let (path, _g_path) = temp_file("n.lenscout");
+        accounts_export(&src, &path).unwrap();
+        let (mut dst, _g_dst) = book();
+        account_create(&mut dst, "Mairie", "root", Secret::new("x".into()), no_net()).unwrap();
+        let plan = serde_json::to_value(accounts_import_plan(&dst, &path).unwrap()).unwrap();
+        assert_eq!(plan["items"][0]["kind"], "differs");
+        assert_eq!(plan["items"][0]["network_differs"], true);
+        assert_eq!(plan["items"][0]["login_differs"], false);
+    }
+
     fn uuid_like() -> String {
         format!(
             "{}-{:?}",
@@ -356,6 +420,7 @@ mod tests {
             "Défaut LORVA",
             "root",
             Secret::new("S3cr3t-Unique!".into()),
+            no_net(),
         )
         .unwrap();
         let json = serde_json::to_string(&accounts_list(&book)).unwrap();
@@ -407,12 +472,12 @@ mod tests {
         let (mut book, _g_book) = book();
         let pwd = || Secret::new("x".into());
         assert_eq!(
-            account_create(&mut book, " ", "r", pwd()).unwrap_err(),
+            account_create(&mut book, " ", "r", pwd(), no_net()).unwrap_err(),
             "empty_field"
         );
-        account_create(&mut book, "A", "r", pwd()).unwrap();
+        account_create(&mut book, "A", "r", pwd(), no_net()).unwrap();
         assert_eq!(
-            account_create(&mut book, "a", "r", pwd()).unwrap_err(),
+            account_create(&mut book, "a", "r", pwd(), no_net()).unwrap_err(),
             "duplicate_name"
         );
         assert_eq!(account_remove(&mut book, "nope").unwrap_err(), "not_found");
@@ -433,8 +498,8 @@ mod tests {
     #[test]
     fn update_without_password_keeps_it() {
         let (mut book, _g_book) = book();
-        let acc = account_create(&mut book, "A", "r", Secret::new("x".into())).unwrap();
-        let upd = account_update(&mut book, &acc.id, "B", "r2", None).unwrap();
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), no_net()).unwrap();
+        let upd = account_update(&mut book, &acc.id, "B", "r2", None, no_net()).unwrap();
         assert_eq!((upd.name.as_str(), upd.login.as_str()), ("B", "r2"));
         assert_eq!(book.credentials(&acc.id).unwrap().password.expose(), "x");
     }
@@ -447,8 +512,8 @@ mod tests {
     #[test]
     fn export_writes_the_sealed_file_and_counts() {
         let (mut src, _g_src) = book();
-        account_create(&mut src, "Mairie Arles", "root-unique", Secret::new("S3cr3t-Unique!".into())).unwrap();
-        account_create(&mut src, "Gare", "admin", Secret::new("x".into())).unwrap();
+        account_create(&mut src, "Mairie Arles", "root-unique", Secret::new("S3cr3t-Unique!".into()), no_net()).unwrap();
+        account_create(&mut src, "Gare", "admin", Secret::new("x".into()), no_net()).unwrap();
         let (path, _g_path) = temp_file("lenscout-comptes.lenscout");
         assert_eq!(accounts_export(&src, &path).unwrap(), 2);
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -465,12 +530,12 @@ mod tests {
     #[test]
     fn import_plan_has_flat_kinds_and_no_secret() {
         let (mut src, _g_src) = book();
-        account_create(&mut src, "Mairie Arles", "root-unique", Secret::new("S3cr3t-Unique!".into())).unwrap();
-        account_create(&mut src, "Gare", "admin", Secret::new("x".into())).unwrap();
+        account_create(&mut src, "Mairie Arles", "root-unique", Secret::new("S3cr3t-Unique!".into()), no_net()).unwrap();
+        account_create(&mut src, "Gare", "admin", Secret::new("x".into()), no_net()).unwrap();
         let (path, _g_path) = temp_file("a.lenscout");
         accounts_export(&src, &path).unwrap();
         let (mut dst, _g_dst) = book();
-        account_create(&mut dst, "Mairie Arles", "autre", Secret::new("S3cr3t-Unique!".into())).unwrap();
+        account_create(&mut dst, "Mairie Arles", "autre", Secret::new("S3cr3t-Unique!".into()), no_net()).unwrap();
         let plan = accounts_import_plan(&dst, &path).unwrap();
         let json = serde_json::to_string(&plan).unwrap();
         assert!(!json.contains("S3cr3t") && !json.contains("root-unique"));
@@ -487,11 +552,11 @@ mod tests {
     #[test]
     fn keep_both_choice_is_applied() {
         let (mut src, _g_src) = book();
-        account_create(&mut src, "Mairie", "root", Secret::new("a".into())).unwrap();
+        account_create(&mut src, "Mairie", "root", Secret::new("a".into()), no_net()).unwrap();
         let (path, _g_path) = temp_file("a.lenscout");
         accounts_export(&src, &path).unwrap();
         let (mut dst, _g_dst) = book();
-        account_create(&mut dst, "Mairie", "autre", Secret::new("b".into())).unwrap();
+        account_create(&mut dst, "Mairie", "autre", Secret::new("b".into()), no_net()).unwrap();
         // Les choix arrivent du front en JSON : on passe par la vraie désérialisation.
         let choices: HashMap<String, ChoiceIn> = serde_json::from_str(r#"{"Mairie":"keep_both"}"#).unwrap();
         let summary = accounts_import_apply(&mut dst, &path, choices).unwrap();
@@ -502,7 +567,7 @@ mod tests {
     #[test]
     fn unreadable_import_is_import_invalid_and_changes_nothing() {
         let (mut dst, _g_dst) = book();
-        account_create(&mut dst, "A", "r", Secret::new("x".into())).unwrap();
+        account_create(&mut dst, "A", "r", Secret::new("x".into()), no_net()).unwrap();
         let (path, _g_path) = temp_file("junk.lenscout");
         std::fs::write(&path, b"{\"format\":\"autre\"}").unwrap();
         assert_eq!(accounts_import_plan(&dst, &path).unwrap_err(), "import_invalid");
@@ -518,7 +583,7 @@ mod tests {
     #[test]
     fn export_adds_the_extension_when_missing() {
         let (mut src, _g_src) = book();
-        account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
+        account_create(&mut src, "A", "r", Secret::new("x".into()), no_net()).unwrap();
         let (bare, _g_bare) = temp_file("sauvegarde");
         accounts_export(&src, &bare).unwrap();
         assert!(bare.with_extension("lenscout").exists() && !bare.exists());
@@ -532,7 +597,7 @@ mod tests {
     fn export_is_private_even_over_a_stale_temp() {
         use std::os::unix::fs::PermissionsExt;
         let (mut src, _g_src) = book();
-        account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
+        account_create(&mut src, "A", "r", Secret::new("x".into()), no_net()).unwrap();
         let (path, _g_path) = temp_file("c.lenscout");
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
@@ -547,7 +612,7 @@ mod tests {
     #[test]
     fn io_errors_on_the_chosen_file_have_their_own_codes() {
         let (mut src, _g_src) = book();
-        account_create(&mut src, "A", "r", Secret::new("x".into())).unwrap();
+        account_create(&mut src, "A", "r", Secret::new("x".into()), no_net()).unwrap();
         let (plain, _g_plain) = temp_file("ordinaire");
         std::fs::write(&plain, b"x").unwrap();
         let path = plain.join("d.lenscout");
