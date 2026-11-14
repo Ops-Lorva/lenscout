@@ -60,5 +60,16 @@
   "activate_note": "This account’s password becomes each camera’s password.",
   "busy": "In progress",
   "cleartext_confirm": "HTTPS unavailable: send the password in cleartext to {ip}?",
-  "cleartext_send": "Send in cleartext"
+  "cleartext_send": "Send in cleartext",
+  "reset": {
+    "button": "Factory reset…",
+    "title": "Factory reset",
+    "mode": "Mode",
+    "keep_ip": "Keep the IP",
+    "full": "Erase everything",
+    "full_note": "Network included: the camera goes back to DHCP (Axis without DHCP: 192.168.0.90)",
+    "apply": "Reset",
+    "confirm": "Confirm the reset",
+    "sure": "{count, plural, one {# camera will be reset} other {# cameras will be reset}}"
+  }
 }

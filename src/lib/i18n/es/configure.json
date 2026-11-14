@@ -60,5 +60,16 @@
   "activate_note": "La contraseña de esta cuenta pasa a ser la de cada cámara.",
   "busy": "En curso",
   "cleartext_confirm": "HTTPS no disponible: ¿enviar la contraseña sin cifrar a {ip}?",
-  "cleartext_send": "Enviar sin cifrar"
+  "cleartext_send": "Enviar sin cifrar",
+  "reset": {
+    "button": "Restablecer…",
+    "title": "Restablecimiento de fábrica",
+    "mode": "Modo",
+    "keep_ip": "Conservar la IP",
+    "full": "Borrar todo",
+    "full_note": "Red incluida: la cámara vuelve a DHCP (Axis sin DHCP: 192.168.0.90)",
+    "apply": "Restablecer",
+    "confirm": "Confirmar el restablecimiento",
+    "sure": "{count, plural, one {# cámara será restablecida} other {# cámaras serán restablecidas}}"
+  }
 }

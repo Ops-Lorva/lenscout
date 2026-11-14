@@ -20,9 +20,10 @@ use crate::temp_ip::{
     temp_mask, with_temp_ip,
 };
 use crate::discovery::sadp;
+use crate::isapi;
 use crate::transport::{CameraHttp, Credentials, Datagram, NetError};
 use std::time::Duration;
-use crate::vapix::{self, NetworkSettings, TimeSettings, VapixError};
+use crate::vapix::{self, NetworkSettings, ResetMode, TimeSettings, VapixError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -33,6 +34,9 @@ pub enum Action {
     ActivateCleartext,
     Network(NetworkSettings),
     Time(TimeSettings),
+    /// Réinitialisation d'usine, avec le compte : Axis par VAPIX, Hikvision
+    /// par ISAPI. Peut viser un lot.
+    FactoryReset(ResetMode),
 }
 
 /// Codes stables : le front les traduit, `detail` ne vient que de la caméra
@@ -309,7 +313,12 @@ async fn apply_checked(
 ) -> Result<(), ActionError> {
     match cam.family {
         Family::Axis => {}
-        Family::Hikvision => return apply_sadp(ctx, cam, creds, action).await,
+        Family::Hikvision => {
+            return match action {
+                Action::FactoryReset(mode) => reset_isapi(ctx, cam, creds, *mode).await,
+                _ => apply_sadp(ctx, cam, creds, action).await,
+            };
+        }
         Family::Other => return Err(ActionError::Unsupported),
     }
     let on = on_subnet(&ctx.iface, cam.ip);
@@ -383,11 +392,42 @@ async fn apply_sadp(
     let msg = match action {
         Action::Activate | Action::ActivateCleartext => sadp::build_activate(uuid, &mac, &creds.password),
         Action::Network(net) => sadp::build_update(uuid, &mac, &creds.password, net),
-        Action::Time(_) => None,
+        Action::Time(_) | Action::FactoryReset(_) => None,
     };
     // Sans encodage de mot de passe documenté, rien n'est construit.
     let Some(msg) = msg else { return Err(ActionError::Unsupported) };
     sadp::send_and_wait(sock, &msg, &mac, cam.ip, SADP_TIMEOUT).await
+}
+
+/// Hikvision, réinitialisation : ISAPI en HTTP avec le compte, donc dans le
+/// sous-réseau seulement (pas d'IP temporaire) et vers une caméra que le
+/// dernier scan a entendue, sur cette interface : depuis son adresse, ou sa
+/// MAC en SADP. L'identité (MAC, sinon n° de série) est relue avec le compte
+/// juste avant l'ordre.
+async fn reset_isapi(ctx: &ActionContext, cam: &Camera, creds: &Credentials, mode: ResetMode) -> Result<(), ActionError> {
+    if !on_subnet(&ctx.iface, cam.ip) {
+        return Err(ActionError::CameraOffSubnet);
+    }
+    let mac = cam.mac.as_deref().and_then(normalize_mac);
+    let heard = ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str())
+        && (ctx.seen.contains(&cam.ip) || mac.as_ref().is_some_and(|m| ctx.seen_sadp.contains(m)));
+    if !heard {
+        return Err(ActionError::CameraNotSeen);
+    }
+    let (http, base) = (ctx.http.as_ref(), cam.base_url());
+    let id = isapi::device_identity(http, &base, creds).await.map_err(|e| match e {
+        VapixError::Parse(_) | VapixError::Rejected(_) => ActionError::IdentityUnreadable,
+        e => from_vapix(e, cam.ip),
+    })?;
+    let same = match (&mac, &id.mac, cam.serial.as_deref(), id.serial.as_deref()) {
+        (Some(a), Some(b), _, _) => a == b,
+        (_, _, Some(a), Some(b)) => a.trim().eq_ignore_ascii_case(b.trim()),
+        _ => false,
+    };
+    if !same {
+        return Err(ActionError::IdentityMismatch);
+    }
+    isapi::factory_reset(http, &base, creds, mode).await.map_err(|e| from_vapix(e, cam.ip))
 }
 
 async fn verify_and_write(
@@ -405,6 +445,7 @@ async fn verify_and_write(
             let done = match action {
                 Action::Network(net) => vapix::set_network(http, &base, creds, net).await,
                 Action::Time(t) => vapix::set_time(http, &base, creds, t).await,
+                Action::FactoryReset(mode) => vapix::factory_default(http, &base, creds, *mode).await,
                 Action::Activate | Action::ActivateCleartext => return Err(ActionError::Unsupported),
             };
             return done.map_err(|e| from_vapix(e, cam.ip));
@@ -972,6 +1013,107 @@ mod tests {
         let mut c = cam("169.254.10.20", Family::Hikvision);
         c.sources = vec![Source::Mdns, Source::Sadp];
         c
+    }
+
+    fn keep_ip() -> Action {
+        Action::FactoryReset(ResetMode::KeepIp)
+    }
+
+    #[tokio::test]
+    async fn axis_reset_checks_identity_then_sends_the_cgi_with_the_account() {
+        for (mode, path) in [(ResetMode::KeepIp, "/axis-cgi/factorydefault.cgi"), (ResetMode::Full, "/axis-cgi/hardfactorydefault.cgi")] {
+            let http = Arc::new(axis_ok().on(Method::Get, path, 200, "OK"));
+            let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::FactoryReset(mode)).await;
+            assert!(r.ok, "{:?}", r.error);
+            let reqs = http.requests();
+            assert!(reqs[0].url.ends_with("/axis-cgi/basicdeviceinfo.cgi"), "identité d'abord");
+            let reset = reqs.last().unwrap();
+            assert_eq!((reset.method, reset.url.as_str()), (Method::Get, format!("http://192.0.2.11{path}").as_str()));
+            assert_eq!(reset.login.as_deref(), Some("root"));
+        }
+    }
+
+    #[tokio::test]
+    async fn axis_reset_never_reaches_another_camera() {
+        let other = String::from_utf8_lossy(INFO).replace(SERIAL, "ACCC8E999999");
+        let http = Arc::new(
+            FakeHttp::new()
+                .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, other.into_bytes())
+                .on(Method::Get, "/axis-cgi/factorydefault.cgi", 200, "OK"),
+        );
+        let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &keep_ip()).await;
+        assert_eq!(r.error, Some(ActionError::IdentityMismatch));
+        assert!(http.requests().iter().all(|r| !r.url.contains("factorydefault")));
+    }
+
+    #[tokio::test]
+    async fn axis_reset_refused_or_silent_is_reported() {
+        let http = Arc::new(axis_ok().on(Method::Get, "/axis-cgi/factorydefault.cgi", 401, ""));
+        let r = apply(&ctx(http), &cam("192.0.2.11", Family::Axis), &creds(), &keep_ip()).await;
+        assert_eq!(r.error, Some(ActionError::AuthFailed));
+        let http = Arc::new(Scripted::new(|req| {
+            if req.url.ends_with("basicdeviceinfo.cgi") {
+                Ok(HttpResponse { status: 200, headers: vec![], body: INFO.to_vec() })
+            } else {
+                Err(NetError::Timeout)
+            }
+        }));
+        let r = apply(&ctx(http), &cam("192.0.2.11", Family::Axis), &creds(), &keep_ip()).await;
+        assert_eq!(r.error, Some(ActionError::Unreachable { ip: "192.0.2.11".parse().unwrap() }));
+    }
+
+    const HIK_INFO: &str = "<DeviceInfo><serialNumber>DS-1</serialNumber><macAddress>ac:cc:8e:12:34:56</macAddress></DeviceInfo>";
+
+    #[tokio::test]
+    async fn hikvision_reset_goes_through_isapi_after_its_mac_is_confirmed() {
+        let http = Arc::new(
+            FakeHttp::new()
+                .on(Method::Get, "/ISAPI/System/deviceInfo", 200, HIK_INFO)
+                .on(Method::Put, "/ISAPI/System/factoryReset", 200, "<ResponseStatus><statusCode>1</statusCode></ResponseStatus>"),
+        );
+        let ip: Ipv4Addr = "192.0.2.11".parse().unwrap();
+        let (c, dg) = sadp_ctx(http.clone(), true);
+        let r = apply(&c, &cam("192.0.2.11", Family::Hikvision), &creds(), &Action::FactoryReset(ResetMode::Full)).await;
+        assert!(r.ok, "{:?}", r.error);
+        let last = http.requests().pop().unwrap();
+        assert_eq!((last.method, last.url.as_str()), (Method::Put, "http://192.0.2.11/ISAPI/System/factoryReset?mode=full"));
+        assert_eq!(last.login.as_deref(), Some("root"));
+        assert!(dg.sent().is_empty(), "rien en SADP");
+        // Entendue depuis son adresse (sans SADP) : aussi une cible.
+        let mut c = ctx(http.clone());
+        c.seen = vec![ip];
+        assert!(apply(&c, &cam("192.0.2.11", Family::Hikvision), &creds(), &keep_ip()).await.ok);
+    }
+
+    #[tokio::test]
+    async fn hikvision_reset_refuses_an_unconfirmed_target() {
+        let other = HIK_INFO.replace("ac:cc:8e:12:34:56", "c0:56:e3:00:00:01");
+        let http = Arc::new(
+            FakeHttp::new()
+                .on(Method::Get, "/ISAPI/System/deviceInfo", 200, other)
+                .on(Method::Put, "/ISAPI/System/factoryReset", 200, ""),
+        );
+        let (c, _) = sadp_ctx(http.clone(), true);
+        let r = apply(&c, &cam("192.0.2.11", Family::Hikvision), &creds(), &keep_ip()).await;
+        assert_eq!(r.error, Some(ActionError::IdentityMismatch));
+        // Jamais vue au scan : le compte ne part pas.
+        let (c, _) = sadp_ctx(http.clone(), false);
+        let r = apply(&c, &cam("192.0.2.11", Family::Hikvision), &creds(), &keep_ip()).await;
+        assert_eq!(r.error, Some(ActionError::CameraNotSeen));
+        // Hors sous-réseau : pas d'IP temporaire pour ISAPI.
+        let (c, _) = sadp_ctx(http.clone(), true);
+        let r = apply(&c, &off_subnet_hik(), &creds(), &keep_ip()).await;
+        assert_eq!(r.error, Some(ActionError::CameraOffSubnet));
+        assert!(http.requests().iter().all(|r| r.method != Method::Put));
+    }
+
+    #[tokio::test]
+    async fn a_reset_can_target_several_cameras() {
+        let http = Arc::new(axis_ok().on(Method::Get, "/axis-cgi/factorydefault.cgi", 200, "OK"));
+        let cams = [cam("192.0.2.11", Family::Axis), cam("192.0.2.12", Family::Axis)];
+        let out = apply_all(&ctx(http.clone()), &cams, &creds(), &keep_ip()).await;
+        assert!(out.iter().all(|r| r.ok), "{out:?}");
+        assert_eq!(http.requests().iter().filter(|r| r.url.contains("factorydefault")).count(), 2);
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import { get } from 'svelte/store';
 import type { Camera } from './types';
-import { activateCleartext, cleartextPending, pendingAfterConfirm, pendingAfterRun, mergeResults, actionResults, applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
+import { canReset, rescanDelaysAfter, RESET_RESCAN_DELAYS_MS, resetLine, activateCleartext, cleartextPending, pendingAfterConfirm, pendingAfterRun, mergeResults, actionResults, applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
 
 const cam = (family: Camera['family'], ip = '10.0.50.11'): Camera => ({
   ip, mac: null, family, brand: null, model: null, serial: null, firmware: null,
@@ -206,4 +206,34 @@ test('lot : liste vide jamais envoyée, aperçu et application passent par Rust'
   expect(invoke).toHaveBeenLastCalledWith('cmd_batch_preview', { selection: [cam('axis')], others: [], req, iface: 'eth0', accountId: null });
   await batchApply('x', 'acc', 'eth0');
   expect(invoke).toHaveBeenLastCalledWith('cmd_batch_apply', { previewId: 'x', accountId: 'acc', iface: 'eth0' });
+});
+
+test('réinitialisation : Axis et Hikvision, une ou plusieurs ; jamais une autre marque', () => {
+  expect(canReset([cam('axis')])).toBe(true);
+  expect(canReset([cam('axis'), cam('hikvision', '10.0.50.12')])).toBe(true);
+  expect(canReset([cam('axis'), cam('other', '10.0.50.12')])).toBe(false);
+  expect(canReset([])).toBe(false);
+});
+
+test('après une réinitialisation, le rescan attend le redémarrage de la caméra', () => {
+  expect(rescanDelaysAfter('factory_reset')).toEqual(RESET_RESCAN_DELAYS_MS);
+  expect(Math.min(...RESET_RESCAN_DELAYS_MS)).toBeGreaterThanOrEqual(60_000);
+  // Changement d’IP : le rescan habituel, rapide.
+  expect(rescanDelaysAfter('network_static')).toEqual([3000, 15000]);
+  expect(rescanDelaysAfter('batch')).toEqual([3000, 15000]);
+});
+
+test('la confirmation rappelle nom, IP et MAC de chaque caméra', () => {
+  const c = { ...cam('axis'), brand: 'AXIS', model: 'P4705-PLVE', mac: 'AC:CC:8E:12:34:56' };
+  expect(resetLine(c)).toEqual({ name: 'AXIS P4705-PLVE', ip: '10.0.50.11', mac: 'AC:CC:8E:12:34:56' });
+  expect(resetLine(cam('hikvision'))).toEqual({ name: '—', ip: '10.0.50.11', mac: '—' });
+});
+
+test('la réinitialisation part avec son mode', async () => {
+  invoke.mockClear();
+  invoke.mockResolvedValue([]);
+  await applyAction([cam('axis')], 'acc', { kind: 'factory_reset', mode: 'keep_ip' }, 'eth0');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_apply_action', {
+    cameras: [cam('axis')], accountId: 'acc', action: { kind: 'factory_reset', mode: 'keep_ip' }, iface: 'eth0',
+  });
 });

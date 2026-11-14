@@ -11,6 +11,7 @@
     onToggle,
     onOpenWeb,
     onFrame,
+    onReset,
   }: {
     camera: Camera;
     result?: ActionResult;
@@ -18,7 +19,11 @@
     onToggle: () => void;
     onOpenWeb: () => void;
     onFrame: () => void;
+    onReset: () => void;
   } = $props();
+
+  // Menu « … » de la ligne : actions moins courantes, réinitialisation d'abord.
+  let menu = $state(false);
 
   const message = $derived(result ? resultMessage(result) : null);
   const text = $derived(message ? $_(message.key, { values: message.values }) : '');
@@ -48,5 +53,27 @@
   <td class="ra">
     <button class="mini" onclick={onOpenWeb}>{$_('network.openWeb')}</button>
     <button class="mini" onclick={onFrame}>{$_('network.frame')}</button>
+    <span class="more">
+      <button class="mini" aria-haspopup="menu" aria-expanded={menu} aria-label={$_('network.more')} onclick={() => (menu = !menu)}>…</button>
+      {#if menu}
+        <div class="menu" role="menu">
+          <button role="menuitem" disabled={camera.family === 'other'} onclick={() => { menu = false; onReset(); }}>{$_('configure.reset.button')}</button>
+        </div>
+      {/if}
+    </span>
   </td>
 </tr>
+
+<svelte:window onclick={(e) => { if (menu && !(e.target as Element).closest?.('.more')) menu = false; }} />
+
+<style>
+  .more { position: relative; display: inline-block; margin-left: 4px; }
+  .menu {
+    position: absolute; right: 0; top: calc(100% + 4px); z-index: 10; min-width: 160px;
+    background: var(--win); border: 1px solid var(--line); border-radius: 6px; padding: 4px;
+    box-shadow: 0 4px 16px #0003; text-align: left;
+  }
+  .menu button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 5px 8px; border-radius: 4px; color: inherit; font: inherit; cursor: default; }
+  .menu button:hover:not([disabled]) { background: var(--hover); }
+  .menu button[disabled] { opacity: .42; }
+</style>

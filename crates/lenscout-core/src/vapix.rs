@@ -21,6 +21,10 @@
 //!   statut 200.
 //!   Lecture : `param.cgi?action=list&group=Network.BootProto` (authentifiée),
 //!   réponse `root.Network.BootProto=dhcp`.
+//! - Réinitialisation : `GET /axis-cgi/factorydefault.cgi` (garde l'adresse
+//!   IP) et `GET /axis-cgi/hardfactorydefault.cgi` (tout, réseau compris :
+//!   la caméra repasse en DHCP, ou 192.168.0.90 sans serveur DHCP). Rôle
+//!   Administrator ; la caméra répond puis redémarre.
 //! - Time API : `/axis-cgi/time.cgi`, `setTimeZone` avec un nom IANA
 //!   (AXIS OS 9.30+, rôle Operator).
 //! - NTP API : `/axis-cgi/ntp.cgi`, `setNTPClientConfiguration` (AXIS OS
@@ -57,6 +61,14 @@ pub enum NetworkSettings {
         gateway: Option<Ipv4Addr>,
         dns: Vec<Ipv4Addr>,
     },
+}
+
+/// Réinitialisation d'usine : `KeepIp` garde l'adresse réseau, `Full` efface
+/// tout (Axis : `hardfactorydefault.cgi` ; Hikvision : `mode=full`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetMode {
+    KeepIp,
+    Full,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -325,6 +337,18 @@ pub async fn addressing_of_all(
         .filter_map(std::future::ready)
         .collect()
         .await
+}
+
+/// Réinitialisation d'usine, avec le compte. Contrairement au changement
+/// d'IP, une coupure sans réponse n'est pas un succès : on ne sait pas si la
+/// caméra a reçu l'ordre.
+pub async fn factory_default(http: &dyn CameraHttp, base: &str, creds: &Credentials, mode: ResetMode) -> Result<(), VapixError> {
+    let path = match mode {
+        ResetMode::KeepIp => "/axis-cgi/factorydefault.cgi",
+        ResetMode::Full => "/axis-cgi/hardfactorydefault.cgi",
+    };
+    let req = HttpRequest { method: Method::Get, url: url(base, path), body: None, content_type: None };
+    require_text_ok(&http.send(req, Some(creds)).await?)
 }
 
 pub async fn activation_state(http: &dyn CameraHttp, base: &str) -> Activation {
@@ -962,6 +986,46 @@ mod tests {
         // Une caméra qui ne répond pas n'a pas de ligne : « — » à l'écran.
         let down = Always(Err(|| NetError::Timeout));
         assert!(addressing_of_all(&down, vec![(Ipv4Addr::new(192, 0, 2, 11), BASE.into())], &creds("root", "x"), 4).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn factory_default_targets_the_cgi_of_each_mode_with_the_account() {
+        for (mode, path) in [
+            (ResetMode::KeepIp, "/axis-cgi/factorydefault.cgi"),
+            (ResetMode::Full, "/axis-cgi/hardfactorydefault.cgi"),
+        ] {
+            let http = FakeHttp::new().on(Method::Get, path, 200, "OK");
+            factory_default(&http, BASE, &creds("root", "x"), mode).await.unwrap();
+            let r = &http.requests()[0];
+            assert_eq!(r.method, Method::Get);
+            assert_eq!(r.url, format!("http://192.0.2.11{path}"));
+            assert_eq!(r.login.as_deref(), Some("root"));
+            assert!(r.body.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn factory_default_errors_are_never_a_success() {
+        let http = FakeHttp::new().on(Method::Get, "/axis-cgi/factorydefault.cgi", 401, "");
+        assert!(matches!(
+            factory_default(&http, BASE, &creds("root", "x"), ResetMode::KeepIp).await,
+            Err(VapixError::Net(NetError::Status(401)))
+        ));
+        // Le vrai client rend `Auth` sur un 401 Digest refusé.
+        assert!(matches!(
+            factory_default(&Always(Err(|| NetError::Auth)), BASE, &creds("root", "x"), ResetMode::Full).await,
+            Err(VapixError::Net(NetError::Auth))
+        ));
+        // Sans réponse, on ne sait pas si la caméra a reçu l'ordre : erreur.
+        assert!(matches!(
+            factory_default(&Always(Err(|| NetError::Timeout)), BASE, &creds("root", "x"), ResetMode::KeepIp).await,
+            Err(VapixError::Net(NetError::Timeout))
+        ));
+        let http = FakeHttp::new().on(Method::Get, "/axis-cgi/factorydefault.cgi", 200, "# Error: not allowed");
+        assert!(matches!(
+            factory_default(&http, BASE, &creds("root", "x"), ResetMode::KeepIp).await,
+            Err(VapixError::Rejected(_))
+        ));
     }
 
     #[tokio::test]

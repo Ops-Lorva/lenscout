@@ -60,5 +60,16 @@
   "activate_note": "Le mot de passe de ce compte devient celui de chaque caméra.",
   "busy": "En cours",
   "cleartext_confirm": "HTTPS indisponible : envoyer le mot de passe en clair à {ip} ?",
-  "cleartext_send": "Envoyer en clair"
+  "cleartext_send": "Envoyer en clair",
+  "reset": {
+    "button": "Réinitialiser…",
+    "title": "Réinitialisation d'usine",
+    "mode": "Mode",
+    "keep_ip": "Garder l'IP",
+    "full": "Tout effacer",
+    "full_note": "Réseau compris : la caméra repasse en DHCP (Axis sans DHCP : 192.168.0.90)",
+    "apply": "Réinitialiser",
+    "confirm": "Confirmer la réinitialisation",
+    "sure": "{count, plural, one {# caméra sera réinitialisée} other {# caméras seront réinitialisées}}"
+  }
 }

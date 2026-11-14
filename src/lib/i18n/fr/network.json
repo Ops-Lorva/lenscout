@@ -54,5 +54,6 @@
     "dhcp": "DHCP",
     "static": "IP fixe",
     "unknown": "—"
-  }
+  },
+  "more": "Plus d'actions"
 }

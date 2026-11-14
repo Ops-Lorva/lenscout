@@ -15,7 +15,7 @@ use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use lenscout_core::model::{Camera, Family};
 use lenscout_core::temp_ip::SystemElevator;
-use lenscout_core::vapix::{NetworkSettings, TimeSettings};
+use lenscout_core::vapix::{NetworkSettings, ResetMode, TimeSettings};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -52,6 +52,17 @@ pub enum ActionDto {
         ntp_servers: Vec<String>,
         timezone: String,
     },
+    FactoryReset {
+        mode: ResetModeDto,
+    },
+}
+
+/// `keep_ip` : l'adresse réseau reste ; `full` : tout est effacé.
+#[derive(Deserialize, Debug, PartialEq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetModeDto {
+    KeepIp,
+    Full,
 }
 
 /// Erreurs : codes stables (`bad_action`, `iface_unknown`, `iface_no_ipv4`,
@@ -83,6 +94,10 @@ pub(crate) fn to_action(dto: ActionDto) -> Result<Action, String> {
             }
             Action::Time(TimeSettings { ntp_servers, timezone })
         }
+        ActionDto::FactoryReset { mode } => Action::FactoryReset(match mode {
+            ResetModeDto::KeepIp => ResetMode::KeepIp,
+            ResetModeDto::Full => ResetMode::Full,
+        }),
     })
 }
 
@@ -385,6 +400,18 @@ mod tests {
             t,
             Action::Time(TimeSettings { ntp_servers: vec!["pool.ntp.org".into()], timezone: "Europe/Paris".into() })
         );
+    }
+
+    #[test]
+    fn la_reinitialisation_se_convertit_avec_son_mode() {
+        assert_eq!(
+            parse(r#"{"kind":"factory_reset","mode":"keep_ip"}"#).unwrap(),
+            Action::FactoryReset(ResetMode::KeepIp)
+        );
+        assert_eq!(parse(r#"{"kind":"factory_reset","mode":"full"}"#).unwrap(), Action::FactoryReset(ResetMode::Full));
+        // Pas de mode par défaut côté Rust : le front l'envoie toujours.
+        assert_eq!(parse(r#"{"kind":"factory_reset"}"#), Err("bad_action".to_string()));
+        assert_eq!(parse(r#"{"kind":"factory_reset","mode":"tout"}"#), Err("bad_action".to_string()));
     }
 
     /// L'envoi en clair se confirme caméra par caméra : jamais pour un lot.

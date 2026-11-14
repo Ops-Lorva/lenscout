@@ -10,14 +10,13 @@
   import { clearStatusIf, framingTarget, page, status, type Status } from '#lib/stores/nav.ts';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
-  import { actionResults, resultFor } from '#lib/api/configure.ts';
+  import { actionResults, rescanDelaysAfter, resultFor, type ActionDto } from '#lib/api/configure.ts';
   import { accountList, ensureAccounts } from '#lib/stores/accounts.ts';
   import {
     accountChoices, canScan, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice,
   } from '#lib/api/net.ts';
 
   const IFACE_KEY = 'lenscout.iface';
-  const RESCAN_DELAYS_MS = [3000, 15000];
 
   let interfaces = $state<string[]>([]);
   let iface = $state('');
@@ -249,13 +248,20 @@
     }
   });
 
-  // Une caméra dont l'IP vient de changer met un instant à reparaître : on
-  // rescanne après ce délai, sauf si la page a été quittée entre-temps.
-  // Un second passage rattrape un bail DHCP lent.
+  // Une caméra dont l'IP vient de changer met un instant à reparaître, une
+  // caméra réinitialisée redémarre : on rescanne après le délai de l'action,
+  // sauf si la page a été quittée entre-temps.
   let rescanTimers: ReturnType<typeof setTimeout>[] = [];
-  function rescanSoon() {
+  function rescanSoon(kind: ActionDto['kind'] | 'batch') {
     rescanTimers.forEach(clearTimeout);
-    rescanTimers = RESCAN_DELAYS_MS.map((d) => setTimeout(() => void scan(true), d));
+    rescanTimers = rescanDelaysAfter(kind).map((d) => setTimeout(() => void scan(true), d));
+  }
+
+  // Menu « … » d'une ligne : la réinitialisation vise cette caméra seule.
+  let barOpen = $state<'activate' | 'network' | 'batch' | 'time' | 'reset' | null>(null);
+  function resetOne(c: Camera) {
+    selection.set(new Set([cameraKey(c)]));
+    barOpen = 'reset';
   }
 
   onDestroy(() => {
@@ -288,7 +294,7 @@
 
 {#if error}<p class="err">{$_(error)}</p>{/if}
 
-<ActionBar {iface} onDone={rescanSoon} />
+<ActionBar {iface} onDone={rescanSoon} bind:open={barOpen} />
 
 <div class="scroll">
   <table class="fixed">
@@ -314,6 +320,7 @@
           onToggle={() => toggle(c)}
           onOpenWeb={() => openWeb(c)}
           onFrame={() => frame(c)}
+          onReset={() => resetOne(c)}
         />
       {/each}
     </tbody>

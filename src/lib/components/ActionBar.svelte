@@ -1,19 +1,25 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { activateCleartext, applyAction, canActivate, pendingAfterConfirm, pendingAfterRun, dialogAfterSelection, canAct, canChangeIp, canBatchIp, clearResults, mergeResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
+  import { activateCleartext, applyAction, canActivate, pendingAfterConfirm, pendingAfterRun, dialogAfterSelection, canAct, canChangeIp, canBatchIp, canReset, clearResults, mergeResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { cameraKey, cameras, selectedCameras } from '#lib/stores/cameras.ts';
   import BatchIpDialog from './BatchIpDialog.svelte';
   import ActivateDialog from './ActivateDialog.svelte';
   import NetworkDialog from './NetworkDialog.svelte';
+  import ResetDialog from './ResetDialog.svelte';
   import TimeDialog from './TimeDialog.svelte';
 
   // `iface` : l'interface du scan en cours. `onDone` : appelé après une action
-  // qui change l'IP, pour que la page rescanne.
-  let { iface, onDone }: { iface: string; onDone: () => void } = $props();
-
-  let open = $state<'activate' | 'network' | 'batch' | 'time' | null>(null);
+  // qui change l'IP ou réinitialise, pour que la page rescanne (son délai
+  // dépend de l'action). `open` : la page ouvre la réinitialisation depuis
+  // le menu « … » d'une ligne.
+  type Open = 'activate' | 'network' | 'batch' | 'time' | 'reset';
+  let {
+    iface,
+    onDone,
+    open = $bindable(null),
+  }: { iface: string; onDone: (kind: ActionDto['kind'] | 'batch') => void; open?: Open | null } = $props();
   let accountId = $state('');
   let busy = $state(false);
   let error = $state('');
@@ -27,6 +33,7 @@
   const activatable = $derived(canActivate(cams));
   const ipAllowed = $derived(canChangeIp(cams));
   const batchAllowed = $derived(canBatchIp(cams));
+  const resetAllowed = $derived(canReset(cams));
   // Les caméras non cochées (même masquées par la recherche) : leurs adresses sont à protéger.
   const others = $derived($cameras.filter((c) => !cams.some((s) => cameraKey(s) === cameraKey(c))));
   // La feuille IP vise une caméra : son nom et son adresse dans le titre.
@@ -43,7 +50,7 @@
     clearResults();
     setResults(results);
     open = null;
-    onDone();
+    onDone('batch');
   }
 
   function closeDialog() {
@@ -64,7 +71,9 @@
       pending = pendingAfterRun(action, results, targets);
       pendingAccount = accountId;
       if (pending.length === 0) open = null;
-      if (action.kind === 'network_dhcp' || action.kind === 'network_static') onDone();
+      if (action.kind === 'network_dhcp' || action.kind === 'network_static') onDone(action.kind);
+      // Réinitialisée, la caméra redémarre : la page rescanne plus tard.
+      if (action.kind === 'factory_reset' && results.some((r) => r.ok)) onDone(action.kind);
     } catch (e) {
       closeDialog();
       error = `configure.${errorKey(e)}`;
@@ -96,6 +105,7 @@
     <button class="btn" disabled={!ipAllowed} onclick={() => (open = 'network')}>{$_('configure.ip')}</button>
     <button class="btn" disabled={!batchAllowed} onclick={() => (open = 'batch')}>{$_('batch.title')}</button>
     <button class="btn" disabled={!allowed} onclick={() => (open = 'time')}>{$_('configure.time')}</button>
+    <button class="btn" disabled={!resetAllowed} onclick={() => (open = 'reset')}>{$_('configure.reset.button')}</button>
     <span class="count">{$_('configure.cameras', { values: { count: cams.length } })}</span>
     {#if busy}<span class="spin" aria-label={$_('configure.busy')}></span>{/if}
     {#if error}<span class="err inline">{$_(error)}</span>{/if}
@@ -110,6 +120,8 @@
   <BatchIpDialog bind:accountId {iface} {cams} {others} onApplied={batchDone} onClose={() => (open = null)} />
 {:else if open === 'time'}
   <TimeDialog bind:accountId {busy} onSubmit={run} onClose={() => (open = null)} />
+{:else if open === 'reset'}
+  <ResetDialog bind:accountId {cams} {busy} onSubmit={run} onClose={() => (open = null)} />
 {/if}
 
 <style>

@@ -41,7 +41,11 @@ export type ActionDto =
   | { kind: 'activate'; allow_cleartext?: boolean }
   | { kind: 'network_dhcp' }
   | { kind: 'network_static'; ip: string; mask: string; gateway: string | null; dns: string[] }
-  | { kind: 'time'; ntp_servers: string[]; timezone: string };
+  | { kind: 'time'; ntp_servers: string[]; timezone: string }
+  | { kind: 'factory_reset'; mode: ResetMode };
+
+/** `keep_ip` : l'adresse réseau reste ; `full` : tout est effacé (Axis : DHCP ou 192.168.0.90). */
+export type ResetMode = 'keep_ip' | 'full';
 
 /**
  * Marques sur lesquelles une action existe. Hikvision n'y est PAS : l'heure
@@ -81,6 +85,29 @@ export function outsideSubnet(ip: string, ifaceIp: string | null, mask: string |
   if (a === null || b === null || m === null) return false;
   return ((a & m) >>> 0) !== ((b & m) >>> 0);
 }
+
+/**
+ * Réinitialiser : Axis (VAPIX) et Hikvision (ISAPI, avec le compte), une
+ * caméra ou un lot ; jamais une autre marque.
+ */
+export const canReset = (cams: Camera[]): boolean =>
+  cams.length > 0 && cams.every((c) => c.family === 'axis' || c.family === 'hikvision');
+
+/** Ce que la confirmation rappelle de chaque caméra visée. */
+export const resetLine = (c: Camera): { name: string; ip: string; mac: string } => ({
+  name: [c.brand, c.model].filter(Boolean).join(' ') || '—',
+  ip: c.ip,
+  mac: c.mac ?? '—',
+});
+
+/** Rescans après un changement d'IP : la caméra reparaît vite ; un second passage rattrape un bail DHCP lent. */
+export const IP_RESCAN_DELAYS_MS = [3000, 15000];
+/** Après une réinitialisation, la caméra redémarre (une à deux minutes) avant de reparaître. */
+export const RESET_RESCAN_DELAYS_MS = [90_000, 180_000];
+
+/** Délais du rescan qui suit une action. */
+export const rescanDelaysAfter = (kind: ActionDto['kind'] | 'batch'): number[] =>
+  kind === 'factory_reset' ? RESET_RESCAN_DELAYS_MS : IP_RESCAN_DELAYS_MS;
 
 /** Le changement d'IP vise une seule caméra (le lot a son plan d'adresses). */
 export const canChangeIp = (cams: Camera[]): boolean => cams.length === 1 && canAct(cams);
