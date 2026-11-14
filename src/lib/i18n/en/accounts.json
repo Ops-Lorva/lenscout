@@ -37,7 +37,8 @@
   },
   "notice": {
     "quarantined": "Accounts file unreadable, set aside",
-    "unwritable": "Accounts file unreadable, saving unavailable"
+    "unwritable": "Accounts file unreadable, saving unavailable",
+    "migration_incomplete": "Previous settings not fully carried over, retrying at next launch"
   },
   "resecret": "Password to re-enter",
   "import": "Import…",

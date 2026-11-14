@@ -42,6 +42,7 @@ test('le mot de passe est obligatoire en création et pour un compte sans secret
 test('le signalement de démarrage a son libellé, un code inconnu est ignoré', () => {
   expect(noticeKey('quarantined')).toBe('notice.quarantined');
   expect(noticeKey('unwritable')).toBe('notice.unwritable');
+  expect(noticeKey('migration_incomplete')).toBe('notice.migration_incomplete');
   expect(noticeKey(null)).toBeNull();
   expect(noticeKey('autre')).toBeNull();
 });

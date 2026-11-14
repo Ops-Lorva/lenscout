@@ -2,9 +2,9 @@ mod commands;
 mod updater;
 
 use commands::accounts::{
-    StartupNotice, cmd_account_create, cmd_account_password, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
+    StartupNotice, absorb_old_accounts, cmd_account_create, cmd_account_password, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
     cmd_accounts_import_plan, cmd_account_update, cmd_accounts_list,
-    cmd_accounts_startup, startup_code,
+    cmd_accounts_startup, notice_code,
 };
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
 use commands::stream::{StreamState, cmd_identify_camera, cmd_stream_ack, cmd_stream_start, cmd_stream_stop};
@@ -27,10 +27,13 @@ const EXIT_WAIT: Duration = Duration::from_secs(10);
 pub fn run() {
     // Nouvel identifiant : les dossiers de l'ancien sont recopiés AVANT tout
     // chargement (comptes, IP temporaire d'une session tuée) et avant que le
-    // webview ouvre son profil. L'ancien reste en place.
-    for (dir, e) in lenscout_core::migrate::migrate_identifier() {
+    // webview ouvre son profil. L'ancien reste en place. Un échec est
+    // réessayé au prochain lancement et annoncé à l'écran des comptes.
+    let failed = lenscout_core::migrate::migrate_identifier();
+    for (dir, e) in &failed {
         eprintln!("Lenscout : {} non repris : {e}", dir.display());
     }
+    let mut migration_incomplete = !failed.is_empty();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -39,13 +42,16 @@ pub fn run() {
         .manage(FreeIpsState::default())
         .manage(PreviewStore::default())
         .manage(JoinState::default())
-        .setup(|app| {
+        .setup(move |app| {
             // Installeurs laissés par une mise à jour précédente.
             updater::cleanup_old_updates();
             // Un accounts.json illisible est mis de côté, jamais écrasé ni bloquant.
-            let path = app.path().app_config_dir()?.join("accounts.json");
-            let (book, startup) = load_or_quarantine(path, Arc::new(KeyringStore));
-            app.manage(StartupNotice(Mutex::new(startup_code(&startup))));
+            let config_dir = app.path().app_config_dir()?;
+            let (mut book, startup) = load_or_quarantine(config_dir.join("accounts.json"), Arc::new(KeyringStore));
+            // Reprise d'une migration : les comptes de l'ancien carnet, posés à côté.
+            let aside = config_dir.join(lenscout_core::migrate::set_aside_name("accounts.json"));
+            migration_incomplete |= !absorb_old_accounts(&mut book, &aside);
+            app.manage(StartupNotice(Mutex::new(notice_code(&startup, migration_incomplete))));
             app.manage(Mutex::new(book));
             // IP temporaire laissée par une session tuée : retirée avant toute
             // action. Un échec est journalisé et n'empêche pas le démarrage ;

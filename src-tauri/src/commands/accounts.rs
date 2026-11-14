@@ -212,6 +212,30 @@ pub(crate) fn startup_code(startup: &Startup) -> Option<&'static str> {
     }
 }
 
+/// L'avis du démarrage : un problème du carnet d'abord, sinon une
+/// migration de l'ancien identifiant restée incomplète (réessayée au
+/// prochain lancement).
+pub(crate) fn notice_code(startup: &Startup, migration_incomplete: bool) -> Option<&'static str> {
+    startup_code(startup).or(migration_incomplete.then_some("migration_incomplete"))
+}
+
+/// Comptes de l'ancien identifiant posés à côté du carnet par la migration
+/// (les deux carnets existaient) : fusionnés par id, puis le fichier est
+/// renommé `.merged-<horodatage>`. `false` si la fusion a échoué : le
+/// fichier reste, elle sera retentée au prochain lancement.
+pub(crate) fn absorb_old_accounts(book: &mut AccountBook, aside: &Path) -> bool {
+    if !aside.exists() {
+        return true;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut done = aside.as_os_str().to_owned();
+    done.push(format!(".merged-{stamp}"));
+    book.absorb(aside).is_ok() && std::fs::rename(aside, done).is_ok()
+}
+
 pub(crate) fn take_notice(notice: &StartupNotice) -> Option<String> {
     notice.0.lock().ok()?.take().map(str::to_string)
 }
@@ -387,6 +411,10 @@ mod tests {
         (book, dir)
     }
 
+    fn book_at(path: &std::path::Path) -> AccountBook {
+        AccountBook::load(path.to_path_buf(), Arc::new(MemoryStore::default())).unwrap()
+    }
+
     fn no_net() -> AccountNetwork {
         AccountNetwork::default()
     }
@@ -492,6 +520,36 @@ mod tests {
         assert!(!flag("lost"));
         let json = serde_json::to_string(&entries).unwrap();
         assert!(json.contains("\"has_secret\":false"));
+    }
+
+    #[test]
+    fn a_failed_migration_is_announced_after_an_accounts_problem() {
+        use lenscout_core::accounts::Startup;
+        assert_eq!(notice_code(&Startup::Clean, false), None);
+        assert_eq!(notice_code(&Startup::Clean, true), Some("migration_incomplete"));
+        assert_eq!(notice_code(&Startup::Unwritable, true), Some("unwritable"));
+    }
+
+    #[test]
+    fn old_accounts_set_aside_are_merged_once() {
+        let (mut book, dir) = book();
+        let aside = dir.0.join("accounts.json.io.lenscout.app");
+        // Rien de posé à côté : rien à faire.
+        assert!(absorb_old_accounts(&mut book, &aside));
+        let mut old = book_at(&aside);
+        account_create(&mut old, "Gare", "root", Secret::new("x".into()), no_net()).unwrap();
+        assert!(absorb_old_accounts(&mut book, &aside));
+        assert_eq!(book.list().len(), 1);
+        // Le fichier fusionné est renommé (jamais effacé) : pas de seconde fusion.
+        assert!(!aside.exists());
+        let kept = std::fs::read_dir(&dir.0).unwrap().filter_map(|e| e.ok()).any(|e| {
+            e.file_name().to_string_lossy().starts_with("accounts.json.io.lenscout.app.merged-")
+        });
+        assert!(kept);
+        // Illisible : gardé pour le prochain lancement, et signalé.
+        std::fs::write(&aside, b"pas du json").unwrap();
+        assert!(!absorb_old_accounts(&mut book, &aside));
+        assert!(aside.exists());
     }
 
     #[test]

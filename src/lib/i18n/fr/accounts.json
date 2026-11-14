@@ -37,7 +37,8 @@
   },
   "notice": {
     "quarantined": "Fichier des comptes illisible, mis de côté",
-    "unwritable": "Fichier des comptes illisible, enregistrement impossible"
+    "unwritable": "Fichier des comptes illisible, enregistrement impossible",
+    "migration_incomplete": "Anciens réglages pas entièrement repris, nouvel essai au prochain lancement"
   },
   "resecret": "Mot de passe à ressaisir",
   "import": "Importer…",

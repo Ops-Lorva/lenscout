@@ -640,6 +640,36 @@ impl AccountBook {
         Ok(book)
     }
 
+    /// Fusion des comptes d'un autre carnet (celui de l'ancien identifiant,
+    /// posé à côté par la migration) : chaque compte dont l'id manque est
+    /// ajouté, sous un nom libre si le sien est pris (« Nom 2 ») ; un id déjà
+    /// présent garde le compte de ce carnet. Rend le nombre de comptes
+    /// ajoutés. Tout ou rien : un échec d'écriture laisse le carnet intact.
+    pub fn absorb(&mut self, path: &std::path::Path) -> Result<usize, AccountError> {
+        let other = AccountBook::load(path.to_path_buf(), self.store.clone())?;
+        let mut next = self.entries.clone();
+        let mut added = 0;
+        for mut entry in other.entries {
+            if next.iter().any(|e| e.account.id == entry.account.id) {
+                continue;
+            }
+            if position_of(&next, &entry.account.name).is_some() {
+                let base = entry.account.name.clone();
+                entry.account.name = (2..)
+                    .map(|n| format!("{base} {n}"))
+                    .find(|candidate| position_of(&next, candidate).is_none())
+                    .expect("suffixe libre");
+            }
+            next.push(entry);
+            added += 1;
+        }
+        if added > 0 {
+            self.write(&next)?;
+            self.entries = next;
+        }
+        Ok(added)
+    }
+
     /// Vrai si le compte a un mot de passe ; faux : à ressaisir.
     pub fn has_secret(&self, id: &str) -> bool {
         self.entries
@@ -1116,6 +1146,38 @@ mod tests {
         .to_string();
         book.import_apply(&only, &HashMap::new()).unwrap();
         assert_eq!(book.list()[1].net, no_net());
+    }
+
+    #[test]
+    fn accounts_of_the_old_folder_are_merged_by_id() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let mairie = book.create("Mairie", "root", pwd(PWD), no_net()).unwrap();
+        let old = fx.dir.join("accounts.json.io.lenscout.app");
+        let file = serde_json::json!({"version": 2, "accounts": [
+            // Même id : le compte du nouveau carnet gagne.
+            {"id": mairie.id, "name": "Mairie bis", "login": seal::seal(b"autre"), "password": seal::seal(b"x")},
+            {"id": "x2", "name": "Gare", "pc_ip": "10.1.0.250/16",
+             "login": seal::seal(b"admin"), "password": seal::seal(PWD.as_bytes())},
+            // Nom déjà pris par un autre compte : gardé sous un nom libre.
+            {"id": "x3", "name": "mairie", "login": seal::seal(b"root"), "password": seal::seal(PWD.as_bytes())},
+        ]});
+        std::fs::write(&old, file.to_string()).unwrap();
+        assert_eq!(book.absorb(&old).unwrap(), 2);
+        let names: Vec<_> = book.list().into_iter().map(|a| (a.id, a.name, a.login)).collect();
+        assert_eq!(
+            names,
+            [
+                (mairie.id.clone(), "Mairie".to_string(), "root".to_string()),
+                ("x2".into(), "Gare".into(), "admin".into()),
+                ("x3".into(), "mairie 2".into(), "root".into()),
+            ]
+        );
+        assert_eq!(book.password("x2").unwrap().unwrap().expose(), PWD);
+        // Écrit sur disque : relu tel quel.
+        assert_eq!(fx.book().list().len(), 3);
+        // Le fichier fusionné n'est pas touché.
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), file.to_string());
     }
 
     #[test]

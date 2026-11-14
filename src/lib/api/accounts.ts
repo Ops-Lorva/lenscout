@@ -159,5 +159,5 @@ export const passwordRequired = (entry: AccountEntry | null) => entry === null |
 
 /** Clé i18n (sous `accounts.`) du signalement de démarrage. */
 export function noticeKey(code: string | null): string | null {
-  return code === 'quarantined' || code === 'unwritable' ? `notice.${code}` : null;
+  return code === 'quarantined' || code === 'unwritable' || code === 'migration_incomplete' ? `notice.${code}` : null;
 }

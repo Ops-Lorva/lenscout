@@ -37,7 +37,8 @@
   },
   "notice": {
     "quarantined": "Archivo de cuentas ilegible, apartado",
-    "unwritable": "Archivo de cuentas ilegible, no se puede guardar"
+    "unwritable": "Archivo de cuentas ilegible, no se puede guardar",
+    "migration_incomplete": "Ajustes anteriores no recuperados del todo, se reintentará en el próximo inicio"
   },
   "resecret": "Contraseña por volver a introducir",
   "import": "Importar…",
