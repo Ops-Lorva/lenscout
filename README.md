@@ -1,4 +1,4 @@
-# Lenscout
+# LenScout
 
 Desktop app (macOS, Linux, Windows) that discovers the IP cameras on a network,
 activates them, sets their IP / NTP / time zone without their web page, and
@@ -19,7 +19,7 @@ Download the installer for your system from the
 
 The Windows installer is not code-signed, so SmartScreen may warn on first run (More info, Run anyway).
 
-Lenscout checks for a newer release at startup and offers to install it. Every
+LenScout checks for a newer release at startup and offers to install it. Every
 installer ships with a `.sig` minisign signature, which the app verifies before
 running anything it downloaded.
 

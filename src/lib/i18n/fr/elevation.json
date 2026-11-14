@@ -2,5 +2,5 @@
   "refused": "Droits administrateur refusés : {ip} hors du sous-réseau du poste",
   "failed": "IP temporaire impossible à poser sur le poste",
   "left": "IP temporaire {ip} restée sur le poste",
-  "busy": "IP temporaire déjà en cours dans une autre fenêtre de Lenscout"
+  "busy": "IP temporaire déjà en cours dans une autre fenêtre de LenScout"
 }

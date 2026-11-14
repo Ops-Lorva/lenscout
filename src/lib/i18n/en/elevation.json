@@ -2,5 +2,5 @@
   "refused": "Administrator rights denied: {ip} outside the computer's subnet",
   "failed": "Could not add a temporary IP to the computer",
   "left": "Temporary IP {ip} left on the computer",
-  "busy": "Temporary IP already in use by another Lenscout window"
+  "busy": "Temporary IP already in use by another LenScout window"
 }
