@@ -11,15 +11,21 @@
   ];
 </script>
 
+{#snippet entry(item: (typeof items)[number])}
+  <button class="item" class:on={$page === item.id} onclick={() => page.set(item.id)} aria-current={$page === item.id ? 'page' : undefined}>
+    <svg class="ic" viewBox="0 0 16 16" aria-hidden="true">
+      {#each item.paths as d}<path {d} />{/each}
+    </svg>
+    <span>{$_(item.key)}</span>
+  </button>
+{/snippet}
+
+<!-- Réglages en pied de barre, séparé des onglets (comme macOS / VS Code). -->
 <nav class="sidebar">
-  {#each items as item}
-    <button class="item" class:on={$page === item.id} onclick={() => page.set(item.id)} aria-current={$page === item.id ? 'page' : undefined}>
-      <svg class="ic" viewBox="0 0 16 16" aria-hidden="true">
-        {#each item.paths as d}<path {d} />{/each}
-      </svg>
-      <span>{$_(item.key)}</span>
-    </button>
-  {/each}
+  {#each items.filter((i) => i.id !== 'settings') as item}{@render entry(item)}{/each}
+  <div class="foot">
+    {#each items.filter((i) => i.id === 'settings') as item}{@render entry(item)}{/each}
+  </div>
 </nav>
 
 <style>
@@ -28,6 +34,7 @@
     background: var(--side); border-right: 1px solid var(--line);
     padding: 12px 10px; display: flex; flex-direction: column; gap: 2px;
   }
+  .foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
   .item {
     display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 10px;
     border: 0; border-radius: 7px; background: transparent; color: var(--text);
