@@ -175,6 +175,7 @@ pub fn parse_probe_match(xml: &[u8], src: Ipv4Addr, iface: Option<&ScanInterface
         firmware: None,
         activation: Activation::Unknown,
         http_port: port,
+        addressing: None,
     })
 }
 

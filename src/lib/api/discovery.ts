@@ -1,5 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type { Camera } from './types';
+import type { Addressing, Camera } from './types';
 
 /** Miroir de `ScanEvent` (discovery/scanner.rs). */
 export type ScanEvent = { kind: 'upsert'; camera: Camera } | { kind: 'done' };
@@ -15,3 +15,28 @@ export const cancelScan = () => invoke<void>('cmd_scan_cancel');
 
 export const openCameraWeb = (ip: string, port: number) =>
   invoke<void>('cmd_open_camera_web', { ip, port });
+
+/** Miroir de `AddressingOut` (commands/discovery.rs). */
+export interface AddressingRead {
+  ip: string;
+  addressing: Addressing;
+}
+
+/**
+ * Après un scan, avec le compte retenu : l'adressage des Axis, lu par Rust
+ * (`Network.BootProto`, authentifié). Sans compte ou sans Axis, rien ne part.
+ */
+export function readAddressing(list: Camera[], accountId: string): Promise<AddressingRead[]> {
+  const cameras = list.filter((c) => c.family === 'axis');
+  if (!accountId || cameras.length === 0) return Promise.resolve([]);
+  return invoke<AddressingRead[]>('cmd_read_addressing', { cameras, accountId });
+}
+
+/**
+ * Libellé de la colonne Adressage : la valeur lue (SADP, ou Axis avec le
+ * compte), sinon DHCP pour une Axis neuve (réglage d'usine), sinon « — ».
+ */
+export function addressingKey(c: Camera): string {
+  const a = c.addressing ?? (c.family === 'axis' && c.activation === 'new' ? 'dhcp' : null);
+  return `network.addressing.${a ?? 'unknown'}`;
+}

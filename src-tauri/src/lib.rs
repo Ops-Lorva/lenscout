@@ -12,7 +12,7 @@ use commands::update::{cmd_apply_update, cmd_check_update};
 use commands::app::{cmd_app_version, cmd_debug_get, cmd_debug_set, cmd_interface_details, cmd_list_interfaces};
 use commands::free_ips::{FreeIpsState, cmd_free_ips, cmd_free_ips_cancel};
 use commands::join::{JoinState, cmd_join_network, cmd_join_ready, cmd_joined_network, cmd_leave_network};
-use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_scan_start};
+use commands::discovery::{ScanState, cmd_open_camera_web, cmd_read_addressing, cmd_scan_cancel, cmd_scan_start};
 use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
 use lenscout_core::permissions::set_data_dir;
 use lenscout_core::temp_ip::{SystemElevator, cleanup_before_exit, cleanup_leftover};
@@ -80,6 +80,7 @@ pub fn run() {
             cmd_debug_get,
             cmd_debug_set,
             cmd_scan_start,
+            cmd_read_addressing,
             cmd_scan_cancel,
             cmd_open_camera_web,
             cmd_accounts_list,

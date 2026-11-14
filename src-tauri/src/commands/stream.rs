@@ -322,6 +322,7 @@ mod tests {
             activation: Activation::Unknown,
             http_port: 80,
             sources: vec![],
+            addressing: None,
         }
     }
 

@@ -11,7 +11,7 @@ use lenscout_core::discovery::sadp::SadpProbe;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::actions::{SeenState, row_key};
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
-use lenscout_core::model::Activation;
+use lenscout_core::model::{Activation, Addressing, Camera, Family};
 use lenscout_core::presence;
 use lenscout_core::transport::Datagram;
 use tauri::ipc::Channel;
@@ -228,6 +228,52 @@ pub fn cmd_scan_cancel(state: State<'_, ScanState>) {
     }
 }
 
+/// Lectures `Network.BootProto` en même temps, au plus.
+const ADDRESSING_PARALLEL: usize = 8;
+
+/// Les Axis dont on peut lire l'adressage avec le compte : activées selon le
+/// dernier scan (état tenu par Rust, pas celui du front), entendues depuis
+/// leur adresse, et seules sur cette adresse (sinon on ne saurait pas qui
+/// répond). Le compte ne part vers rien d'autre.
+fn addressing_targets(cameras: &[Camera], seen: &SeenSnapshot) -> Vec<(Ipv4Addr, String)> {
+    let shared = |ip: Ipv4Addr| seen.states.iter().filter(|s| s.ip == ip).count() > 1;
+    cameras
+        .iter()
+        .filter(|c| c.family == Family::Axis && seen.ips.contains(&c.ip) && !shared(c.ip))
+        .filter(|c| {
+            let key = row_key(c);
+            seen.states.iter().any(|s| s.key == key && s.ip == c.ip && s.activation == Activation::Activated)
+        })
+        .map(|c| (c.ip, c.base_url()))
+        .collect()
+}
+
+/// Une adressage lu (`dhcp` | `static`), par adresse.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub struct AddressingOut {
+    pub ip: Ipv4Addr,
+    pub addressing: Addressing,
+}
+
+/// Erreurs : `not_found`, `secret_missing`, `keyring` (compte).
+///
+/// Après un scan : lit `Network.BootProto` des Axis activées avec le compte
+/// retenu, en parallèle borné. Le scan n'attend pas ces lectures ; une
+/// caméra qui ne répond pas, ou refuse le compte, n'a pas de ligne (« — »).
+#[tauri::command]
+pub async fn cmd_read_addressing(
+    cameras: Vec<Camera>,
+    account_id: String,
+    scan: State<'_, ScanState>,
+    accounts: State<'_, Mutex<lenscout_core::accounts::AccountBook>>,
+) -> Result<Vec<AddressingOut>, String> {
+    let creds = super::accounts::credentials_for(&accounts, &account_id)?;
+    let targets = addressing_targets(&cameras, &scan.seen());
+    let http = ReqwestCameraHttp::new(HTTP_TIMEOUT);
+    let read = lenscout_core::vapix::addressing_of_all(&http, targets, &creds, ADDRESSING_PARALLEL).await;
+    Ok(read.into_iter().map(|(ip, addressing)| AddressingOut { ip, addressing }).collect())
+}
+
 /// L'URL est reconstruite ici : le front ne fournit qu'une IPv4 et un port,
 /// jamais un schéma ni un hôte qui ouvrirait autre chose qu'une caméra.
 fn camera_web_url(ip: &str, port: u16) -> Result<String, String> {
@@ -251,7 +297,6 @@ pub fn cmd_open_camera_web(app: AppHandle, ip: String, port: u16) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lenscout_core::model::{Camera, Family};
 
     fn eth0() -> ScanInterface {
         ScanInterface { name: "eth0".into(), ip: "10.0.50.2".parse().unwrap(), mask: "255.255.255.0".parse().unwrap() }
@@ -299,6 +344,7 @@ mod tests {
             activation: Activation::New,
             http_port: 80,
             sources: vec![],
+            addressing: None,
         };
         let g = state.begin(&eth0());
         state.record(g, &ScanEvent::Done);
@@ -333,6 +379,7 @@ mod tests {
             activation,
             http_port: 80,
             sources: vec![],
+            addressing: None,
         };
         let st = |key: &str, ip: &str, activation| SeenState { key: key.into(), ip: ip.parse().unwrap(), activation };
         let g = state.begin(&eth0());
@@ -468,6 +515,7 @@ mod tests {
             activation: Activation::New,
             http_port: 80,
             sources: vec![],
+            addressing: None,
         };
         let creds = Credentials { login: "root".into(), password: Secret::new("x".into()) };
         let time = Action::Time(lenscout_core::vapix::TimeSettings { ntp_servers: vec![], timezone: "UTC".into() });
@@ -491,5 +539,48 @@ mod tests {
         }
         assert_eq!(camera_web_url("nope", 80).unwrap_err(), "bad_ip");
         assert_eq!(camera_web_url("10.0.50.7", 0).unwrap_err(), "bad_port");
+    }
+
+    fn axis(ip: &str, mac: &str, activation: Activation) -> Camera {
+        Camera {
+            ip: ip.parse().unwrap(),
+            mac: Some(mac.into()),
+            family: Family::Axis,
+            brand: None,
+            model: None,
+            serial: None,
+            firmware: None,
+            activation,
+            http_port: 80,
+            sources: vec![],
+            addressing: None,
+        }
+    }
+
+    /// Le compte ne part que vers une Axis activée que le dernier scan a
+    /// entendue à cette adresse, seule sur son adresse ; l'état vient de Rust.
+    #[test]
+    fn la_lecture_dhcp_ne_vise_que_les_axis_activees_entendues() {
+        let state = ScanState::default();
+        let g = state.begin(&eth0());
+        let a = axis("10.0.50.11", "AC:CC:8E:00:00:11", Activation::Activated);
+        let neuve = axis("10.0.50.12", "AC:CC:8E:00:00:12", Activation::New);
+        let muette = axis("10.0.50.13", "AC:CC:8E:00:00:13", Activation::Activated);
+        let partage1 = axis("10.0.50.14", "AC:CC:8E:00:00:14", Activation::Activated);
+        let partage2 = axis("10.0.50.14", "AC:CC:8E:00:00:24", Activation::Activated);
+        let mut hik = axis("10.0.50.15", "C0:56:E3:00:00:15", Activation::Activated);
+        hik.family = Family::Hikvision;
+        for c in [&a, &neuve, &muette, &partage1, &partage2, &hik] {
+            state.record(g, &ScanEvent::Upsert { camera: c.clone() });
+        }
+        for ip in ["10.0.50.11", "10.0.50.12", "10.0.50.14", "10.0.50.15"] {
+            state.record(g, &ScanEvent::Heard { ip: ip.parse().unwrap() });
+        }
+        // Le front dit « activée » pour la neuve : Rust ne le croit pas.
+        let mut menteuse = neuve.clone();
+        menteuse.activation = Activation::Activated;
+        let all = [a.clone(), menteuse, muette, partage1, partage2, hik];
+        let got = addressing_targets(&all, &state.seen());
+        assert_eq!(got, vec![("10.0.50.11".parse().unwrap(), "http://10.0.50.11".to_string())]);
     }
 }

@@ -528,6 +528,7 @@ impl Scan {
                 firmware: None,
                 activation: Activation::Unknown,
                 http_port: None,
+                addressing: None,
             };
             match known {
                 Some(i) if sighting.family.is_none() => {

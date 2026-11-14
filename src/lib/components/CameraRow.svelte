@@ -2,6 +2,7 @@
   import { _ } from 'svelte-i18n';
   import { resultMessage, type ActionResult } from '#lib/api/configure.ts';
   import type { Camera } from '#lib/api/types.ts';
+  import { addressingKey } from '#lib/api/discovery.ts';
 
   let {
     camera,
@@ -22,6 +23,7 @@
   const message = $derived(result ? resultMessage(result) : null);
   const text = $derived(message ? $_(message.key, { values: message.values }) : '');
   const label = $derived([camera.brand, camera.model].filter(Boolean).join(' ') || '—');
+  const addressing = $derived(addressingKey(camera));
 </script>
 
 <tr class:sel={selected}>
@@ -33,6 +35,7 @@
   <td class="mac" class:dim-t={!camera.mac}>{camera.mac ?? '—'}</td>
   <td class="mac ser" class:dim-t={!camera.serial} title={camera.serial ?? ''}>{camera.serial ?? '—'}</td>
   <td class:dim-t={!camera.firmware}>{camera.firmware ?? '—'}</td>
+  <td class:dim-t={addressing.endsWith('.unknown')}>{$_(addressing)}</td>
   <!-- Le résultat de la dernière action se lit sous l'état, en texte. -->
   <td class="st {camera.activation}" class:dim-t={camera.activation === 'unknown'}>
     {$_(`network.state.${camera.activation}`)}

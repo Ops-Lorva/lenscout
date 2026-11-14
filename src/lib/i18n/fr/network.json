@@ -9,7 +9,8 @@
     "mac": "MAC",
     "serial": "N° de série",
     "firmware": "Firmware",
-    "state": "État"
+    "state": "État",
+    "addressing": "DHCP / IP fixe"
   },
   "state": {
     "new": "Neuve",
@@ -48,5 +49,10 @@
   "account": "Réseau du compte",
   "dhcp": "DHCP",
   "deletedAccount": "Compte supprimé",
-  "posing": "IP en cours de pose…"
+  "posing": "IP en cours de pose…",
+  "addressing": {
+    "dhcp": "DHCP",
+    "static": "IP fixe",
+    "unknown": "—"
+  }
 }

@@ -19,6 +19,8 @@
 //!   `Network.DNSServer1`, `Network.DNSServer2`. `param.cgi?action=update`
 //!   répond `OK`, ou `# Error: Error setting '<nom>' to '<valeur>'!` avec un
 //!   statut 200.
+//!   Lecture : `param.cgi?action=list&group=Network.BootProto` (authentifiée),
+//!   réponse `root.Network.BootProto=dhcp`.
 //! - Time API : `/axis-cgi/time.cgi`, `setTimeZone` avec un nom IANA
 //!   (AXIS OS 9.30+, rôle Operator).
 //! - NTP API : `/axis-cgi/ntp.cgi`, `setNTPClientConfiguration` (AXIS OS
@@ -32,7 +34,7 @@ use std::net::Ipv4Addr;
 
 use serde_json::{Value, json};
 
-use crate::model::Activation;
+use crate::model::{Activation, Addressing};
 use crate::transport::{CameraHttp, Credentials, HttpRequest, HttpResponse, Method, NetError};
 
 const FORM: &str = "application/x-www-form-urlencoded";
@@ -274,6 +276,55 @@ pub async fn serial_from_params(
         .map(|(_, v)| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .ok_or_else(|| VapixError::Parse("SerialNumber absent".into()))
+}
+
+/// Mode d'adressage par `Network.BootProto` (`dhcp` | `none`), avec le compte :
+/// ce groupe n'est pas lisible anonymement. Toute autre réponse est une
+/// erreur, jamais une supposition.
+pub async fn boot_proto(http: &dyn CameraHttp, base: &str, creds: &Credentials) -> Result<Addressing, VapixError> {
+    let req = HttpRequest {
+        method: Method::Get,
+        url: url(base, "/axis-cgi/param.cgi?action=list&group=Network.BootProto"),
+        body: None,
+        content_type: None,
+    };
+    let resp = http.send(req, Some(creds)).await?;
+    require_text_ok(&resp)?;
+    let body = String::from_utf8_lossy(&resp.body);
+    let value = body
+        .lines()
+        .filter_map(|l| l.trim().split_once('='))
+        .find(|(k, _)| k.ends_with("Network.BootProto"))
+        .map(|(_, v)| v.trim().to_ascii_lowercase());
+    match value.as_deref() {
+        Some("dhcp") => Ok(Addressing::Dhcp),
+        Some("none") => Ok(Addressing::Static),
+        _ => Err(VapixError::Parse("Network.BootProto illisible".into())),
+    }
+}
+
+/// `boot_proto` pour plusieurs caméras (`(adresse, base)`), au plus
+/// `parallel` à la fois. Seules les lectures réussies reviennent : une caméra
+/// muette, un compte refusé ou une réponse illisible laissent « inconnu ».
+pub async fn addressing_of_all(
+    http: &dyn CameraHttp,
+    targets: Vec<(Ipv4Addr, String)>,
+    creds: &Credentials,
+    parallel: usize,
+) -> Vec<(Ipv4Addr, Addressing)> {
+    use futures_util::StreamExt;
+    futures_util::stream::iter(targets)
+        .map(|(ip, base)| async move {
+            let r = boot_proto(http, &base, creds).await;
+            if let Err(e) = &r {
+                debug(&format!("BootProto {ip} : {e}"));
+            }
+            r.ok().map(|a| (ip, a))
+        })
+        .buffer_unordered(parallel.max(1))
+        .filter_map(std::future::ready)
+        .collect()
+        .await
 }
 
 pub async fn activation_state(http: &dyn CameraHttp, base: &str) -> Activation {
@@ -871,6 +922,46 @@ mod tests {
             body_of(&http.requests()[0]),
             "action=update&Network.BootProto=dhcp"
         );
+    }
+
+    #[tokio::test]
+    async fn boot_proto_is_read_with_the_account() {
+        for (body, want) in [
+            ("root.Network.BootProto=dhcp\n", Addressing::Dhcp),
+            ("root.Network.BootProto=none\r\n", Addressing::Static),
+        ] {
+            let http = FakeHttp::new().on(Method::Get, "/axis-cgi/param.cgi", 200, body);
+            assert_eq!(boot_proto(&http, BASE, &creds("root", "x")).await.unwrap(), want);
+            let r = &http.requests()[0];
+            assert_eq!(r.url, "http://192.0.2.11/axis-cgi/param.cgi?action=list&group=Network.BootProto");
+            assert_eq!(r.login.as_deref(), Some("root"));
+        }
+    }
+
+    #[tokio::test]
+    async fn boot_proto_never_guesses() {
+        for body in ["", "root.Network.BootProto=autoip\n", "# Error: Error -1 getting param in group 'Network.BootProto'\n"] {
+            let http = FakeHttp::new().on(Method::Get, "/axis-cgi/param.cgi", 200, body);
+            assert!(boot_proto(&http, BASE, &creds("root", "x")).await.is_err(), "{body}");
+        }
+        let http = FakeHttp::new().on(Method::Get, "/axis-cgi/param.cgi", 401, "");
+        assert!(matches!(
+            boot_proto(&http, BASE, &creds("root", "x")).await,
+            Err(VapixError::Net(NetError::Status(401)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn addressing_of_many_cameras_keeps_only_what_was_read() {
+        let http = FakeHttp::new().on(Method::Get, "/axis-cgi/param.cgi", 200, "root.Network.BootProto=dhcp\n");
+        let targets: Vec<(Ipv4Addr, String)> =
+            (11..=30).map(|n| (Ipv4Addr::new(192, 0, 2, n), format!("http://192.0.2.{n}"))).collect();
+        let got = addressing_of_all(&http, targets, &creds("root", "x"), 4).await;
+        assert_eq!(got.len(), 20);
+        assert!(got.iter().all(|(_, a)| *a == Addressing::Dhcp));
+        // Une caméra qui ne répond pas n'a pas de ligne : « — » à l'écran.
+        let down = Always(Err(|| NetError::Timeout));
+        assert!(addressing_of_all(&down, vec![(Ipv4Addr::new(192, 0, 2, 11), BASE.into())], &creds("root", "x"), 4).await.is_empty());
     }
 
     #[tokio::test]

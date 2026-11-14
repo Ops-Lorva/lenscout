@@ -3,10 +3,10 @@
   import { get } from 'svelte/store';
   import { _ } from 'svelte-i18n';
   import { interfaceDetails, listInterfaces } from '#lib/api/core.ts';
-  import { cancelScan, openCameraWeb, startScan } from '#lib/api/discovery.ts';
+  import { cancelScan, openCameraWeb, readAddressing, startScan } from '#lib/api/discovery.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
-  import { cameraKey, cameras, clear, clearCameras, query, selection, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
+  import { cameraKey, cameras, clear, clearCameras, query, selection, setAddressing, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
   import { clearStatusIf, framingTarget, page, status, type Status } from '#lib/stores/nav.ts';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
@@ -77,6 +77,14 @@
         if (mine !== run) return;
         if (e.kind === 'upsert') upsert(e.camera);
       });
+      // Après la découverte, sans la ralentir : l'adressage des Axis avec le
+      // compte du réseau retenu. Un échec laisse « — ».
+      if (mine === run && account) {
+        const forAccount = account;
+        void readAddressing(get(cameras), forAccount)
+          .then((r) => { if (mine === run && account === forAccount) setAddressing(r); })
+          .catch(() => {});
+      }
     } catch (e) {
       if (mine === run) error = `network.${errorKey(e)}`;
     } finally {
@@ -292,6 +300,7 @@
         <th style="width:136px">{$_('network.col.mac')}</th>
         <th style="width:100px">{$_('network.col.serial')}</th>
         <th style="width:84px">{$_('network.col.firmware')}</th>
+        <th style="width:100px">{$_('network.col.addressing')}</th>
         <th style="width:112px">{$_('network.col.state')}</th>
         <th style="width:200px"></th>
       </tr>

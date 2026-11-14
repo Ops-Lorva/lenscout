@@ -22,6 +22,16 @@ pub enum Activation {
     Unknown,
 }
 
+/// Adressage IPv4 de la caméra : `Static` = adresse fixe. « Inconnu » est
+/// `None` (le protocole ne le dit pas, ou la lecture authentifiée n'a pas eu
+/// lieu) : on ne devine jamais.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Addressing {
+    Dhcp,
+    Static,
+}
+
 /// Protocole qui a vu la caméra (`Oui` = simple préfixe MAC vu dans l'ARP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +55,8 @@ pub struct Sighting {
     pub firmware: Option<String>,
     pub activation: Activation,
     pub http_port: Option<u16>,
+    #[serde(default)]
+    pub addressing: Option<Addressing>,
 }
 
 /// Une caméra, fusion de toutes ses observations.
@@ -60,6 +72,9 @@ pub struct Camera {
     pub activation: Activation,
     pub http_port: u16,
     pub sources: Vec<Source>,
+    /// Absent des caméras renvoyées par un ancien front : inconnu.
+    #[serde(default)]
+    pub addressing: Option<Addressing>,
 }
 
 impl Camera {
@@ -75,6 +90,7 @@ impl Camera {
             activation: s.activation,
             http_port: s.http_port.unwrap_or(80),
             sources: vec![s.source],
+            addressing: s.addressing,
         }
     }
 
@@ -92,6 +108,7 @@ impl Camera {
         fill(&mut self.model, &s.model);
         fill(&mut self.serial, &s.serial);
         fill(&mut self.firmware, &s.firmware);
+        fill(&mut self.addressing, &s.addressing);
         // La première marque connue reste : une autre marque sur la même MAC
         // ne fait pas passer une Axis en Hikvision (ni l'inverse).
         if let Some(f) = s.family
@@ -162,6 +179,7 @@ mod tests {
             firmware: None,
             activation: Activation::Unknown,
             http_port: None,
+            addressing: None,
         }
     }
 
@@ -241,6 +259,34 @@ mod tests {
         let mut cam = Camera::from_sighting(&h);
         cam.merge(&a);
         assert_eq!(cam.family, Family::Hikvision);
+    }
+
+    #[test]
+    fn merge_addressing_known_is_only_replaced_by_some() {
+        let mut a = sighting(Source::Sadp);
+        a.addressing = Some(Addressing::Static);
+        let mut cam = Camera::from_sighting(&a);
+        assert_eq!(cam.addressing, Some(Addressing::Static));
+        // Un protocole qui ne sait pas (mDNS, WSD) ne l'efface pas.
+        cam.merge(&sighting(Source::Mdns));
+        assert_eq!(cam.addressing, Some(Addressing::Static));
+        let mut b = sighting(Source::Sadp);
+        b.addressing = Some(Addressing::Dhcp);
+        cam.merge(&b);
+        assert_eq!(cam.addressing, Some(Addressing::Dhcp));
+    }
+
+    #[test]
+    fn addressing_serializes_lowercase_and_is_optional_from_the_front() {
+        assert_eq!(serde_json::to_value(Addressing::Dhcp).unwrap(), "dhcp");
+        assert_eq!(serde_json::to_value(Addressing::Static).unwrap(), "static");
+        // Le front renvoie des caméras sans le champ (anciennes listes) : il reste inconnu.
+        let cam: Camera = serde_json::from_value(serde_json::json!({
+            "ip": "10.0.50.11", "mac": null, "family": "axis", "brand": null, "model": null,
+            "serial": null, "firmware": null, "activation": "new", "http_port": 80, "sources": [],
+        }))
+        .unwrap();
+        assert_eq!(cam.addressing, None);
     }
 
     #[test]

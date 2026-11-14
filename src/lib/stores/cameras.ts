@@ -52,6 +52,19 @@ export function upsert(c: Camera): void {
   });
 }
 
+/** Adressage lu après le scan, posé sur la caméra de cette adresse ; les autres ne bougent pas. */
+export function setAddressing(read: { ip: string; addressing: Camera['addressing'] }[]): void {
+  if (read.length === 0) return;
+  byKey.update((m) => {
+    const next = new Map(m);
+    for (const [k, c] of next) {
+      const r = read.find((x) => x.ip === c.ip);
+      if (r) next.set(k, { ...c, addressing: r.addressing });
+    }
+    return next;
+  });
+}
+
 export function clear(): void {
   byKey.set(new Map());
   selection.set(new Set());

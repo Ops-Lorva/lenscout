@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
 import type { Camera } from '#lib/api/types.ts';
-import { cameras, clear, clearCameras, query, selectedCameras, selection, shouldAutoScan, upsert } from './cameras';
+import { cameras, clear, clearCameras, query, selectedCameras, selection, setAddressing, shouldAutoScan, upsert } from './cameras';
 
 const cam = (over: Partial<Camera>): Camera => ({
   ip: '10.0.50.5',
@@ -113,4 +113,15 @@ test('une caméra qui ne reparaît pas n’est plus dans la sélection effective
   selection.set(new Set(['AA:BB:CC:00:00:01']));
   clearCameras();
   expect(get(selectedCameras)).toEqual([]);
+});
+
+test('l’adressage lu après le scan se pose sur la caméra de cette adresse, sans rien écraser d’autre', () => {
+  upsert(cam({ ip: '10.0.50.11', mac: 'AA:BB:CC:00:00:0B', firmware: '11.2' }));
+  upsert(cam({ ip: '10.0.50.12', mac: 'AA:BB:CC:00:00:0C', addressing: 'static' }));
+  setAddressing([{ ip: '10.0.50.11', addressing: 'dhcp' }, { ip: '10.0.50.99', addressing: 'static' }]);
+  const list = get(cameras);
+  expect(list).toHaveLength(2);
+  expect(list[0]).toMatchObject({ ip: '10.0.50.11', addressing: 'dhcp', firmware: '11.2' });
+  // Pas de lecture pour .12 : ce qu’on savait reste.
+  expect(list[1].addressing).toBe('static');
 });

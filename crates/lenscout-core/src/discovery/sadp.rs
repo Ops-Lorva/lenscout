@@ -32,7 +32,7 @@ use uuid::Uuid;
 use crate::actions::ActionError;
 use crate::discovery::arp::ScanInterface;
 use crate::discovery::scanner::Probe;
-use crate::model::{Activation, Family, Sighting, Source, normalize_mac};
+use crate::model::{Activation, Addressing, Family, Sighting, Source, normalize_mac};
 use crate::secret::Secret;
 use crate::transport::{Datagram, NetError};
 use crate::vapix::NetworkSettings;
@@ -160,6 +160,12 @@ pub fn parse_inquiry_response(xml: &[u8], src: Ipv4Addr) -> Option<Sighting> {
         Some("false") => Activation::New,
         _ => Activation::Unknown,
     };
+    // `<DHCP>true|false</DHCP>` : le mode d'adressage de l'appareil.
+    let addressing = match f.get("DHCP").map(str::to_ascii_lowercase).as_deref() {
+        Some("true") => Some(Addressing::Dhcp),
+        Some("false") => Some(Addressing::Static),
+        _ => None,
+    };
     Some(Sighting {
         source: Source::Sadp,
         ip,
@@ -171,6 +177,7 @@ pub fn parse_inquiry_response(xml: &[u8], src: Ipv4Addr) -> Option<Sighting> {
         firmware: text("SoftwareVersion"),
         activation,
         http_port: f.get("HttpPort").and_then(|s| s.parse().ok()).filter(|p| *p != 0),
+        addressing,
     })
 }
 
@@ -328,6 +335,18 @@ mod tests {
         assert_eq!(s.family, Some(Family::Hikvision));
         assert_eq!(s.brand.as_deref(), Some("Hikvision"));
         assert_eq!(s.http_port, Some(80));
+    }
+
+    #[test]
+    fn reads_dhcp_or_fixed_addressing() {
+        assert_eq!(parse_inquiry_response(ACTIVATED, src()).unwrap().addressing, Some(Addressing::Static));
+        let dhcp = String::from_utf8(ACTIVATED.to_vec()).unwrap().replace("<DHCP>false</DHCP>", "<DHCP>true</DHCP>");
+        assert_eq!(parse_inquiry_response(dhcp.as_bytes(), src()).unwrap().addressing, Some(Addressing::Dhcp));
+        // Absent ou illisible : on ne sait pas.
+        for other in ["", "<DHCP>peut-être</DHCP>"] {
+            let xml = String::from_utf8(ACTIVATED.to_vec()).unwrap().replace("<DHCP>false</DHCP>", other);
+            assert_eq!(parse_inquiry_response(xml.as_bytes(), src()).unwrap().addressing, None, "{other}");
+        }
     }
 
     #[test]

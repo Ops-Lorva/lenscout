@@ -3,6 +3,8 @@
 export type Family = 'axis' | 'hikvision' | 'other';
 export type Activation = 'new' | 'activated' | 'unknown';
 export type Source = 'mdns' | 'wsd' | 'sadp' | 'oui';
+/** `null` : inconnu (le protocole ne le dit pas, ou pas de lecture avec un compte). */
+export type Addressing = 'dhcp' | 'static';
 
 export interface Camera {
   ip: string;
@@ -15,6 +17,7 @@ export interface Camera {
   activation: Activation;
   http_port: number;
   sources: Source[];
+  addressing?: Addressing | null;
 }
 
 export interface InterfaceDetails {

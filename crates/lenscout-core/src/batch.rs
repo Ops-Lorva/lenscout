@@ -195,6 +195,7 @@ mod tests {
             activation: Activation::Activated,
             http_port: 80,
             sources: vec![Source::Mdns],
+            addressing: None,
         }
     }
 
