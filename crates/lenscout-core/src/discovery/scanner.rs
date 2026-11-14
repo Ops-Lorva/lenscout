@@ -157,7 +157,8 @@ impl Captures {
         Captures { dir, max_files, max_bytes, kept, bytes, next }
     }
 
-    /// Retire les plus anciennes jusqu'à laisser la place à `len` octets.
+    /// Retire les plus anciennes jusqu'à laisser la place à une capture de
+    /// `len` octets, déjà écrite mais pas encore comptée.
     fn make_room(&mut self, len: u64) {
         while !self.kept.is_empty() && (self.kept.len() >= self.max_files || self.bytes + len > self.max_bytes) {
             let Some((path, size)) = self.kept.pop_front() else { break };
@@ -176,7 +177,6 @@ impl Captures {
         if std::fs::create_dir_all(&self.dir).is_err() {
             return;
         }
-        self.make_room(len);
         let next = self.next.entry((source_name(source), ip)).or_insert(0);
         // Un fichier posé entre-temps par un autre scan : quelques numéros de plus, pas une recherche.
         for _ in 0..16 {
@@ -184,7 +184,12 @@ impl Captures {
             *next += 1;
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut f) => {
-                    let _ = f.write_all(packet);
+                    // Écrite d'abord, la place ensuite : un échec ne vide rien.
+                    if f.write_all(packet).is_err() {
+                        let _ = std::fs::remove_file(&path);
+                        return;
+                    }
+                    self.make_room(len);
                     self.kept.push_back((path, len));
                     self.bytes += len;
                     return;
@@ -997,6 +1002,25 @@ mod tests {
         }
         c.write(Source::Wsd, "192.0.2.22".parse().unwrap(), b"0123456789abc");
         assert_eq!(files_in(&dir.join("captures")), ["wsd-192.0.2.21-3.bin", "wsd-192.0.2.21-4.bin"]);
+    }
+
+    /// La nouvelle capture s'écrit d'abord, la place se fait ensuite : si elle
+    /// ne peut pas s'écrire (ici, tous ses numéros déjà pris par un autre
+    /// scan), aucune ancienne capture ne part.
+    #[test]
+    fn a_capture_that_cannot_be_written_evicts_nothing() {
+        let dir = crate::testing::TmpDir::new("lenscout-capture");
+        let mut c = Captures::open(dir.join("captures"), 3, 1 << 20);
+        for _ in 0..3 {
+            c.write(Source::Mdns, "192.0.2.21".parse().unwrap(), b"abc");
+        }
+        for n in 3..19 {
+            std::fs::write(dir.join("captures").join(format!("mdns-192.0.2.21-{n}.bin")), b"x").unwrap();
+        }
+        c.write(Source::Mdns, "192.0.2.21".parse().unwrap(), b"abc");
+        for n in 0..19 {
+            assert!(dir.join("captures").join(format!("mdns-192.0.2.21-{n}.bin")).exists(), "{n}");
+        }
     }
 
     /// Un compteur par (source, IP), qui reprend après les fichiers d'un scan
