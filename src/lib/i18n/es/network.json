@@ -29,7 +29,17 @@
     "open_failed": "No se puede abrir",
     "internal": "Error interno",
     "unknown": "Error",
-    "local_network_denied": "Acceso a la red local denegado"
+    "local_network_denied": "Acceso a la red local denegado",
+    "not_found": "Cuenta no encontrada",
+    "account_no_pc_ip": "Esta cuenta no tiene IP del PC",
+    "already_in_network": "La interfaz ya está en esta red",
+    "pc_ip_in_use": "La IP del PC ya está en uso en la red",
+    "elevation_refused": "Permisos de administrador denegados",
+    "temp_ip_busy": "IP temporal ya en uso por otra ventana de LenScout",
+    "temp_ip_failed": "No se pudo añadir la IP de la cuenta al equipo",
+    "temp_ip_left": "La IP de la cuenta sigue en el equipo; se quitará al cerrar"
   },
-  "scanning": "Buscando en {iface}, {count} cámara(s)"
+  "scanning": "Buscando en {iface}, {count} cámara(s)",
+  "account": "Red de la cuenta",
+  "dhcp": "DHCP"
 }

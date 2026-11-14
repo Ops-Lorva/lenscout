@@ -29,7 +29,17 @@
     "open_failed": "Cannot open",
     "internal": "Internal error",
     "unknown": "Error",
-    "local_network_denied": "Local network access denied"
+    "local_network_denied": "Local network access denied",
+    "not_found": "Account not found",
+    "account_no_pc_ip": "This account has no PC IP",
+    "already_in_network": "The interface is already on this network",
+    "pc_ip_in_use": "The PC IP is already used on the network",
+    "elevation_refused": "Administrator rights denied",
+    "temp_ip_busy": "Temporary IP already in use by another LenScout window",
+    "temp_ip_failed": "Could not add the account IP to this computer",
+    "temp_ip_left": "The account IP is still on this computer; it will be removed on exit"
   },
-  "scanning": "Searching on {iface}, {count} camera(s)"
+  "scanning": "Searching on {iface}, {count} camera(s)",
+  "account": "Account network",
+  "dhcp": "DHCP"
 }

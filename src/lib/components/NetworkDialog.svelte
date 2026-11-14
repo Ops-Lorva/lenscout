@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import type { Account } from '$lib/api/accounts';
+  import { activeAddress, applyPrefill, INITIAL_PREFILL, joined } from '$lib/api/net';
   import { _ } from 'svelte-i18n';
   import { interfaceDetails } from '$lib/api/core';
   import type { ActionDto } from '$lib/api/configure';
@@ -19,22 +21,35 @@
 
   let dhcp = $state(false);
   let ip = $state('');
-  let mask = $state('255.255.255.0');
+  let mask = $state(INITIAL_PREFILL.mask);
   let gateway = $state('');
   let dns = $state('');
 
   // Avertissement seulement : le sous-réseau du poste vient de l'interface du scan.
-  let ifaceIp = $state<string | null>(null);
-  let ifaceMask = $state<string | null>(null);
-  const off = $derived(!dhcp && outsideSubnet(ip, ifaceIp, ifaceMask));
+  // Adresse du poste : celle posée pour un compte sur cette interface, sinon celle de l'interface.
+  let details = $state<{ ip: string | null; subnet: string | null } | null>(null);
+  const addr = $derived(activeAddress(iface, details, $joined));
+  const ifaceIp = $derived(addr.ip);
+  const ifaceMask = $derived(addr.mask);
 
   onMount(async () => {
     try {
-      const d = await interfaceDetails(iface);
-      ifaceIp = d.ip;
-      ifaceMask = d.subnet;
+      details = await interfaceDetails(iface);
     } catch {}
   });
+
+  // Le compte retenu remplit masque et passerelle, sans écraser une saisie.
+  let account = $state<Account | null>(null);
+  let lastPrefill = INITIAL_PREFILL;
+  $effect(() => {
+    const a = account;
+    untrack(() => {
+      const r = applyPrefill({ mask, gateway }, lastPrefill, a);
+      ({ mask, gateway } = r.fields);
+      lastPrefill = r.last;
+    });
+  });
+  const off = $derived(!dhcp && outsideSubnet(ip, ifaceIp, ifaceMask));
 
   // Les adresses sont validées par Rust (type `Ipv4Addr` puis règles de la caméra) :
   // ici on ne fait qu'exiger les champs obligatoires.
@@ -51,7 +66,7 @@
 
 <Dialog title={$_('configure.ip')} {subtitle} width={560} {onClose}>
   <div class="form">
-    <label for="ip-account">{$_('accounts.picker')}</label><AccountPicker id="ip-account" bind:accountId />
+    <label for="ip-account">{$_('accounts.picker')}</label><AccountPicker id="ip-account" bind:accountId bind:account />
     <label for="ip-mode">{$_('configure.mode')}</label>
     <select id="ip-mode" bind:value={dhcp}>
       <option value={false}>{$_('configure.static')}</option>

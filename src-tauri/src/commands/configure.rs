@@ -89,9 +89,12 @@ async fn build_context(
     cameras: &[Camera],
     scan: &ScanState,
     journal: &std::path::Path,
+    join: &super::join::JoinState,
 ) -> Result<ActionContext, String> {
     let service = iface.clone();
     let targets: Vec<Ipv4Addr> = cameras.iter().map(|c| c.ip).collect();
+    // Dans le réseau d'un compte : l'adresse posée fait l'interface.
+    let held = join.temp();
     let (scan_iface, any_off_subnet, other_ifaces) = tauri::async_runtime::spawn_blocking(move || {
         let up = list_interfaces_up();
         if !up.contains(&iface) {
@@ -99,6 +102,7 @@ async fn build_context(
         }
         let scan_iface = ScanInterface::from_details(&iface, &get_interface_details(&iface))
             .ok_or_else(|| "iface_no_ipv4".to_string())?;
+        let scan_iface = lenscout_core::temp_ip::joined_scope(scan_iface, held.as_ref());
         // Les autres interfaces ne servent qu'au chemin hors sous-réseau :
         // leurs détails coûtent un processus chacune, on ne les lit qu'alors.
         let any_off_subnet = targets.iter().any(|ip| !on_subnet(&scan_iface, *ip));
@@ -144,6 +148,8 @@ async fn build_context(
 /// caméra avant d'écrire. Hors du sous-réseau de l'interface, une IP
 /// temporaire est posée sur le poste pour une caméra vue au dernier scan.
 #[tauri::command]
+// Un argument par état Tauri : les regrouper ne servirait qu'à ce lint.
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_apply_action(
     cameras: Vec<Camera>,
     account_id: String,
@@ -152,10 +158,11 @@ pub async fn cmd_apply_action(
     accounts: State<'_, Mutex<AccountBook>>,
     scan: State<'_, ScanState>,
     journal: State<'_, TempIpJournal>,
+    join: State<'_, super::join::JoinState>,
 ) -> Result<Vec<ActionResult>, String> {
     let action = to_action(action)?;
     let creds = credentials_for(&accounts, &account_id)?;
-    let ctx = build_context(iface, &cameras, &scan, &journal.0).await?;
+    let ctx = build_context(iface, &cameras, &scan, &journal.0, &join).await?;
     Ok(apply_all(&ctx, &cameras, &creds, &action).await)
 }
 
@@ -260,6 +267,7 @@ pub async fn cmd_batch_preview(
     req: BatchRequestDto,
     iface: String,
     store: State<'_, PreviewStore>,
+    join: State<'_, super::join::JoinState>,
 ) -> Result<BatchPreview, PreviewError> {
     let req: BatchRequest = req.into();
     let name = iface;
@@ -273,7 +281,10 @@ pub async fn cmd_batch_preview(
     .await
     .map_err(|_| PreviewError::Code("internal".into()))?
     .map_err(PreviewError::Code)?;
-    let rows = plan_batch(&selection, &req, &others, &[host.ip])?;
+    // Les deux adresses du poste sont réservées : la principale et celle d'un compte.
+    let primary = host.ip;
+    let host = join.scope(host);
+    let rows = plan_batch(&selection, &req, &others, &[primary, host.ip])?;
     let id = remember_preview(&store, selection, rows.clone(), req, &host, Instant::now());
     Ok(BatchPreview { id, rows })
 }
@@ -298,6 +309,7 @@ fn remember_preview(
 /// `preview_expired` (plus de 10 min, ou interface différente du scan).
 /// Compte et contexte d'abord : un échec passager ne consomme pas l'identifiant.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_batch_apply(
     preview_id: String,
     account_id: String,
@@ -305,11 +317,12 @@ pub async fn cmd_batch_apply(
     accounts: State<'_, Mutex<AccountBook>>,
     scan: State<'_, ScanState>,
     journal: State<'_, TempIpJournal>,
+    join: State<'_, super::join::JoinState>,
     store: State<'_, PreviewStore>,
 ) -> Result<Vec<ActionResult>, String> {
     let cameras = store.cameras_of(&preview_id)?;
     let creds = credentials_for(&accounts, &account_id)?;
-    let ctx = build_context(iface, &cameras, &scan, &journal.0).await?;
+    let ctx = build_context(iface, &cameras, &scan, &journal.0, &join).await?;
     // Noms système des deux côtés : celui du contexte, celui du dernier scan.
     let preview = store.take(&preview_id, &ctx.iface.name, scan.seen().iface.as_deref(), Instant::now())?;
     apply_batch(ctx, &preview.cameras, &preview.rows, &creds, &preview.req).await

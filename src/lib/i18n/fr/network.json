@@ -29,7 +29,17 @@
     "open_failed": "Ouverture impossible",
     "internal": "Erreur interne",
     "unknown": "Erreur",
-    "local_network_denied": "Accès au réseau local refusé"
+    "local_network_denied": "Accès au réseau local refusé",
+    "not_found": "Compte introuvable",
+    "account_no_pc_ip": "Ce compte n'a pas d'IP du PC",
+    "already_in_network": "L'interface est déjà dans ce réseau",
+    "pc_ip_in_use": "L'IP du PC est déjà utilisée sur le réseau",
+    "elevation_refused": "Droits administrateur refusés",
+    "temp_ip_busy": "IP temporaire déjà en cours dans une autre fenêtre de LenScout",
+    "temp_ip_failed": "Impossible de poser l'IP du compte sur le poste",
+    "temp_ip_left": "L'IP du compte est restée sur le poste ; elle sera retirée à la fermeture"
   },
-  "scanning": "Recherche sur {iface}, {count} caméra(s)"
+  "scanning": "Recherche sur {iface}, {count} caméra(s)",
+  "account": "Réseau du compte",
+  "dhcp": "DHCP"
 }

@@ -4,8 +4,13 @@
   import { errorKey } from '$lib/api/errors';
   import { ACCOUNT_KEY, listAccounts, pickAccount, type Account } from '$lib/api/accounts';
 
-  // `id` : pour le `<label for>` d'une feuille.
-  let { accountId = $bindable(''), id = undefined }: { accountId?: string; id?: string } = $props();
+  // `id` : pour le `<label for>` d'une feuille ; `account` : le compte retenu
+  // (champs réseau compris), pour le préremplissage.
+  let {
+    accountId = $bindable(''),
+    account = $bindable(null),
+    id = undefined,
+  }: { accountId?: string; account?: Account | null; id?: string } = $props();
 
   let accounts = $state<Account[]>([]);
   let error = $state('');
@@ -17,6 +22,10 @@
     accountId = (e.currentTarget as HTMLSelectElement).value;
     try { localStorage.setItem(ACCOUNT_KEY, accountId); } catch {}
   }
+
+  $effect(() => {
+    account = accounts.find((a) => a.id === accountId) ?? null;
+  });
 
   onMount(async () => {
     try {

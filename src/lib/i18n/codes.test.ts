@@ -53,7 +53,9 @@ const front = [...readFileSync(new URL('src/lib/api/configure.ts', root), 'utf8'
 
 const shown: Record<string, string[]> = {
   accounts: codesIn(accounts),
-  network: codesIn(rust('src-tauri/src/commands/discovery.rs') + rust('src-tauri/src/commands/app.rs')),
+  network: codesIn(
+    rust('src-tauri/src/commands/discovery.rs') + rust('src-tauri/src/commands/app.rs') + rust('src-tauri/src/commands/join.rs'),
+  ),
   framing: [...new Set([...codesIn(rust('src-tauri/src/commands/stream.rs')), ...credentials, ...lock])].sort(),
   free: codesIn(rust('src-tauri/src/commands/free_ips.rs')),
   configure: [...new Set([...codesIn(rust('src-tauri/src/commands/configure.rs')), ...credentials, ...lock, ...front])].sort(),

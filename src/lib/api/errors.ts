@@ -27,6 +27,18 @@ export const CODES = [
   'file_unwritable',
   'file_unreadable',
   'ping_unavailable',
+  'invalid_pc_ip',
+  'invalid_network',
+  'invalid_gateway',
+  'pc_ip_outside_network',
+  'gateway_outside_network',
+  'account_no_pc_ip',
+  'already_in_network',
+  'pc_ip_in_use',
+  'elevation_refused',
+  'temp_ip_busy',
+  'temp_ip_failed',
+  'temp_ip_left',
   'internal',
 ] as const;
 

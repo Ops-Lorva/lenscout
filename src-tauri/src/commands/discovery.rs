@@ -118,6 +118,7 @@ pub async fn cmd_scan_start(
     iface: String,
     on_event: Channel<ScanEvent>,
     state: State<'_, ScanState>,
+    join: State<'_, super::join::JoinState>,
 ) -> Result<(), String> {
     let token = CancellationToken::new();
     if let Some(old) = state.cancel.lock().unwrap().replace(token.clone()) {
@@ -134,6 +135,8 @@ pub async fn cmd_scan_start(
     })
     .await
     .map_err(|_| "internal".to_string())??;
+    // Dans le réseau d'un compte : le scan part de l'adresse posée.
+    let scan_iface = join.scope(scan_iface);
 
     // Les sockets s'ouvrent ici, dans le runtime, pas dans un thread bloquant :
     // tokio doit les enregistrer.

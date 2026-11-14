@@ -32,6 +32,8 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use futures_util::FutureExt;
+
+use crate::discovery::arp::ScanInterface;
 use serde::{Deserialize, Serialize};
 
 /// Nom du service networksetup dupliqué sur macOS.
@@ -608,6 +610,71 @@ where
     Ok(value)
 }
 
+/// Une adresse posée jusqu'à son retrait explicite (« Se mettre dans ce
+/// réseau ») : même plan d'ajout et de retrait, même journal que
+/// `with_temp_ip`. Le verrou de fichier est tenu tant qu'elle vit : les
+/// actions qui voudraient une IP temporaire reçoivent `Busy`. Lâchée sans
+/// `release` (session tuée, sortie), le journal reste : `cleanup_leftover` /
+/// `cleanup_before_exit` la retirent. Ni la route par défaut ni l'adresse
+/// principale ne sont touchées.
+#[derive(Debug)]
+pub struct HeldTempIp {
+    t: TempIp,
+    remove: ElevatedPlan,
+    journal: PathBuf,
+    // Relâché à la destruction (ou à la mort du processus).
+    _lock: File,
+}
+
+impl HeldTempIp {
+    pub fn temp(&self) -> &TempIp {
+        &self.t
+    }
+
+    /// Retire l'adresse. Échec : le journal reste pour le nettoyage suivant.
+    pub fn release(self, elev: &dyn Elevator) -> Result<(), TempIpError> {
+        elev.run(&self.remove)?;
+        // Journal retiré avant le verrou (`_lock` part avec `self`).
+        remove_journal(&self.journal);
+        Ok(())
+    }
+}
+
+/// Pose `t` et le garde (voir `HeldTempIp`). Une action en cours dans cette
+/// instance est attendue ; une autre instance qui tient le verrou → `Busy`.
+pub async fn hold_temp_ip(elev: &dyn Elevator, journal: &Path, t: &TempIp, service: &str) -> Result<HeldTempIp, TempIpError> {
+    let os = OsKind::current();
+    let add = add_plan(os, t, service)?;
+    let remove = remove_plan(os, t, service)?;
+    let _one_here = LOCK.lock().await;
+    let lock = lock_journal(journal)?;
+    cleanup_unlocked(elev, journal)?;
+    write_journal(journal, t)?;
+    match elev.run(&add) {
+        Ok(()) => {}
+        Err(TempIpError::ElevationRefused) => {
+            remove_journal(journal);
+            return Err(TempIpError::ElevationRefused);
+        }
+        Err(e) => {
+            // Comme `with_temp_ip` : retrait au mieux d'un ajout à moitié fait.
+            let _ = elev.run(&remove);
+            remove_journal(journal);
+            return Err(e);
+        }
+    }
+    Ok(HeldTempIp { t: t.clone(), remove, journal: journal.to_path_buf(), _lock: lock })
+}
+
+/// L'interface vue par le scan, les actions et les adresses libres : celle
+/// de l'adresse gardée quand elle est posée sur cette interface.
+pub fn joined_scope(base: ScanInterface, held: Option<&TempIp>) -> ScanInterface {
+    match held {
+        Some(t) if t.iface == base.name => ScanInterface { ip: t.ip, mask: t.mask, ..base },
+        _ => base,
+    }
+}
+
 /// Retire l'adresse d'un journal laissé par une session tuée. Appelé au
 /// démarrage et à la sortie de l'app. Verrou tenu par une autre instance →
 /// `Busy`, rien n'est fait. Un journal illisible est mis de côté
@@ -1088,6 +1155,93 @@ mod tests {
         assert!(!j.exists());
         assert!(j.with_extension("json.illisible").exists());
         assert!(elev.plans().is_empty());
+    }
+
+    // ---- IP gardée (« Se mettre dans ce réseau ») ----
+
+    fn joined() -> TempIp {
+        TempIp { iface: "eth0".into(), ip: ip("192.168.1.250"), mask: ip("255.255.255.0") }
+    }
+
+    #[tokio::test]
+    async fn held_ip_is_journaled_until_released() {
+        let (elev, j, t) = (FakeElevator::new(), journal(), joined());
+        let held = hold_temp_ip(&elev, &j, &t, "eth0").await.unwrap();
+        assert_eq!(held.temp(), &t);
+        assert_eq!(read_journal(&j).unwrap(), Some(t.clone()));
+        assert_eq!(elev.plans(), vec![add_plan(os(), &t, "eth0").unwrap()]);
+        held.release(&elev).unwrap();
+        assert_eq!(elev.plans().last(), Some(&remove_plan(os(), &t, "eth0").unwrap()));
+        assert!(!j.exists());
+    }
+
+    #[tokio::test]
+    async fn held_ip_makes_actions_busy() {
+        let (elev, j, t) = (FakeElevator::new(), journal(), joined());
+        let held = hold_temp_ip(&elev, &j, &t, "eth0").await.unwrap();
+        let r = with_temp_ip(&elev, &j, &tmp("eth0"), "eth0", || async { unreachable!() }).await;
+        assert_eq!(r, Err(TempIpError::Busy));
+        assert_eq!(hold_temp_ip(&elev, &j, &t, "eth0").await.err(), Some(TempIpError::Busy));
+        assert_eq!(elev.plans().len(), 1, "rien d'autre n'a été posé");
+        held.release(&elev).unwrap();
+        assert_eq!(with_temp_ip(&elev, &j, &tmp("eth0"), "eth0", || async { 2 }).await, Ok(2));
+    }
+
+    #[tokio::test]
+    async fn killed_session_is_cleaned_at_next_start() {
+        // Session tuée : le verrou part avec le processus, le journal reste.
+        let (elev, j, t) = (FakeElevator::new(), journal(), joined());
+        let held = hold_temp_ip(&elev, &j, &t, "eth0").await.unwrap();
+        drop(held);
+        assert_eq!(read_journal(&j).unwrap(), Some(t.clone()));
+        assert_eq!(cleanup_leftover(&elev, &j), Ok(Some(t.clone())));
+        assert!(!j.exists());
+    }
+
+    #[tokio::test]
+    async fn exit_cleanup_removes_a_dropped_hold() {
+        let (elev, j, t) = (FakeElevator::new(), journal(), joined());
+        drop(hold_temp_ip(&elev, &j, &t, "eth0").await.unwrap());
+        assert_eq!(cleanup_before_exit(&elev, &j, std::time::Duration::from_millis(200)), Ok(Some(t)));
+        assert!(!j.exists());
+    }
+
+    #[tokio::test]
+    async fn refused_or_failed_hold_leaves_nothing() {
+        let (j, t) = (journal(), joined());
+        let elev = FakeElevator::replying(vec![Err(TempIpError::ElevationRefused)]);
+        assert_eq!(hold_temp_ip(&elev, &j, &t, "eth0").await.err(), Some(TempIpError::ElevationRefused));
+        assert!(!j.exists());
+        let elev = FakeElevator::replying(vec![Err(TempIpError::Failed("x".into())), Err(TempIpError::Failed("y".into()))]);
+        assert!(matches!(hold_temp_ip(&elev, &j, &t, "eth0").await, Err(TempIpError::Failed(_))));
+        assert_eq!(elev.plans().len(), 2, "ajout raté : retrait au mieux");
+        assert!(!j.exists());
+        // Le verrou est rendu : une nouvelle tentative passe.
+        let elev = FakeElevator::new();
+        hold_temp_ip(&elev, &j, &t, "eth0").await.unwrap().release(&elev).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_release_keeps_journal_for_cleanup() {
+        let elev = FakeElevator::replying(vec![Ok(()), Err(TempIpError::Failed("x".into()))]);
+        let (j, t) = (journal(), joined());
+        let held = hold_temp_ip(&elev, &j, &t, "eth0").await.unwrap();
+        assert!(held.release(&elev).is_err());
+        assert_eq!(read_journal(&j).unwrap(), Some(t.clone()));
+        assert_eq!(cleanup_leftover(&elev, &j), Ok(Some(t)));
+    }
+
+    #[test]
+    fn joined_scope_replaces_the_interface_address() {
+        use crate::discovery::arp::ScanInterface;
+        let base = ScanInterface { name: "eth0".into(), ip: ip("10.0.0.5"), mask: ip("255.255.0.0") };
+        let t = joined();
+        let scoped = joined_scope(base.clone(), Some(&t));
+        assert_eq!((scoped.name.as_str(), scoped.ip, scoped.mask), ("eth0", t.ip, t.mask));
+        // Autre interface ou rien de posé : inchangé.
+        let other = TempIp { iface: "eth1".into(), ..t };
+        assert_eq!(joined_scope(base.clone(), Some(&other)), base);
+        assert_eq!(joined_scope(base.clone(), None), base);
     }
 
     #[test]

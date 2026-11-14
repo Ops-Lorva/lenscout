@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import type { Account } from '$lib/api/accounts';
+  import { activeAddress, applyPrefill, INITIAL_PREFILL, joined } from '$lib/api/net';
   import { _ } from 'svelte-i18n';
   import { interfaceDetails } from '$lib/api/core';
   import {
@@ -31,7 +33,7 @@
   } = $props();
 
   let start = $state('');
-  let mask = $state('255.255.255.0');
+  let mask = $state(INITIAL_PREFILL.mask);
   let gateway = $state('');
   let dns = $state('');
   let busy = $state(false);
@@ -44,17 +46,30 @@
   const shown = $derived(preview && preview.fingerprint === fingerprint ? preview.data : null);
   const ready = $derived(!busy && start.trim() !== '' && mask.trim() !== '');
 
-  let ifaceIp = $state<string | null>(null);
-  let ifaceMask = $state<string | null>(null);
-  const off = $derived(outsideSubnet(start, ifaceIp, ifaceMask));
+  // Adresse du poste : celle posée pour un compte sur cette interface, sinon celle de l'interface.
+  let details = $state<{ ip: string | null; subnet: string | null } | null>(null);
+  const addr = $derived(activeAddress(iface, details, $joined));
+  const ifaceIp = $derived(addr.ip);
+  const ifaceMask = $derived(addr.mask);
 
   onMount(async () => {
     try {
-      const d = await interfaceDetails(iface);
-      ifaceIp = d.ip;
-      ifaceMask = d.subnet;
+      details = await interfaceDetails(iface);
     } catch {}
   });
+
+  // Le compte retenu remplit masque et passerelle, sans écraser une saisie.
+  let account = $state<Account | null>(null);
+  let lastPrefill = INITIAL_PREFILL;
+  $effect(() => {
+    const a = account;
+    untrack(() => {
+      const r = applyPrefill({ mask, gateway }, lastPrefill, a);
+      ({ mask, gateway } = r.fields);
+      lastPrefill = r.last;
+    });
+  });
+  const off = $derived(outsideSubnet(start, ifaceIp, ifaceMask));
 
   // La première plage assez grande pour les caméras cochées est proposée, sauf si l'IP de départ est déjà saisie.
   function proposeStart(ranges: FreeRange[]) {
@@ -106,7 +121,7 @@
 
 <Dialog title={$_('batch.title')} width={560} {onClose}>
   <div class="form">
-    <label for="b-account">{$_('accounts.picker')}</label><AccountPicker id="b-account" bind:accountId />
+    <label for="b-account">{$_('accounts.picker')}</label><AccountPicker id="b-account" bind:accountId bind:account />
     <FreeIps {iface} {ifaceIp} {ifaceMask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
     <label for="b-start">{$_('batch.start')}</label><input id="b-start" type="text" bind:value={start} inputmode="decimal" autocomplete="off" />
     {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}

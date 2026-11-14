@@ -95,6 +95,7 @@ pub async fn cmd_free_ips(
     channel: Channel<FreeIpsEvent>,
     state: State<'_, FreeIpsState>,
     scan_state: State<'_, ScanState>,
+    join: State<'_, super::join::JoinState>,
 ) -> Result<(), String> {
     let token = state.begin(id);
 
@@ -110,6 +111,12 @@ pub async fn cmd_free_ips(
     .await
     .map_err(|_| "internal".to_string())??;
 
+    // Dans le réseau d'un compte : ce réseau-là, et la passerelle du compte.
+    let (iface, gateway) = match join.gateway_on(&iface.name) {
+        Some(g) => (join.scope(iface), Some(g.to_string())),
+        None if join.temp().is_some_and(|t| t.iface == iface.name) => (join.scope(iface), None),
+        None => (iface, gateway),
+    };
     let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref());
     let probe = Arc::new(SystemProbe { iface: iface.clone() });
     let sender = channel.clone();

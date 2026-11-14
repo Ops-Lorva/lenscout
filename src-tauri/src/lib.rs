@@ -11,6 +11,7 @@ use commands::stream::{StreamState, cmd_stream_ack, cmd_stream_start, cmd_stream
 use commands::update::{cmd_apply_update, cmd_check_update};
 use commands::app::{cmd_app_version, cmd_debug_get, cmd_debug_set, cmd_interface_details, cmd_list_interfaces};
 use commands::free_ips::{FreeIpsState, cmd_free_ips, cmd_free_ips_cancel};
+use commands::join::{JoinState, cmd_join_network, cmd_joined_network, cmd_leave_network};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_scan_start};
 use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
 use lenscout_core::permissions::set_data_dir;
@@ -31,6 +32,7 @@ pub fn run() {
         .manage(StreamState::default())
         .manage(FreeIpsState::default())
         .manage(PreviewStore::default())
+        .manage(JoinState::default())
         .setup(|app| {
             // Installeurs laissés par une mise à jour précédente.
             updater::cleanup_old_updates();
@@ -76,6 +78,9 @@ pub fn run() {
             cmd_accounts_export,
             cmd_accounts_import_plan,
             cmd_accounts_import_apply,
+            cmd_join_network,
+            cmd_leave_network,
+            cmd_joined_network,
             cmd_apply_action,
             cmd_batch_preview,
             cmd_batch_apply,
@@ -98,6 +103,14 @@ pub fn run() {
             // en cours tourne sur le runtime async, pas sur ce fil. Plus
             // simple et plus sûr que `ExitRequested` + `prevent_exit` + une
             // seconde sortie, qui ne couvre pas tous les chemins de sortie.
+            //
+            // L'IP posée par « Se mettre dans ce réseau » est lâchée d'abord
+            // (son journal reste) : le filet ci-dessous la retire.
+            if let RunEvent::Exit = event
+                && let Some(join) = app.try_state::<JoinState>()
+            {
+                join.let_go();
+            }
             if let RunEvent::Exit = event
                 && let Some(journal) = app.try_state::<TempIpJournal>()
                 && let Err(e) = cleanup_before_exit(&SystemElevator, &journal.0, EXIT_WAIT)

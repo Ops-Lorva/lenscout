@@ -11,6 +11,8 @@
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
   import { actionResults, resultFor } from '$lib/api/configure';
+  import { joinable, listAccounts, type Account } from '$lib/api/accounts';
+  import { createJoinSwitch, joined, joinedNetwork, joinNetwork, leaveNetwork, type JoinChoice } from '$lib/api/net';
 
   const IFACE_KEY = 'lenscout.iface';
   const RESCAN_DELAYS_MS = [3000, 15000];
@@ -20,6 +22,16 @@
   // Adresse de l'interface choisie, « 192.168.1.20/24 », à côté du select.
   let ifaceAddr = $state('');
   let scanning = $state(false);
+  // Sélecteur de compte : `''` = DHCP (aucune IP ajoutée), sinon l'id du compte
+  // dont l'IP du PC est posée sur l'interface. Un choix vaut validation.
+  let accounts = $state<Account[]>([]);
+  let account = $state('');
+  let switching = $state(false);
+  const choices = $derived(joinable(accounts));
+  // DHCP : l'adresse actuelle de l'interface ; compte : son IP du PC.
+  const shownAddr = $derived(account ? (accounts.find((a) => a.id === account)?.pc_ip ?? '') : ifaceAddr);
+  const sw = createJoinSwitch({ join: joinNetwork, leave: leaveNetwork });
+  let failStatus: Status | null = null;
   let error = $state('');
   // Un scan annulé par le suivant peut encore livrer ses derniers événements :
   // chaque scan porte un numéro, les événements d'un ancien numéro sont ignorés.
@@ -70,11 +82,45 @@
     void cancelScan();
   }
 
-  function onIface(e: Event) {
-    iface = (e.currentTarget as HTMLSelectElement).value;
+  /**
+   * Un changement d'interface ou de compte : l'IP du compte est posée (la
+   * précédente retirée d'abord) ou retirée (DHCP), puis l'adresse affichée et
+   * le scan sont remis à jour. Les sélecteurs sont grisés pendant l'opération.
+   * Échec : le choix revient à l'état réel du cœur, message dans la barre d'état.
+   */
+  async function choose(wanted: JoinChoice) {
+    if (switching) return;
+    switching = true;
+    clearStatusIf(failStatus);
+    const r = await sw.change(wanted);
+    if (r.kind === 'failed') {
+      // Le cœur a pu retirer l'IP précédente avant d'échouer : on se recale sur lui.
+      let j = null;
+      try { j = await joinedNetwork(); } catch {}
+      sw.init(r.applied.iface, j);
+      joined.set(j);
+      failStatus = { text: $_(`network.${errorKey(r.code)}`), tone: 'warn' };
+      status.set(failStatus);
+    } else if (r.kind === 'done') {
+      joined.set(r.applied.account ? (r.joined ?? $joined) : null);
+    }
+    ({ iface, account } = sw.applied);
+    switching = false;
     try { localStorage.setItem(IFACE_KEY, iface); } catch {}
     void loadAddr(iface);
-    void scan();
+    if (r.kind === 'done' || iface !== wanted.iface || account !== r.applied.account) void scan();
+  }
+
+  function onIface(e: Event) {
+    const next = (e.currentTarget as HTMLSelectElement).value;
+    iface = next;
+    void choose({ iface: next, account });
+  }
+
+  function onAccount(e: Event) {
+    const next = (e.currentTarget as HTMLSelectElement).value;
+    account = next;
+    void choose({ iface, account: next });
   }
 
   function toggle(c: Camera) {
@@ -130,6 +176,13 @@
     let saved = '';
     try { saved = localStorage.getItem(IFACE_KEY) ?? ''; } catch {}
     iface = interfaces.includes(saved) ? saved : (interfaces[0] ?? '');
+    try { accounts = await listAccounts(); } catch {}
+    // Retour sur l'écran : un compte déjà posé reste choisi, sur son interface.
+    let j = null;
+    try { j = await joinedNetwork(); } catch {}
+    sw.init(iface, j && interfaces.includes(j.iface) ? j : null);
+    ({ iface, account } = sw.applied);
+    joined.set(j);
     void loadAddr(iface);
     // Retour sur la page : la liste et la sélection existantes restent ; « Rescanner » relance.
     if (shouldAutoScan(get(cameras))) void scan();
@@ -148,15 +201,20 @@
     rescanTimers.forEach(clearTimeout);
     if (scanning) stop();
     clearStatusIf(scanStatus);
+    clearStatusIf(failStatus);
   });
 </script>
 
 <div class="tools">
-  <select value={iface} onchange={onIface} disabled={interfaces.length === 0} aria-label={$_('common.interface.label')}>
+  <select value={iface} onchange={onIface} disabled={interfaces.length === 0 || switching} aria-label={$_('common.interface.label')}>
     {#if interfaces.length === 0}<option value="">{$_('common.interface.none')}</option>{/if}
     {#each interfaces as name}<option value={name}>{name}</option>{/each}
   </select>
-  {#if ifaceAddr}<span class="iface">{ifaceAddr}</span>{/if}
+  <select value={account} onchange={onAccount} disabled={!iface || switching} aria-label={$_('network.account')}>
+    <option value="">{$_('network.dhcp')}</option>
+    {#each choices as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+  </select>
+  {#if switching}<span class="spin"></span>{:else if shownAddr}<span class="iface">{shownAddr}</span>{/if}
   {#if scanning}
     <button class="btn" onclick={stop}><span class="spin"></span>{$_('network.stop')}</button>
   {:else}
