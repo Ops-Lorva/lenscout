@@ -108,20 +108,22 @@ fn source_name(s: Source) -> &'static str {
     }
 }
 
-/// Le dossier des captures d'un scan, plafonné en fichiers et en octets (ce
-/// qu'il contenait déjà compte). Chaque datagramme va en
-/// `<source>-<ip>-<n>.bin`, `n` tenu par (source, IP) et repris après les
+/// Le dossier des captures d'un scan, plafonné en fichiers et en octets ;
+/// comme le journal, il tourne : au-delà, les captures les plus anciennes
+/// (celles des scans précédents comprises) sont retirées. Seuls les fichiers
+/// `<source>-<ip>-<n>.bin` comptent et peuvent partir ; le reste du dossier
+/// n'est pas touché. `n` est tenu par (source, IP) et repris après les
 /// fichiers déjà là ; un fichier existant n'est jamais remplacé. Les erreurs
 /// d'écriture sont ignorées : la capture ne doit pas gêner la découverte.
 pub(crate) struct Captures {
     dir: PathBuf,
     max_files: usize,
     max_bytes: u64,
-    files: usize,
+    /// Captures présentes, de la plus ancienne à la plus récente : (chemin, taille).
+    kept: std::collections::VecDeque<(PathBuf, u64)>,
     bytes: u64,
     /// Clé : (`source_name`, IP).
     next: HashMap<(&'static str, Ipv4Addr), u64>,
-    full: bool,
 }
 
 /// `<source>-<ip>-<n>.bin` → (source, ip, n).
@@ -134,32 +136,47 @@ fn capture_name(name: &str) -> Option<(&'static str, Ipv4Addr, u64)> {
 }
 
 impl Captures {
-    /// Lit une fois ce que le dossier contient déjà (nombre, taille, numéros).
+    /// Lit une fois ce que le dossier contient déjà (captures, tailles, âges, numéros).
     pub(crate) fn open(dir: PathBuf, max_files: usize, max_bytes: u64) -> Captures {
-        let mut c = Captures { dir, max_files, max_bytes, files: 0, bytes: 0, next: HashMap::new(), full: false };
-        for entry in std::fs::read_dir(&c.dir).into_iter().flatten().flatten() {
-            c.files += 1;
-            c.bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            if let Some((source, ip, n)) = capture_name(&entry.file_name().to_string_lossy()) {
-                let next = c.next.entry((source, ip)).or_insert(0);
-                *next = (*next).max(n + 1);
+        let mut found = Vec::new();
+        let mut next: HashMap<(&'static str, Ipv4Addr), u64> = HashMap::new();
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let Some((source, ip, n)) = capture_name(&entry.file_name().to_string_lossy()) else { continue };
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
             }
+            let at = next.entry((source, ip)).or_insert(0);
+            *at = (*at).max(n + 1);
+            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            found.push((modified, (source, ip, n), entry.path(), meta.len()));
         }
-        c
+        found.sort();
+        let bytes = found.iter().map(|f| f.3).sum();
+        let kept = found.into_iter().map(|(_, _, path, len)| (path, len)).collect();
+        Captures { dir, max_files, max_bytes, kept, bytes, next }
+    }
+
+    /// Retire les plus anciennes jusqu'à laisser la place à `len` octets.
+    fn make_room(&mut self, len: u64) {
+        while !self.kept.is_empty() && (self.kept.len() >= self.max_files || self.bytes + len > self.max_bytes) {
+            let Some((path, size)) = self.kept.pop_front() else { break };
+            let _ = std::fs::remove_file(&path);
+            self.bytes = self.bytes.saturating_sub(size);
+        }
     }
 
     pub(crate) fn write(&mut self, source: Source, ip: Ipv4Addr, packet: &[u8]) {
         use std::io::Write;
-        if self.files >= self.max_files || self.bytes + packet.len() as u64 > self.max_bytes {
-            if !self.full {
-                self.full = true;
-                crate::debug_log::log(&format!("scan : captures plafonnées ({} fichiers, {} octets)", self.files, self.bytes));
-            }
+        let len = packet.len() as u64;
+        // Plus gros que le plafond à lui seul : ni écrit, ni de place faite.
+        if len > self.max_bytes || self.max_files == 0 {
             return;
         }
         if std::fs::create_dir_all(&self.dir).is_err() {
             return;
         }
+        self.make_room(len);
         let next = self.next.entry((source_name(source), ip)).or_insert(0);
         // Un fichier posé entre-temps par un autre scan : quelques numéros de plus, pas une recherche.
         for _ in 0..16 {
@@ -168,8 +185,8 @@ impl Captures {
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut f) => {
                     let _ = f.write_all(packet);
-                    self.files += 1;
-                    self.bytes += packet.len() as u64;
+                    self.kept.push_back((path, len));
+                    self.bytes += len;
                     return;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -933,43 +950,71 @@ mod tests {
         names
     }
 
-    #[test]
-    fn captures_are_capped_like_the_log() {
-        assert_eq!(crate::debug_log::CAPTURE_MAX_FILES, 1000);
-        assert_eq!(crate::debug_log::CAPTURE_MAX_BYTES, 20 * 1024 * 1024);
+    /// Aux plafonds réels (1 000 fichiers) : un dossier plein tourne, la
+    /// capture la plus ancienne part, la nouvelle est écrite.
+    #[tokio::test(start_paused = true)]
+    async fn a_full_capture_directory_rotates_at_the_real_caps() {
+        let dir = crate::testing::TmpDir::new("lenscout-capture");
+        let captures = dir.join("captures");
+        std::fs::create_dir_all(&captures).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for n in 0..crate::debug_log::CAPTURE_MAX_FILES {
+            let f = std::fs::File::create(captures.join(format!("wsd-192.0.2.99-{n}.bin"))).unwrap();
+            f.set_modified(old + Duration::from_secs(n as u64)).unwrap();
+        }
+        let (p, _) = probe_pair(Arc::new(MdnsProbe), vec![(axis_response_packet(), from("192.0.2.21", 5353))]);
+        let (tx, _rx) = mpsc::channel(256);
+        run_scan_with_capture(vec![p], axis_http(), arp(&[]), cfg(), tx, CancellationToken::new(), Some(captures.clone())).await;
+        let names = files_in(&captures);
+        assert_eq!(names.len(), crate::debug_log::CAPTURE_MAX_FILES);
+        assert!(names.contains(&"mdns-192.0.2.21-0.bin".to_string()));
+        assert!(!names.contains(&"wsd-192.0.2.99-0.bin".to_string()), "la plus ancienne est partie");
+        assert!(names.contains(&"wsd-192.0.2.99-1.bin".to_string()));
     }
 
-    /// Plafond en nombre de fichiers : au-delà, plus rien n'est écrit.
+    /// Plafond en nombre de fichiers : les plus anciennes captures partent.
     #[test]
-    fn captures_stop_at_the_file_cap() {
+    fn captures_rotate_at_the_file_cap() {
         let dir = crate::testing::TmpDir::new("lenscout-capture");
         let mut c = Captures::open(dir.join("captures"), 3, 1 << 20);
         for _ in 0..5 {
             c.write(Source::Mdns, "192.0.2.21".parse().unwrap(), b"abc");
         }
-        assert_eq!(files_in(&dir.join("captures")).len(), 3);
+        assert_eq!(
+            files_in(&dir.join("captures")),
+            ["mdns-192.0.2.21-2.bin", "mdns-192.0.2.21-3.bin", "mdns-192.0.2.21-4.bin"]
+        );
     }
 
-    /// Plafond en octets, le premier atteint l'emporte.
+    /// Plafond en octets, le premier atteint l'emporte ; un paquet plus gros
+    /// que le plafond n'est pas écrit (et ne vide rien).
     #[test]
-    fn captures_stop_at_the_byte_cap() {
+    fn captures_rotate_at_the_byte_cap() {
         let dir = crate::testing::TmpDir::new("lenscout-capture");
         let mut c = Captures::open(dir.join("captures"), 1000, 10);
         for _ in 0..5 {
             c.write(Source::Wsd, "192.0.2.21".parse().unwrap(), b"abcd");
         }
-        assert_eq!(files_in(&dir.join("captures")), ["wsd-192.0.2.21-0.bin", "wsd-192.0.2.21-1.bin"]);
+        c.write(Source::Wsd, "192.0.2.22".parse().unwrap(), b"0123456789abc");
+        assert_eq!(files_in(&dir.join("captures")), ["wsd-192.0.2.21-3.bin", "wsd-192.0.2.21-4.bin"]);
     }
 
     /// Un compteur par (source, IP), qui reprend après les fichiers d'un scan
-    /// précédent ; ceux-ci comptent dans le plafond.
+    /// précédent ; ceux-ci comptent dans le plafond et partent les premiers,
+    /// du plus ancien au plus récent. Un fichier étranger au dossier n'est ni
+    /// compté ni touché.
     #[test]
     fn capture_numbers_follow_a_counter_per_source_and_ip() {
         let dir = crate::testing::TmpDir::new("lenscout-capture");
         let captures = dir.join("captures");
-        std::fs::create_dir_all(&captures).unwrap();
-        std::fs::write(captures.join("mdns-192.0.2.21-0.bin"), b"old").unwrap();
-        std::fs::write(captures.join("mdns-192.0.2.21-4.bin"), b"old").unwrap();
+        std::fs::create_dir_all(captures.join("sous-dossier")).unwrap();
+        std::fs::write(captures.join("notes.txt"), b"a moi").unwrap();
+        let now = std::time::SystemTime::now();
+        for (name, age) in [("mdns-192.0.2.21-0.bin", 50), ("mdns-192.0.2.21-4.bin", 100)] {
+            let f = std::fs::File::create(captures.join(name)).unwrap();
+            std::io::Write::write_all(&mut &f, b"old").unwrap();
+            f.set_modified(now - Duration::from_secs(age)).unwrap();
+        }
         let mut c = Captures::open(captures.clone(), 5, 1 << 20);
         let (a, b): (Ipv4Addr, Ipv4Addr) = ("192.0.2.21".parse().unwrap(), "192.0.2.22".parse().unwrap());
         c.write(Source::Mdns, a, b"x");
@@ -978,9 +1023,17 @@ mod tests {
         c.write(Source::Mdns, a, b"x");
         assert_eq!(
             files_in(&captures),
-            ["mdns-192.0.2.21-0.bin", "mdns-192.0.2.21-4.bin", "mdns-192.0.2.21-5.bin", "mdns-192.0.2.22-0.bin", "sadp-192.0.2.21-0.bin"]
+            [
+                "mdns-192.0.2.21-0.bin",
+                "mdns-192.0.2.21-5.bin",
+                "mdns-192.0.2.21-6.bin",
+                "mdns-192.0.2.22-0.bin",
+                "notes.txt",
+                "sadp-192.0.2.21-0.bin",
+                "sous-dossier",
+            ]
         );
-        assert_eq!(std::fs::read(captures.join("mdns-192.0.2.21-4.bin")).unwrap(), b"old", "jamais remplacé");
+        assert_eq!(std::fs::read(captures.join("mdns-192.0.2.21-0.bin")).unwrap(), b"old", "jamais remplacé");
     }
 
     fn heard(events: &[ScanEvent]) -> Vec<Ipv4Addr> {

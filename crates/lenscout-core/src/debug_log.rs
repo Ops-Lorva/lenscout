@@ -16,7 +16,7 @@
 //! de découverte vont dans `<app_data_dir>/captures` quand
 //! `LENSCOUT_CAPTURE_DIR` n'est pas défini ; plafonnées elles aussi
 //! (`CAPTURE_MAX_FILES` fichiers ou `CAPTURE_MAX_BYTES`, au premier atteint),
-//! après quoi plus rien n'y est écrit.
+//! au-delà les plus anciennes sont supprimées pour faire la place.
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
