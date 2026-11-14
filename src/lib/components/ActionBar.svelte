@@ -2,6 +2,7 @@
   import { _ } from 'svelte-i18n';
   import { activateCleartext, applyAction, canActivate, pendingAfterConfirm, pendingAfterRun, dialogAfterSelection, canAct, canChangeIp, canBatchIp, canReset, clearResults, mergeResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
   import type { Camera } from '#lib/api/types.ts';
+  import { cameraName } from '#lib/api/discovery.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { cameraKey, cameras, markActivated, selectedCameras } from '#lib/stores/cameras.ts';
   import BatchIpDialog from './BatchIpDialog.svelte';
@@ -38,7 +39,7 @@
   const others = $derived($cameras.filter((c) => !cams.some((s) => cameraKey(s) === cameraKey(c))));
   // La feuille IP vise une caméra : son nom et son adresse dans le titre.
   const one = $derived(cams.length === 1 ? cams[0] : null);
-  const oneLabel = $derived(one ? `${[one.brand, one.model].filter(Boolean).join(' ') || '—'}, ${one.ip}` : '');
+  const oneLabel = $derived(one ? `${cameraName(one)}, ${one.ip}` : '');
 
   // Sélection vidée (décochée, recherche, rescan) : pas de dialogue sur rien.
   $effect(() => {

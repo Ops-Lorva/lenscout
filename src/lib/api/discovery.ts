@@ -33,6 +33,14 @@ export function readAddressing(list: Camera[], accountId: string): Promise<Addre
 }
 
 /** Colonne MAC : celle vue sur le réseau, sinon celle que la caméra déclare (marquée). */
+/** Marque et modèle, sans la marque en double quand le modèle la porte déjà
+ * (« AXIS P4705-PLVE » rendu par une Axis, pas « AXIS AXIS P4705-PLVE »). */
+export function cameraName(c: Pick<Camera, 'brand' | 'model'>): string {
+  const { brand, model } = c;
+  if (brand && model && model.toLowerCase().startsWith(brand.toLowerCase() + ' ')) return model;
+  return [brand, model].filter(Boolean).join(' ') || '—';
+}
+
 export function shownMac(c: Camera): { mac: string | null; declared: boolean } {
   if (c.mac) return { mac: c.mac, declared: false };
   return c.declared_mac ? { mac: c.declared_mac, declared: true } : { mac: null, declared: false };

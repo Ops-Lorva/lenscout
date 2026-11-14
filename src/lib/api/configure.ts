@@ -3,6 +3,7 @@ import { writable } from 'svelte/store';
 import type { Camera, Family } from './types';
 import { cameraKey } from '#lib/stores/cameras.ts';
 import { errorKey } from './errors';
+import { cameraName } from './discovery';
 
 /** Miroir de `ActionError` (actions.rs). `rejected.detail` vient de la caméra ; `invalid.reason` est un code. */
 export type ActionError =
@@ -96,7 +97,7 @@ export const canReset = (cams: Camera[]): boolean =>
 
 /** Ce que la confirmation rappelle de chaque caméra visée. */
 export const resetLine = (c: Camera): { name: string; ip: string; mac: string } => ({
-  name: [c.brand, c.model].filter(Boolean).join(' ') || '—',
+  name: cameraName(c),
   ip: c.ip,
   mac: c.mac ?? '—',
 });

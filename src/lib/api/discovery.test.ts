@@ -1,8 +1,8 @@
-import { expect, test, vi } from 'vitest';
+import { describe, expect, it, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
-import { addressingKey, readAddressing, shownMac } from './discovery';
+import { addressingKey, cameraName, readAddressing, shownMac } from './discovery';
 import type { Camera } from './types';
 
 const cam = (over: Partial<Camera>): Camera => ({
@@ -40,4 +40,16 @@ test('lecture de l’adressage : seules les Axis partent, avec le compte retenu'
   expect(await readAddressing([axis], '')).toEqual([]);
   expect(await readAddressing([hik], 'acc')).toEqual([]);
   expect(invoke).not.toHaveBeenCalled();
+});
+
+describe('cameraName', () => {
+  it('drops the brand when the model already starts with it', () => {
+    expect(cameraName({ brand: 'AXIS', model: 'AXIS P4705-PLVE' })).toBe('AXIS P4705-PLVE');
+    expect(cameraName({ brand: 'Axis', model: 'AXIS P4705-PLVE' })).toBe('AXIS P4705-PLVE');
+  });
+  it('joins brand and model otherwise', () => {
+    expect(cameraName({ brand: 'Hikvision', model: 'DS-2CD2143G2' })).toBe('Hikvision DS-2CD2143G2');
+    expect(cameraName({ brand: 'AXIS', model: 'AXISP' })).toBe('AXIS AXISP');
+    expect(cameraName({ brand: null, model: null })).toBe('—');
+  });
 });

@@ -7,6 +7,7 @@
   import AccountPicker from './AccountPicker.svelte';
   import ImageSettings from './ImageSettings.svelte';
   import { normRect } from '#lib/api/imaging.ts';
+  import { cameraName } from '#lib/api/discovery.ts';
 
   let accountId = $state('');
   let playing = $state(false);
@@ -131,6 +132,12 @@
 
   // Panneau de réglages (Axis) : il suit la vue choisie.
   const chosenView = $derived(views.find((v) => v.n === view) ?? null);
+  // Vue groupée (« 1,0 ») : la caméra pose ses capteurs côte à côte, un
+  // réticule au centre de chacun.
+  const reticles = $derived.by(() => {
+    const n = Math.max(1, chosenView?.source?.split(',').filter((s) => s.trim() !== '').length ?? 1);
+    return Array.from({ length: n }, (_, i) => ((i + 0.5) / n) * 100);
+  });
   let panel = $state<ReturnType<typeof ImageSettings> | null>(null);
   let drawing = $state(false);
   // Rectangle de la zone d'autofocus en cours de tracé, en coordonnées de la page.
@@ -200,7 +207,7 @@
   <!-- Compte avant le nom de la caméra : sa place ne dépend pas de la longueur du nom. -->
   <label class="acc"><span class="dim-t">{$_('accounts.picker')}</span> <AccountPicker bind:accountId /></label>
   {#if cam}
-    <strong>{[cam.brand, cam.model].filter(Boolean).join(' ')}</strong>
+    <strong>{cameraName(cam)}</strong>
     <span class="ip">{cam.ip}</span>
     {#if views.length > 1}
       <select value={view} onchange={(e) => pickView(Number(e.currentTarget.value))} aria-label={$_('framing.viewPicker')}>
@@ -232,7 +239,7 @@
         <div class="frame" style:--r={ratio} bind:this={frameEl}>
           <img {src} alt={$_('framing.image')} onload={onLoad} />
           <div class="grid"></div>
-          <div class="ret"></div>
+          {#each reticles as x (x)}<div class="ret" style:left="{x}%"></div>{/each}
           {#if drawing}
             <div class="draw" role="presentation" onpointerdown={dragStart} onpointermove={dragMove} onpointerup={dragEnd}
               ondblclick={(e) => e.stopPropagation()}>

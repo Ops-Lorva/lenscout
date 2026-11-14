@@ -2,7 +2,7 @@
   import { _ } from 'svelte-i18n';
   import { resultMessage, type ActionResult } from '#lib/api/configure.ts';
   import type { Camera } from '#lib/api/types.ts';
-  import { addressingKey, shownMac } from '#lib/api/discovery.ts';
+  import { addressingKey, cameraName, shownMac } from '#lib/api/discovery.ts';
 
   let {
     camera,
@@ -41,7 +41,7 @@
 
   const message = $derived(result ? resultMessage(result) : null);
   const text = $derived(message ? $_(message.key, { values: message.values }) : '');
-  const label = $derived([camera.brand, camera.model].filter(Boolean).join(' ') || '—');
+  const label = $derived(cameraName(camera));
   const addressing = $derived(addressingKey(camera));
   const mac = $derived(shownMac(camera));
 </script>
