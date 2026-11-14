@@ -108,38 +108,47 @@ pub async fn read_neighbours(iface: &ScanInterface) -> HashMap<Ipv4Addr, String>
 /// pas telle que l'appareil l'annonce ; le faux des tests rend une table fixe.
 #[async_trait]
 pub trait Neighbours: Send + Sync {
-    /// MAC normalisée de `ip` dans la table ARP de `iface`, `None` sans entrée.
-    async fn mac_of(&self, iface: &ScanInterface, ip: Ipv4Addr) -> Option<String>;
+    /// MAC normalisées de `ip` dans la table ARP de `iface`, vide sans entrée.
+    /// Plusieurs sous Windows si l'adresse figure sous plusieurs cartes.
+    async fn macs_of(&self, iface: &ScanInterface, ip: Ipv4Addr) -> Vec<String>;
 }
 
 pub struct SystemNeighbours;
 
 #[async_trait]
 impl Neighbours for SystemNeighbours {
-    async fn mac_of(&self, iface: &ScanInterface, ip: Ipv4Addr) -> Option<String> {
+    async fn macs_of(&self, iface: &ScanInterface, ip: Ipv4Addr) -> Vec<String> {
         // Windows titre chaque bloc de `arp -a` par l'adresse principale de
         // la carte, pas forcément `iface.ip` (IP d'un compte posée en alias) :
         // l'adresse de la caméra se cherche dans toute la table.
         #[cfg(target_os = "windows")]
         {
             let _ = iface;
-            let o = async_cmd("arp").arg("-a").output().await.ok()?;
-            windows_mac_of(&String::from_utf8_lossy(&o.stdout), ip)
+            let Ok(o) = async_cmd("arp").arg("-a").output().await else { return Vec::new() };
+            windows_macs_of(&String::from_utf8_lossy(&o.stdout), ip)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            read_neighbours(iface).await.remove(&ip)
+            read_neighbours(iface).await.remove(&ip).into_iter().collect()
         }
     }
 }
 
-/// MAC normalisée de `ip` dans la sortie de `arp -a` (Windows), sous
-/// n'importe quel en-tête d'interface.
+/// MAC normalisées de `ip` dans la sortie de `arp -a` (Windows), sous
+/// n'importe quel en-tête d'interface : toutes, dans l'ordre de la table, si
+/// l'adresse figure sous plusieurs cartes.
 #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
-fn windows_mac_of(text: &str, ip: Ipv4Addr) -> Option<String> {
-    let mut map = HashMap::new();
-    parse_windows_arp(text, &mut map, None);
-    map.get(&ip.to_string()).and_then(|m| normalize_mac(m))
+fn windows_macs_of(text: &str, ip: Ipv4Addr) -> Vec<String> {
+    let ip = ip.to_string();
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            match (parts.next(), parts.next()) {
+                (Some(a), Some(mac)) if a == ip && mac.contains('-') => normalize_mac(&mac.replace('-', ":")),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// Arguments de `ip neigh`, restreints à l'interface choisie.
@@ -470,9 +479,20 @@ mod tests {
                     192.168.1.90          ac-cc-8e-12-34-56     dynamic\r\n\
                     \r\nInterface: 198.51.100.5 --- 0x9\r\n\
                     192.0.2.2             aa-bb-cc-dd-ee-ff     dynamic\r\n";
-        assert_eq!(windows_mac_of(text, Ipv4Addr::new(192, 168, 1, 90)).as_deref(), Some("AC:CC:8E:12:34:56"));
-        assert_eq!(windows_mac_of(text, Ipv4Addr::new(192, 0, 2, 2)).as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(windows_mac_of(text, Ipv4Addr::new(192, 0, 2, 3)), None);
+        assert_eq!(windows_macs_of(text, Ipv4Addr::new(192, 168, 1, 90)), ["AC:CC:8E:12:34:56"]);
+        assert_eq!(windows_macs_of(text, Ipv4Addr::new(192, 0, 2, 2)), ["AA:BB:CC:DD:EE:FF"]);
+        assert!(windows_macs_of(text, Ipv4Addr::new(192, 0, 2, 3)).is_empty());
+    }
+
+    /// La même IP sous deux cartes (une carte USB sur un autre réseau) : toutes
+    /// les MAC trouvées sont rendues, pas la dernière seulement.
+    #[test]
+    fn windows_une_ip_sous_deux_cartes_rend_toutes_ses_mac() {
+        let text = "\r\nInterface: 192.168.0.10 --- 0x5\r\n\
+                    192.168.0.90          aa-bb-cc-dd-ee-ff     dynamic\r\n\
+                    \r\nInterface: 192.168.0.20 --- 0x9\r\n\
+                    192.168.0.90          ac-cc-8e-12-34-56     dynamic\r\n";
+        assert_eq!(windows_macs_of(text, Ipv4Addr::new(192, 168, 0, 90)), ["AA:BB:CC:DD:EE:FF", "AC:CC:8E:12:34:56"]);
     }
 
     #[test]

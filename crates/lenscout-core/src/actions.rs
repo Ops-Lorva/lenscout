@@ -201,12 +201,11 @@ fn scan_state(ctx: &ActionContext, cam: &Camera) -> Option<Activation> {
 }
 
 /// La MAC de couche 2 de la caméra (pas celle qu'elle annonce) est d'un OUI
-/// Axis. Relève la barre face à un faux appareil, sans plus : une MAC se change.
+/// Axis ; si l'adresse figure sous plusieurs cartes, toutes ses MAC doivent
+/// l'être. Relève la barre face à un faux appareil, sans plus : une MAC se change.
 async fn layer2_is_axis(ctx: &ActionContext, cam: &Camera) -> bool {
-    match ctx.neighbours.mac_of(&ctx.iface, cam.ip).await {
-        Some(mac) => matches!(camera_brand_for_mac(&mac), Some((Family::Axis, _))),
-        None => false,
-    }
+    let macs = ctx.neighbours.macs_of(&ctx.iface, cam.ip).await;
+    !macs.is_empty() && macs.iter().all(|mac| matches!(camera_brand_for_mac(mac), Some((Family::Axis, _))))
 }
 
 /// Lit l'identité de la caméra à son adresse actuelle et la compare à celle
@@ -1216,6 +1215,9 @@ mod tests {
             FakeNeighbours::table(&[]),
             FakeNeighbours::table(&[("192.0.2.11", "A4:5E:60:11:22:33")]),
             FakeNeighbours::table(&[("192.0.2.12", MAC)]),
+            // La même IP sous deux cartes (Windows) : toutes doivent être Axis.
+            FakeNeighbours::table(&[("192.0.2.11", "A4:5E:60:11:22:33"), ("192.0.2.11", MAC)]),
+            FakeNeighbours::table(&[("192.0.2.11", MAC), ("192.0.2.11", "A4:5E:60:11:22:33")]),
         ] {
             let http = Arc::new(axis_ok());
             let mut c = ctx(http.clone());
@@ -1231,6 +1233,10 @@ mod tests {
         let http = Arc::new(axis_ok());
         let mut c = ctx(http.clone());
         c.neighbours = Arc::new(FakeNeighbours::table(&[("192.0.2.11", "00:40:8C:01:02:03")]));
+        assert!(apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await.ok);
+        let http = Arc::new(axis_ok());
+        let mut c = ctx(http.clone());
+        c.neighbours = Arc::new(FakeNeighbours::table(&[("192.0.2.11", "00:40:8C:01:02:03"), ("192.0.2.11", MAC)]));
         assert!(apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await.ok);
     }
 

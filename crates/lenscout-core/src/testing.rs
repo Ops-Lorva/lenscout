@@ -245,12 +245,12 @@ impl crate::temp_ip::Elevator for FakeElevator {
 
 /// Faux voisins ARP : une table fixe, ou la même MAC pour toute adresse.
 pub struct FakeNeighbours {
-    table: std::collections::HashMap<std::net::Ipv4Addr, String>,
+    table: Vec<(std::net::Ipv4Addr, String)>,
     any: Option<String>,
 }
 
 impl FakeNeighbours {
-    /// Table fixe : adresse → MAC.
+    /// Table fixe : adresse → MAC ; une adresse répétée a plusieurs MAC.
     pub fn table(entries: &[(&str, &str)]) -> Self {
         FakeNeighbours {
             table: entries.iter().map(|(ip, mac)| (ip.parse().unwrap(), mac.to_string())).collect(),
@@ -266,8 +266,9 @@ impl FakeNeighbours {
 
 #[async_trait]
 impl crate::discovery::arp::Neighbours for FakeNeighbours {
-    async fn mac_of(&self, _iface: &crate::discovery::arp::ScanInterface, ip: std::net::Ipv4Addr) -> Option<String> {
-        self.table.get(&ip).cloned().or_else(|| self.any.clone())
+    async fn macs_of(&self, _iface: &crate::discovery::arp::ScanInterface, ip: std::net::Ipv4Addr) -> Vec<String> {
+        let macs: Vec<String> = self.table.iter().filter(|(a, _)| *a == ip).map(|(_, m)| m.clone()).collect();
+        if macs.is_empty() { self.any.iter().cloned().collect() } else { macs }
     }
 }
 
