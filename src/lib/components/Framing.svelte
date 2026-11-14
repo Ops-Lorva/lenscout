@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
   import { _ } from 'svelte-i18n';
-  import { errorKey } from '$lib/api/errors';
-  import { ackFrame, FramePresenter, identifyCamera, startStream, stopStream } from '$lib/api/stream';
-  import { framingTarget, page, suspendStep } from '$lib/stores/nav';
+  import { errorKey } from '#lib/api/errors.ts';
+  import { ackFrame, FramePresenter, identifyCamera, startStream, stopStream } from '#lib/api/stream.ts';
+  import { framingTarget, page, suspendStep } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
 
   let accountId = $state('');
@@ -127,12 +127,12 @@
       {#if identifying}<span class="spin"></span>{/if}{$_('framing.open')}
     </button>
   </form>
+  <!-- Compte avant le nom de la caméra : sa place ne dépend pas de la longueur du nom. -->
+  <label class="acc"><span class="dim-t">{$_('accounts.picker')}</span> <AccountPicker bind:accountId /></label>
   {#if cam}
     <strong>{[cam.brand, cam.model].filter(Boolean).join(' ')}</strong>
     <span class="ip">{cam.ip}</span>
   {/if}
-  <span class="sp"></span>
-  <label class="acc"><span class="dim-t">{$_('accounts.picker')}</span> <AccountPicker bind:accountId /></label>
   {#if cam}
     {#if playing}
       <button class="btn def" onclick={stop}>{$_('framing.stop')}</button>

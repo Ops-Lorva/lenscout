@@ -2,8 +2,8 @@
   import '../app.css';
   import type { Snippet } from 'svelte';
   import { isLoading } from 'svelte-i18n';
-  import { initI18n } from '$lib/i18n';
-  import { applyTheme, theme } from '$lib/stores/settings';
+  import { initI18n } from '#lib/i18n/index.ts';
+  import { applyTheme, theme } from '#lib/stores/settings.ts';
 
   initI18n();
 

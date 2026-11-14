@@ -1,5 +1,5 @@
 import { get, writable } from 'svelte/store';
-import { listAccounts, type AccountEntry } from '$lib/api/accounts';
+import { listAccounts, type AccountEntry } from '#lib/api/accounts.ts';
 
 /**
  * Comptes, partagés par tous les écrans (onglets gardés montés) : `null`

@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "LenScout",
-        "width": 1100,
-        "height": 700
+        "width": 1200,
+        "height": 700,
+        "minWidth": 1160,
+        "minHeight": 560
       }
     ],
     "security": {

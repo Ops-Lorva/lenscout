@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import type { ActionDto } from '$lib/api/configure';
-  import { defaultTimeZone, splitList, timeZones } from '$lib/api/configure';
+  import type { ActionDto } from '#lib/api/configure.ts';
+  import { defaultTimeZone, splitList, timeZones } from '#lib/api/configure.ts';
   import AccountPicker from './AccountPicker.svelte';
   import Dialog from './Dialog.svelte';
 

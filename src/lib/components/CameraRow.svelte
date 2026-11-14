@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { resultMessage, type ActionResult } from '$lib/api/configure';
-  import type { Camera } from '$lib/api/types';
+  import { resultMessage, type ActionResult } from '#lib/api/configure.ts';
+  import type { Camera } from '#lib/api/types.ts';
 
   let {
     camera,

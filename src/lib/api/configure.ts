@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { writable } from 'svelte/store';
 import type { Camera, Family } from './types';
-import { cameraKey } from '$lib/stores/cameras';
+import { cameraKey } from '#lib/stores/cameras.ts';
 import { errorKey } from './errors';
 
 /** Miroir de `ActionError` (actions.rs). `rejected.detail` vient de la caméra ; `invalid.reason` est un code. */

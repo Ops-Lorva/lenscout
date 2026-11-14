@@ -2,10 +2,10 @@
   import { onMount } from 'svelte';
   import { _, locale } from 'svelte-i18n';
   import { getVersion } from '@tauri-apps/api/app';
-  import { debugGet, debugSet } from '$lib/api/core';
-  import { errorKey } from '$lib/api/errors';
-  import { LANGS, setLang, type Lang } from '$lib/i18n';
-  import { setTheme, theme, THEMES } from '$lib/stores/settings';
+  import { debugGet, debugSet } from '#lib/api/core.ts';
+  import { errorKey } from '#lib/api/errors.ts';
+  import { LANGS, setLang, type Lang } from '#lib/i18n/index.ts';
+  import { setTheme, theme, THEMES } from '#lib/stores/settings.ts';
 
   let version = $state('');
   let debug = $state(false);

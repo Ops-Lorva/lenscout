@@ -1,8 +1,8 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { applyAction, canActivate, dialogAfterSelection, canAct, canChangeIp, canBatchIp, clearResults, setResults, type ActionDto, type ActionResult } from '$lib/api/configure';
-  import { errorKey } from '$lib/api/errors';
-  import { cameraKey, cameras, selectedCameras } from '$lib/stores/cameras';
+  import { applyAction, canActivate, dialogAfterSelection, canAct, canChangeIp, canBatchIp, clearResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
+  import { errorKey } from '#lib/api/errors.ts';
+  import { cameraKey, cameras, selectedCameras } from '#lib/stores/cameras.ts';
   import BatchIpDialog from './BatchIpDialog.svelte';
   import ActivateDialog from './ActivateDialog.svelte';
   import NetworkDialog from './NetworkDialog.svelte';

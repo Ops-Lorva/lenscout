@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { _ } from 'svelte-i18n';
-  import { errorKey } from '$lib/api/errors';
-  import { ACCOUNT_KEY, pickAccount, type Account } from '$lib/api/accounts';
-  import { accountList, ensureAccounts } from '$lib/stores/accounts';
+  import { errorKey } from '#lib/api/errors.ts';
+  import { ACCOUNT_KEY, pickAccount, type Account } from '#lib/api/accounts.ts';
+  import { accountList, ensureAccounts } from '#lib/stores/accounts.ts';
 
   // `id` : pour le `<label for>` d'une feuille ; `account` : le compte retenu
   // (champs réseau compris), pour le préremplissage.

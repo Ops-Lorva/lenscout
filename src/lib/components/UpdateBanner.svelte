@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
-  import { applyUpdate, checkUpdate, DISMISS_KEY, shouldShow, type UpdateInfo } from '$lib/api/update';
+  import { applyUpdate, checkUpdate, DISMISS_KEY, shouldShow, type UpdateInfo } from '#lib/api/update.ts';
 
   let info = $state<UpdateInfo | null>(null);
   let installing = $state(false);

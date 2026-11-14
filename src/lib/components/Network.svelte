@@ -2,19 +2,19 @@
   import { onDestroy, onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { _ } from 'svelte-i18n';
-  import { interfaceDetails, listInterfaces } from '$lib/api/core';
-  import { cancelScan, openCameraWeb, startScan } from '$lib/api/discovery';
-  import type { Camera } from '$lib/api/types';
-  import { errorKey } from '$lib/api/errors';
-  import { cameraKey, cameras, clear, clearCameras, query, selection, shouldAutoScan, upsert, visibleCameras } from '$lib/stores/cameras';
-  import { clearStatusIf, framingTarget, page, status, type Status } from '$lib/stores/nav';
+  import { interfaceDetails, listInterfaces } from '#lib/api/core.ts';
+  import { cancelScan, openCameraWeb, startScan } from '#lib/api/discovery.ts';
+  import type { Camera } from '#lib/api/types.ts';
+  import { errorKey } from '#lib/api/errors.ts';
+  import { cameraKey, cameras, clear, clearCameras, query, selection, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
+  import { clearStatusIf, framingTarget, page, status, type Status } from '#lib/stores/nav.ts';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
-  import { actionResults, resultFor } from '$lib/api/configure';
-  import { accountList, ensureAccounts } from '$lib/stores/accounts';
+  import { actionResults, resultFor } from '#lib/api/configure.ts';
+  import { accountList, ensureAccounts } from '#lib/stores/accounts.ts';
   import {
     accountChoices, canScan, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice,
-  } from '$lib/api/net';
+  } from '#lib/api/net.ts';
 
   const IFACE_KEY = 'lenscout.iface';
   const RESCAN_DELAYS_MS = [3000, 15000];
@@ -283,17 +283,17 @@
 <ActionBar {iface} onDone={rescanSoon} />
 
 <div class="scroll">
-  <table>
+  <table class="fixed">
     <thead>
       <tr>
         <th class="chk"><input type="checkbox" checked={allSelected} onchange={toggleAll} aria-label={$_('network.selectAll')} /></th>
         <th>{$_('network.col.camera')}</th>
-        <th>{$_('network.col.ip')}</th>
-        <th>{$_('network.col.mac')}</th>
-        <th>{$_('network.col.serial')}</th>
-        <th>{$_('network.col.firmware')}</th>
-        <th>{$_('network.col.state')}</th>
-        <th></th>
+        <th style="width:112px">{$_('network.col.ip')}</th>
+        <th style="width:136px">{$_('network.col.mac')}</th>
+        <th style="width:100px">{$_('network.col.serial')}</th>
+        <th style="width:84px">{$_('network.col.firmware')}</th>
+        <th style="width:112px">{$_('network.col.state')}</th>
+        <th style="width:200px"></th>
       </tr>
     </thead>
     <tbody>

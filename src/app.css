@@ -110,7 +110,7 @@ input[type='search'], input[type='text'], input[type='password'], input:not([typ
   font: inherit; font-size: 13px; height: 28px; padding: 0 10px; border: 1px solid var(--line);
   border-radius: 7px; background: var(--field); color: var(--text); min-width: 0;
 }
-input[type='search'] { flex: 1; min-width: 140px; }
+input[type='search'] { flex: 0 1 260px; min-width: 140px; }
 select {
   font: inherit; font-size: 13px; height: 28px; padding: 0 26px 0 10px; border: 1px solid var(--line);
   border-radius: 7px; background: var(--field); color: var(--text); max-width: 100%; box-shadow: var(--shadow-btn);
@@ -131,7 +131,11 @@ select:disabled { opacity: .55; }
 /* Liste : séparateurs horizontaux légers, pas de grille ni de bandes ; 32 px par ligne */
 .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--field); }
 table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--field); }
-.scroll table { min-width: 720px; }
+.scroll table { min-width: 960px; }
+/* Colonnes à largeur fixe : seule la première (le nom) prend l'espace restant,
+   les autres ne bougent pas quand la fenêtre change de taille. */
+table.fixed { table-layout: fixed; }
+table.fixed td { overflow: hidden; text-overflow: ellipsis; }
 th { text-align: left; font-weight: 500; color: var(--text-2); font-size: 12px; padding: 7px 8px; border-bottom: 1px solid var(--line); background: var(--win); white-space: nowrap; }
 td { padding: 0 8px; height: 32px; white-space: nowrap; font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--line-soft); }
 tbody tr:last-child td { border-bottom: 0; }

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
-  import { page } from '$lib/stores/nav';
+  import { page } from '#lib/stores/nav.ts';
   import { _ } from 'svelte-i18n';
   import {
     cancelFreeIps, freeErrorKey, networkLabel, rangeContaining, rangeLabel, reduceFreeEvent, startFreeIps,
     type FreeRange, type FreeState,
-  } from '$lib/api/freeIps';
+  } from '#lib/api/freeIps.ts';
 
   // Au plus autant d'adresses balayées que le cœur (`MAX_CANDIDATES`).
   const MAX_SCANNED = 1024;

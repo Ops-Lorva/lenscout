@@ -1,15 +1,15 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import type { Account } from '$lib/api/accounts';
-  import { activeAddress, INITIAL_PREFILL, joined, prefillFields } from '$lib/api/net';
+  import type { Account } from '#lib/api/accounts.ts';
+  import { activeAddress, INITIAL_PREFILL, joined, prefillFields } from '#lib/api/net.ts';
   import { _ } from 'svelte-i18n';
-  import { interfaceDetails } from '$lib/api/core';
+  import { interfaceDetails } from '#lib/api/core.ts';
   import {
     batchApply, batchErrorMessage, batchFingerprint, batchPreview, orNull, outsideSubnet, splitList,
     type ActionResult, type BatchPreview,
-  } from '$lib/api/configure';
-  import { firstFit, type FreeRange } from '$lib/api/freeIps';
-  import type { Camera } from '$lib/api/types';
+  } from '#lib/api/configure.ts';
+  import { firstFit, type FreeRange } from '#lib/api/freeIps.ts';
+  import type { Camera } from '#lib/api/types.ts';
   import AccountPicker from './AccountPicker.svelte';
   import Dialog from './Dialog.svelte';
   import FreeIps from './FreeIps.svelte';

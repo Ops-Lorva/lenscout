@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import type { Account } from '$lib/api/accounts';
-  import { activeAddress, INITIAL_PREFILL, joined, prefillFields } from '$lib/api/net';
+  import type { Account } from '#lib/api/accounts.ts';
+  import { activeAddress, INITIAL_PREFILL, joined, prefillFields } from '#lib/api/net.ts';
   import { _ } from 'svelte-i18n';
-  import { interfaceDetails } from '$lib/api/core';
-  import type { ActionDto } from '$lib/api/configure';
-  import { orNull, outsideSubnet, splitList } from '$lib/api/configure';
+  import { interfaceDetails } from '#lib/api/core.ts';
+  import type { ActionDto } from '#lib/api/configure.ts';
+  import { orNull, outsideSubnet, splitList } from '#lib/api/configure.ts';
   import AccountPicker from './AccountPicker.svelte';
   import Dialog from './Dialog.svelte';
   import FreeIps from './FreeIps.svelte';

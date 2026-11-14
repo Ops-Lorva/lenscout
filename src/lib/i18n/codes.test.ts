@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CODES } from '$lib/api/errors';
-import { resultMessage, type ActionError } from '$lib/api/configure';
+import { CODES } from '#lib/api/errors.ts';
+import { resultMessage, type ActionError } from '#lib/api/configure.ts';
 import { LANGS, mergeLocales } from './index';
 
 /**

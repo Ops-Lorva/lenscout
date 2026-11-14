@@ -3,8 +3,8 @@
   import {
     applyImport, CHOICES, defaultChoices, groupPlan, keepBothNames, whyKeys,
     type Choice, type ImportItem, type ImportPlan, type ImportSummary,
-  } from '$lib/api/accounts';
-  import { errorKey } from '$lib/api/errors';
+  } from '#lib/api/accounts.ts';
+  import { errorKey } from '#lib/api/errors.ts';
   import Dialog from './Dialog.svelte';
 
   // Feuille d'import : ce que contient le fichier, en trois groupes. On ne

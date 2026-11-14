@@ -5,10 +5,10 @@
   import {
     accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, netIn, noticeKey,
     passwordRequired, passwordToSend, pcIpError, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
-  } from '$lib/api/accounts';
-  import { errorKey } from '$lib/api/errors';
-  import { accountList, refreshAccounts } from '$lib/stores/accounts';
-  import { clearStatusIf, page, status, type Status } from '$lib/stores/nav';
+  } from '#lib/api/accounts.ts';
+  import { errorKey } from '#lib/api/errors.ts';
+  import { accountList, refreshAccounts } from '#lib/stores/accounts.ts';
+  import { clearStatusIf, page, status, type Status } from '#lib/stores/nav.ts';
   import Dialog from './Dialog.svelte';
   import ImportSheet from './ImportSheet.svelte';
 
@@ -191,20 +191,19 @@
   <span class="title">{$_('common.nav.accounts')}</span>
   <button class="btn" onclick={doImport}>{$_('accounts.import')}</button>
   <button class="btn" onclick={doExport} disabled={accounts.length === 0}>{$_('accounts.export')}</button>
-  <span class="gap"></span>
   <button class="btn def" onclick={() => open(null)}>{$_('accounts.add')}</button>
 </div>
 
 {#if error && editing === null}<p class="err">{$_(error)}</p>{/if}
 
-<table>
+<table class="fixed">
   <thead>
     <tr>
-      <th style="width:34%">{$_('accounts.col.name')}</th>
-      <th style="width:22%">{$_('accounts.col.login')}</th>
-      <th>{$_('accounts.field.pc_ip')}</th>
-      <th>{$_('accounts.field.password')}</th>
-      <th style="width:1%"></th>
+      <th>{$_('accounts.col.name')}</th>
+      <th style="width:150px">{$_('accounts.col.login')}</th>
+      <th style="width:150px">{$_('accounts.field.pc_ip')}</th>
+      <th style="width:110px">{$_('accounts.field.password')}</th>
+      <th style="width:150px"></th>
     </tr>
   </thead>
   <tbody>
@@ -270,9 +269,8 @@
 
 <style>
   form { margin: 0; }
-  /* Importer / Exporter à côté du titre, Ajouter à l'autre bout. */
+  /* Boutons groupés à côté du titre : ils ne suivent pas le bord de la fenêtre. */
   .tools .title { flex: none; margin-right: 6px; }
-  .gap { flex: 1; }
   /* Œil du mot de passe, dans le champ à droite. */
   .pw { position: relative; display: block; }
   .pw input { padding-right: 30px; }

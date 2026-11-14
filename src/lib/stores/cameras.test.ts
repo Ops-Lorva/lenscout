@@ -1,6 +1,6 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
-import type { Camera } from '$lib/api/types';
+import type { Camera } from '#lib/api/types.ts';
 import { cameras, clear, clearCameras, query, selectedCameras, selection, shouldAutoScan, upsert } from './cameras';
 
 const cam = (over: Partial<Camera>): Camera => ({

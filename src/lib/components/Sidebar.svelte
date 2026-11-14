@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { page, type Page } from '$lib/stores/nav';
+  import { page, type Page } from '#lib/stores/nav.ts';
 
   // Icônes de ligne 16×16 de la maquette, trait `currentColor`.
   const items: { id: Page; key: string; paths: string[] }[] = [

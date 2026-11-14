@@ -1,6 +1,6 @@
 import { derived, writable, type Readable } from 'svelte/store';
-import type { Camera } from '$lib/api/types';
-import { filterCameras } from '$lib/search';
+import type { Camera } from '#lib/api/types.ts';
+import { filterCameras } from '#lib/search.ts';
 
 /** Clé d'une caméra : son MAC, sinon son IP (une caméra garde son MAC si elle change d'IP). */
 export const cameraKey = (c: Camera): string => c.mac ?? c.ip;

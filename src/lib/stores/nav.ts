@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { Camera } from '$lib/api/types';
+import type { Camera } from '#lib/api/types.ts';
 
 export const PAGES = ['network', 'framing', 'accounts', 'settings'] as const;
 export type Page = (typeof PAGES)[number];
