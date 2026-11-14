@@ -156,6 +156,19 @@ test('feuilles IP : le compte remplit masque et passerelle, jamais un champ touc
   expect(prefillFields({ mask: '255.255.0.0', gateway: '10.0.0.1' }, none, null)).toEqual(INITIAL_PREFILL);
 });
 
+test('le DNS suit la passerelle tant qu’il n’est pas touché', async () => {
+  const { dnsFollowing } = await import('./net');
+  // Ouverture : DNS vide, passerelle préremplie par le compte → le DNS la prend.
+  expect(dnsFollowing('', false, '10.0.0.1')).toBe('10.0.0.1');
+  // Passerelle changée (compte ou saisie) : le DNS non touché suit.
+  expect(dnsFollowing('10.0.0.1', false, '192.168.1.1')).toBe('192.168.1.1');
+  // Passerelle vidée : le DNS non touché se vide aussi.
+  expect(dnsFollowing('192.168.1.1', false, '')).toBe('');
+  // DNS touché : jamais écrasé, même vide.
+  expect(dnsFollowing('8.8.8.8', true, '192.168.1.1')).toBe('8.8.8.8');
+  expect(dnsFollowing('', true, '192.168.1.1')).toBe('');
+});
+
 test('après une pose, le scan attend que Rust voie l’adresse sur le poste', async () => {
   invoke.mockResolvedValue(undefined);
   await joinReady();

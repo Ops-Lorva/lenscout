@@ -186,3 +186,10 @@ export function prefillFields(fields: MaskGateway, touched: { mask: boolean; gat
 
 /** État initial d'une feuille : masque par défaut, passerelle vide. */
 export const INITIAL_PREFILL: MaskGateway = { mask: DEFAULT_MASK, gateway: '' };
+
+/**
+ * Le DNS des feuilles IP : la passerelle (du compte ou saisie) tant que
+ * l'utilisateur n'a pas tapé dans le champ. Une fois touché, il reste,
+ * même vide : c'est un choix.
+ */
+export const dnsFollowing = (dns: string, touched: boolean, gateway: string): string => (touched ? dns : gateway);

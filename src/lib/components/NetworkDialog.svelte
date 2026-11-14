@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import type { Account } from '#lib/api/accounts.ts';
-  import { activeAddress, INITIAL_PREFILL, joined, prefillFields } from '#lib/api/net.ts';
+  import { activeAddress, dnsFollowing, INITIAL_PREFILL, joined, prefillFields } from '#lib/api/net.ts';
   import { _ } from 'svelte-i18n';
   import { interfaceDetails } from '#lib/api/core.ts';
   import type { ActionDto } from '#lib/api/configure.ts';
@@ -45,6 +45,12 @@
     const a = account;
     untrack(() => ({ mask, gateway } = prefillFields({ mask, gateway }, touched, a)));
   });
+  // Le DNS suit la passerelle (préremplie ou saisie) tant qu'il n'est pas touché.
+  let dnsTouched = false;
+  $effect(() => {
+    const g = gateway;
+    untrack(() => (dns = dnsFollowing(dns, dnsTouched, g)));
+  });
   const off = $derived(!dhcp && outsideSubnet(ip, ifaceIp, ifaceMask));
 
   // Les adresses sont validées par Rust (type `Ipv4Addr` puis règles de la caméra) :
@@ -75,7 +81,7 @@
       {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
       <label for="ip-mask">{$_('configure.mask')}</label><input id="ip-mask" type="text" bind:value={mask} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />
       <label for="ip-gw">{$_('configure.gateway')}</label><input id="ip-gw" type="text" bind:value={gateway} oninput={() => (touched.gateway = true)} inputmode="decimal" autocomplete="off" />
-      <label for="ip-dns">{$_('configure.dns')}</label><input id="ip-dns" type="text" bind:value={dns} autocomplete="off" />
+      <label for="ip-dns">{$_('configure.dns')}</label><input id="ip-dns" type="text" bind:value={dns} oninput={() => (dnsTouched = true)} autocomplete="off" />
     {/if}
   </div>
   <div class="foot">
