@@ -243,6 +243,9 @@ pub trait SecretStore: Send + Sync {
 /// Secret Service (Linux).
 pub struct KeyringStore;
 
+// Service des comptes du format 1 : c'est l'ancien identifiant de l'app, et
+// il doit le rester (le changement d'identifiant ne déplace pas le trousseau,
+// la reprise lit les secrets là où ils ont été écrits).
 const SERVICE: &str = "io.lenscout.app";
 
 impl KeyringStore {

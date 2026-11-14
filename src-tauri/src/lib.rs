@@ -25,6 +25,12 @@ const EXIT_WAIT: Duration = Duration::from_secs(10);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Nouvel identifiant : les dossiers de l'ancien sont recopiés AVANT tout
+    // chargement (comptes, IP temporaire d'une session tuée) et avant que le
+    // webview ouvre son profil. L'ancien reste en place.
+    for (dir, e) in lenscout_core::migrate::migrate_identifier() {
+        eprintln!("Lenscout : {} non repris : {e}", dir.display());
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

@@ -288,7 +288,7 @@ jobs:
             --root "$PKG_ROOT" \
             --component-plist "$COMPONENT_PLIST" \
             --install-location /Applications \
-            --identifier io.lenscout.app.pkg \
+            --identifier io.lenscout.desktop.pkg \
             --version "${TAG#v}" \
             --sign "$INSTALLER_ID" \
             "$SIGNED_PKG"
