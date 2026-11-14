@@ -85,7 +85,7 @@ fn exclusions(
 ) -> HashSet<Ipv4Addr> {
     let mut out: HashSet<Ipv4Addr> = excluded_in(iface, account);
     if seen.iface.as_deref() == Some(iface.name.as_str()) {
-        out.extend(seen.ips.iter().copied().filter(|a| !own.contains(a)));
+        out.extend(seen.ips.iter().chain(&seen.routed).copied().filter(|a| !own.contains(a)));
     }
     out.extend(gateway.and_then(|g| g.trim().parse::<Ipv4Addr>().ok()));
     out
@@ -127,16 +127,21 @@ pub async fn cmd_free_ips(
     .await
     .map_err(|_| "internal".to_string())??;
 
-    // Dans le réseau d'un compte : ce réseau-là, et la passerelle du compte.
-    let (iface, gateway) = match join.gateway_on(&iface.name) {
-        Some(g) => (join.scope(iface), Some(g.to_string())),
-        None if join.temp().is_some_and(|t| t.iface == iface.name) => (join.scope(iface), None),
-        None => (iface, gateway),
+    // Mode routé : le réseau du compte, pingé depuis l'adresse de l'interface
+    // (l'ARP ne passe pas le routeur ; ses voisins ne sont pas de ce réseau).
+    let routed = join.routed_on(&iface.name);
+    let probe = Arc::new(SystemProbe { iface: iface.clone() });
+    let (iface, gateway) = match (&routed, join.gateway_on(&iface.name)) {
+        (Some(r), _) => (ScanInterface { name: iface.name.clone(), ip: r.probe, mask: r.mask }, Some(r.probe.to_string())),
+        (None, Some(g)) => (join.scope(iface), Some(g.to_string())),
+        (None, None) if join.temp().is_some_and(|t| t.iface == iface.name) => (join.scope(iface), None),
+        (None, None) => (iface, gateway),
     };
     let account = super::accounts::exclusions_for(&accounts, account_id.as_deref());
     let own: HashSet<Ipv4Addr> = own.unwrap_or_default().into_iter().collect();
     let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref(), &account, &own);
-    let probe = Arc::new(SystemProbe { iface: iface.clone() });
+    // Sans mode routé, le ping part de l'adresse balayée (celle du compte posée).
+    let probe = if routed.is_some() { probe } else { Arc::new(SystemProbe { iface: iface.clone() }) };
     let sender = channel.clone();
     let result = scan(&iface, exclude, &own, probe, progress_to(token.clone(), move |e| sender.send(e).is_ok()), token.clone()).await;
     match result {
@@ -173,7 +178,7 @@ mod tests {
     }
 
     fn seen(iface: &str, ips: &[&str]) -> SeenSnapshot {
-        SeenSnapshot { iface: Some(iface.into()), ips: ips.iter().map(|s| s.parse().unwrap()).collect(), sadp_macs: vec![], states: vec![] }
+        SeenSnapshot { iface: Some(iface.into()), ips: ips.iter().map(|s| s.parse().unwrap()).collect(), sadp_macs: vec![], states: vec![], routed: vec![] }
     }
 
     #[test]

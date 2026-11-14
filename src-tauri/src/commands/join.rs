@@ -4,7 +4,9 @@ use std::sync::Mutex;
 use lenscout_core::accounts::{AccountBook, AccountNetwork};
 use lenscout_core::discovery::arp::{ScanInterface, read_neighbours};
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
+use lenscout_core::free_ips::{FreeProbe, Reply, SystemProbe};
 use lenscout_core::presence;
+use lenscout_core::route::{Route, Routes, SystemRoutes, probe_address};
 use lenscout_core::temp_ip::{
     HeldTempIp, SwitchFailure, SystemElevator, TempIp, TempIpError, hold_temp_ip, joined_scope, needs_temp_ip,
     subnets_overlap, switch_held,
@@ -22,6 +24,9 @@ use super::configure::TempIpJournal;
 #[derive(Default)]
 pub struct JoinState {
     current: Mutex<Option<Joined>>,
+    /// Mode routé : le réseau du compte est joint par le routeur, rien n'est
+    /// posé sur le poste. Exclusif de `current`.
+    routed: Mutex<Option<RoutedJoin>>,
     /// Une pose, un retrait ou une lecture de l'état à la fois.
     op: tokio::sync::Mutex<()>,
 }
@@ -38,7 +43,34 @@ struct Joined {
     primary: ScanInterface,
 }
 
+/// Le réseau d'un compte joint à travers le routeur (un autre VLAN).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutedJoin {
+    pub account_id: String,
+    /// Interface telle que le front la nomme.
+    pub service: String,
+    /// `ScanInterface::name` de l'interface.
+    pub iface: String,
+    /// Réseau du compte (adresse du PC et masque du compte).
+    pub ip: Ipv4Addr,
+    pub mask: Ipv4Addr,
+    /// L'adresse dont la route a été demandée (passerelle du compte, sinon
+    /// premier hôte) : elle a répondu à travers le routeur.
+    pub probe: Ipv4Addr,
+    /// La passerelle du poste par laquelle passe la route.
+    pub via: Ipv4Addr,
+}
+
 impl JoinState {
+    fn routed_lock(&self) -> std::sync::MutexGuard<'_, Option<RoutedJoin>> {
+        self.routed.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Le réseau routé du compte retenu sur `iface` (`ScanInterface::name`).
+    pub fn routed_on(&self, iface: &str) -> Option<RoutedJoin> {
+        self.routed_lock().clone().filter(|r| r.iface == iface)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Joined>> {
         self.current.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -62,10 +94,11 @@ impl JoinState {
     /// `cleanup_before_exit` retire l'adresse juste après.
     pub fn let_go(&self) {
         self.lock().take();
+        self.routed_lock().take();
     }
 
     fn out(&self) -> Option<JoinedOut> {
-        self.lock().as_ref().map(JoinedOut::new)
+        self.lock().as_ref().map(JoinedOut::new).or_else(|| self.routed_lock().as_ref().map(JoinedOut::routed))
     }
 }
 
@@ -79,6 +112,10 @@ pub struct JoinedOut {
     pub mask: String,
     /// `192.168.1.250/24`.
     pub cidr: String,
+    /// Mode routé : la passerelle du poste par laquelle passe le réseau du
+    /// compte ; `ip`, `mask` et `cidr` sont alors ceux de ce réseau, rien
+    /// n'est posé.
+    pub via: Option<String>,
 }
 
 impl JoinedOut {
@@ -90,8 +127,41 @@ impl JoinedOut {
             ip: t.ip.to_string(),
             mask: t.mask.to_string(),
             cidr: format!("{}/{}", t.ip, u32::from(t.mask).count_ones()),
+            via: None,
         }
     }
+
+    fn routed(r: &RoutedJoin) -> Self {
+        let net = Ipv4Addr::from(u32::from(r.ip) & u32::from(r.mask));
+        JoinedOut {
+            account_id: r.account_id.clone(),
+            iface: r.service.clone(),
+            ip: net.to_string(),
+            mask: r.mask.to_string(),
+            cidr: format!("{net}/{}", u32::from(r.mask).count_ones()),
+            via: Some(r.via.to_string()),
+        }
+    }
+}
+
+/// Le réseau du compte est-il joint par un routeur ? Oui si la route vers
+/// `probe` passe par une passerelle ET que `probe` répond au ping par là.
+/// La route seule ne suffit pas : un réseau inconnu du poste (caméras neuves
+/// en 192.168.0.x sur le même câble) part aussi par la route par défaut ;
+/// seule une réponse dit que le routeur le connaît. Rend la passerelle.
+/// ⚠️ À demander AVANT de poser une adresse (la route deviendrait connectée).
+pub(crate) async fn routed_via(routes: &dyn Routes, ping: &dyn FreeProbe, probe: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+    let probe = probe?;
+    let Route::Routed(via) = routes.route_to(probe).await else {
+        return None;
+    };
+    // Deux tirs : un écho perdu ne doit pas faire poser une adresse qui coupe le routage.
+    for _ in 0..2 {
+        if ping.ping(probe).await == Reply::Alive {
+            return Some(via);
+        }
+    }
+    None
 }
 
 /// Les interfaces que les contrôles d'une pose doivent voir : l'adresse
@@ -184,6 +254,7 @@ fn interface_gone_under(sys_net: &std::path::Path, name: &str) -> bool {
 /// Retire l'adresse posée, s'il y en a une. Échec ou refus : elle reste
 /// tenue (`temp_ip_left`, `elevation_refused`), l'écran reste sur le compte.
 async fn release_current(state: &JoinState) -> Result<(), String> {
+    state.routed_lock().take();
     let Some(j) = state.lock().take() else {
         return Ok(());
     };
@@ -256,12 +327,34 @@ pub async fn cmd_join_network(
     {
         return state.out().ok_or_else(|| "internal".to_string());
     }
+    // Le routeur joint-il déjà ce réseau ? Demandé avant toute pose. Alors
+    // rien n'est posé : l'adresse du compte couperait l'accès routé.
+    let gateway: Option<Ipv4Addr> = account.net.gateway.as_deref().and_then(|g| g.parse().ok());
+    let probe = probe_address(target.ip, target.mask, gateway);
+    let via = routed_via(&SystemRoutes, &SystemProbe { iface: base.clone() }, probe).await;
+    lenscout_core::debug_log::log(&match via {
+        Some(v) => format!("compte : {probe:?} joint par le routeur {v}, rien n'est posé"),
+        None => format!("compte : {probe:?} ni routé ni joignable, l'adresse est posée"),
+    });
+    if let (Some(via), Some(probe)) = (via, probe) {
+        release_current(&state).await?;
+        *state.routed_lock() = Some(RoutedJoin {
+            account_id,
+            service: iface,
+            iface: base.name.clone(),
+            ip: target.ip,
+            mask: target.mask,
+            probe,
+            via,
+        });
+        return state.out().ok_or_else(|| "internal".to_string());
+    }
     // Une adresse déjà vue dans la table ARP appartient à un autre appareil.
     let ours = current.as_ref().is_some_and(|(t, ..)| t.ip == target.ip);
     if !ours && read_neighbours(&base).await.contains_key(&target.ip) {
         return Err("pc_ip_in_use".into());
     }
-    let gateway = account.net.gateway.as_deref().and_then(|g| g.parse().ok());
+    state.routed_lock().take();
     let previous = state.lock().take();
     let previous = match previous {
         Some(j) if interface_gone(&j.service).await => {
@@ -531,5 +624,74 @@ mod tests {
         assert_eq!(kept_code(TempIpError::ElevationRefused), "elevation_refused");
         assert_eq!(kept_code(TempIpError::Failed("x".into())), "temp_ip_left");
         assert_eq!(kept_code(TempIpError::Busy), "temp_ip_busy");
+    }
+
+    struct Ping(Vec<Reply>, std::sync::Mutex<usize>);
+
+    #[async_trait::async_trait]
+    impl FreeProbe for Ping {
+        async fn ping(&self, _: Ipv4Addr) -> Reply {
+            let mut n = self.1.lock().unwrap();
+            *n += 1;
+            self.0.get(*n - 1).copied().unwrap_or(Reply::Silent)
+        }
+        async fn neighbours(&self) -> std::collections::HashSet<Ipv4Addr> {
+            Default::default()
+        }
+    }
+
+    fn ping(replies: &[Reply]) -> Ping {
+        Ping(replies.to_vec(), std::sync::Mutex::new(0))
+    }
+
+    #[tokio::test]
+    async fn un_reseau_route_qui_repond_ne_pose_rien() {
+        use lenscout_core::testing::FakeRoutes;
+        let gw: Ipv4Addr = "10.0.20.1".parse().unwrap();
+        let routed = FakeRoutes::routed("10.0.8.1");
+        assert_eq!(routed_via(&routed, &ping(&[Reply::Alive]), Some(gw)).await, Some("10.0.8.1".parse().unwrap()));
+        assert_eq!(routed.asked(), vec![gw]);
+        // Un écho perdu : second tir.
+        assert!(routed_via(&routed, &ping(&[Reply::Silent, Reply::Alive]), Some(gw)).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn sur_le_lien_inconnu_ou_muet_le_comportement_reste() {
+        use lenscout_core::testing::FakeRoutes;
+        let gw: Ipv4Addr = "192.168.0.1".parse().unwrap();
+        // Route par défaut vers un réseau que le routeur ignore (caméras neuves
+        // sur le même câble) : personne ne répond, on pose comme avant.
+        assert_eq!(routed_via(&FakeRoutes::routed("10.0.8.1"), &ping(&[]), Some(gw)).await, None);
+        for route in [Route::OnLink("en0".into()), Route::Unknown] {
+            let r = FakeRoutes::new(route);
+            assert_eq!(routed_via(&r, &ping(&[Reply::Alive]), Some(gw)).await, None);
+        }
+        assert_eq!(routed_via(&FakeRoutes::routed("10.0.8.1"), &ping(&[Reply::Alive]), None).await, None);
+    }
+
+    #[test]
+    fn le_mode_route_se_lit_comme_le_reseau_du_compte_avec_sa_passerelle() {
+        let state = JoinState::default();
+        let r = RoutedJoin {
+            account_id: "galleria".into(),
+            service: "Wi-Fi".into(),
+            iface: "en0".into(),
+            ip: "10.0.20.2".parse().unwrap(),
+            mask: "255.255.255.0".parse().unwrap(),
+            probe: "10.0.20.1".parse().unwrap(),
+            via: "10.0.8.1".parse().unwrap(),
+        };
+        *state.routed_lock() = Some(r.clone());
+        let out = state.out().unwrap();
+        assert_eq!((out.ip.as_str(), out.cidr.as_str(), out.via.as_deref()), ("10.0.20.0", "10.0.20.0/24", Some("10.0.8.1")));
+        assert_eq!(out.iface, "Wi-Fi");
+        // Rien de posé : le scan et les actions gardent l'adresse de l'interface.
+        assert!(state.temp().is_none());
+        let base = en0("10.0.8.235", "255.255.255.0");
+        assert_eq!(state.scope(base.clone()), base);
+        assert_eq!(state.routed_on("en0"), Some(r));
+        assert_eq!(state.routed_on("en1"), None);
+        state.let_go();
+        assert!(state.out().is_none());
     }
 }

@@ -55,6 +55,11 @@ export interface Joined {
   ip: string;
   mask: string;
   cidr: string;
+  /**
+   * Mode routé : la passerelle du poste par laquelle passe le réseau du
+   * compte. Rien n'est posé ; `ip`, `mask` et `cidr` sont ceux de ce réseau.
+   */
+  via?: string | null;
 }
 
 /** L'adresse posée pour un compte, partagée par l'écran Réseau et les feuilles IP. */
@@ -74,6 +79,17 @@ export function activeAddress(
 ): { ip: string | null; mask: string | null } {
   if (j && j.iface === iface) return { ip: j.ip, mask: j.mask };
   return { ip: details?.ip ?? null, mask: details?.subnet ?? null };
+}
+
+/**
+ * Adresse affichée à côté des sélecteurs : DHCP, celle de l'interface ;
+ * compte posé, l'IP posée ; mode routé, celle de l'interface (rien n'est
+ * posé) avec la passerelle par laquelle passe le compte.
+ */
+export function shownAddress(account: string, j: Joined | null, ifaceAddr: string): { addr: string; via: string | null } {
+  if (!account) return { addr: ifaceAddr, via: null };
+  if (j?.account_id !== account) return { addr: '', via: null };
+  return j.via ? { addr: ifaceAddr, via: j.via } : { addr: j.cidr, via: null };
 }
 
 /** Option du sélecteur de compte de l'écran Réseau. */

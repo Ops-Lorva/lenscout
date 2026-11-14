@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lenscout_core::accounts::AccountBook;
-use lenscout_core::actions::on_subnet;
+use lenscout_core::actions::{on_subnet, routed_allowed};
+use lenscout_core::route::{Routes, SystemRoutes};
 use lenscout_core::discovery::arp::ScanInterface;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::identify::{IdentifyError, identify};
@@ -21,6 +22,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio_util::sync::CancellationToken;
 
 use super::accounts::credentials_for;
+use super::discovery::ScanState;
 use super::join::JoinState;
 
 /// Délai d'établissement de la connexion ; le flux, lui, n'a pas de durée.
@@ -89,12 +91,21 @@ impl StreamState {
     }
 }
 
+/// La caméra peut-elle être cadrée ? Dans le sous-réseau d'une interface
+/// active, sinon à travers le routeur selon la règle des actions
+/// (`routed_allowed` : adresse privée, entendue au balayage routé du dernier
+/// scan, route par une passerelle à cet instant). La route n'est demandée
+/// que hors sous-réseau.
+pub(crate) async fn reachable(ifaces: &[ScanInterface], seen_routed: &[Ipv4Addr], routes: &dyn Routes, ip: Ipv4Addr) -> bool {
+    ifaces.iter().any(|i| on_subnet(i, ip)) || routed_allowed(routes, seen_routed, ip).await
+}
+
 /// L'adresse vient du front, et un mot de passe part vers elle : elle doit
-/// être dans le sous-réseau d'au moins une interface active, avant toute
+/// être joignable (`reachable`, calculé par l'appelant), avant toute
 /// requête. Puis l'URL du flux, sur la vue `view` d'une Axis multicapteur
 /// (`camera=N`) ; `unsupported_brand` si la marque n'en a pas.
-pub(crate) fn guarded_view_url(cam: &Camera, view: Option<u32>, ifaces: &[ScanInterface]) -> Result<String, String> {
-    if !ifaces.iter().any(|i| on_subnet(i, cam.ip)) {
+pub(crate) fn guarded_view_url(cam: &Camera, view: Option<u32>, reachable: bool) -> Result<String, String> {
+    if !reachable {
         return Err("camera_off_subnet".into());
     }
     stream_url_for_view(cam, view).ok_or_else(|| "unsupported_brand".to_string())
@@ -106,10 +117,10 @@ pub(crate) fn guarded_view_url(cam: &Camera, view: Option<u32>, ifaces: &[ScanIn
 pub(crate) async fn views_guarded(
     http: &dyn CameraHttp,
     cam: &Camera,
-    ifaces: &[ScanInterface],
+    reachable: bool,
     creds: impl FnOnce() -> Result<Credentials, String>,
 ) -> Result<Vec<View>, String> {
-    if !ifaces.iter().any(|i| on_subnet(i, cam.ip)) {
+    if !reachable {
         return Err("camera_off_subnet".into());
     }
     if cam.family != Family::Axis {
@@ -119,20 +130,22 @@ pub(crate) async fn views_guarded(
 }
 
 /// Adresse saisie dans Cadrage : lisible (`bad_ip`, l'adresse du poste
-/// comprise), puis la même garde de sous-réseau que le flux AVANT toute
+/// comprise), puis la même garde que le flux (`reachable`) AVANT toute
 /// requête (`camera_off_subnet`), puis l'identification (`unreachable`,
 /// `auth_failed`, `not_a_camera`). `creds` n'est lu qu'après la garde.
 pub(crate) async fn identify_guarded(
     http: &dyn CameraHttp,
     ip: &str,
     ifaces: &[ScanInterface],
+    seen_routed: &[Ipv4Addr],
+    routes: &dyn Routes,
     creds: impl FnOnce() -> Result<Credentials, String>,
 ) -> Result<Camera, String> {
     let ip: Ipv4Addr = ip.trim().parse().map_err(|_| "bad_ip".to_string())?;
     if ifaces.iter().any(|i| i.ip == ip) {
         return Err("bad_ip".into());
     }
-    if !ifaces.iter().any(|i| on_subnet(i, ip)) {
+    if !reachable(ifaces, seen_routed, routes, ip).await {
         return Err("camera_off_subnet".into());
     }
     identify(http, ip, &creds()?).await.map_err(|e| {
@@ -154,13 +167,15 @@ pub async fn cmd_identify_camera(
     account_id: String,
     accounts: State<'_, Mutex<AccountBook>>,
     join: State<'_, JoinState>,
+    scan: State<'_, ScanState>,
 ) -> Result<Camera, String> {
     let held = join.temp();
     let ifaces = tauri::async_runtime::spawn_blocking(move || guard_interfaces_now(held))
         .await
         .map_err(|_| "internal".to_string())?;
     let http = ReqwestCameraHttp::new(HTTP_TIMEOUT);
-    identify_guarded(&http, &ip, &ifaces, || credentials_for(&accounts, &account_id)).await
+    let seen_routed = scan.seen().routed;
+    identify_guarded(&http, &ip, &ifaces, &seen_routed, &SystemRoutes, || credentials_for(&accounts, &account_id)).await
 }
 
 /// Code stable d'une fin de flux sur erreur ; jamais le texte de l'erreur
@@ -211,11 +226,11 @@ pub(crate) fn start_guarded(
     http: Arc<dyn CameraHttp>,
     cam: &Camera,
     view: Option<u32>,
-    ifaces: &[ScanInterface],
+    reachable: bool,
     creds: Credentials,
     send: impl FnMut(Vec<u8>) -> Result<(), ()> + Send + 'static,
 ) -> Result<tauri::async_runtime::JoinHandle<Result<(), String>>, String> {
-    match guarded_view_url(cam, view, ifaces) {
+    match guarded_view_url(cam, view, reachable) {
         Ok(url) => Ok(spawn_stream(run, http, url, creds, send)),
         Err(e) => {
             state.release(run.id);
@@ -280,6 +295,7 @@ pub async fn cmd_stream_start(
     accounts: State<'_, Mutex<AccountBook>>,
     stream: State<'_, StreamState>,
     join: State<'_, JoinState>,
+    scan: State<'_, ScanState>,
 ) -> Result<(), String> {
     // Avant tout await : un stop reçu pendant les étapes suivantes annule ce jeton.
     let run = stream.replace();
@@ -290,10 +306,11 @@ pub async fn cmd_stream_start(
             .await
             .map_err(|_| "internal".to_string())?;
         let creds = credentials_for(&accounts, &account_id)?;
-        Ok::<_, String>((ifaces, creds))
+        let ok = reachable(&ifaces, &scan.seen().routed, &SystemRoutes, camera.ip).await;
+        Ok::<_, String>((ok, creds))
     }
     .await;
-    let (ifaces, creds) = match prepared {
+    let (ok, creds) = match prepared {
         Ok(p) => p,
         Err(e) => {
             stream.release(id);
@@ -306,7 +323,7 @@ pub async fn cmd_stream_start(
         Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT)),
         &camera,
         view.filter(|n| *n >= 1),
-        &ifaces,
+        ok,
         creds,
         move |frame| on_frame.send(InvokeResponseBody::Raw(frame)).map_err(|_| ()),
     )?;
@@ -321,13 +338,15 @@ pub async fn cmd_stream_views(
     account_id: String,
     accounts: State<'_, Mutex<AccountBook>>,
     join: State<'_, JoinState>,
+    scan: State<'_, ScanState>,
 ) -> Result<Vec<View>, String> {
     let held = join.temp();
     let ifaces = tauri::async_runtime::spawn_blocking(move || guard_interfaces_now(held))
         .await
         .map_err(|_| "internal".to_string())?;
     let http = ReqwestCameraHttp::new(HTTP_TIMEOUT);
-    views_guarded(&http, &camera, &ifaces, || credentials_for(&accounts, &account_id)).await
+    let ok = reachable(&ifaces, &scan.seen().routed, &SystemRoutes, camera.ip).await;
+    views_guarded(&http, &camera, ok, || credentials_for(&accounts, &account_id)).await
 }
 
 #[tauri::command]
@@ -347,9 +366,16 @@ mod tests {
 
     /// `guarded_view_url` sur la vue par défaut.
     fn guarded_url(cam: &Camera, ifaces: &[ScanInterface]) -> Result<String, String> {
-        guarded_view_url(cam, None, ifaces)
+        guarded_view_url(cam, None, ifaces.iter().any(|i| on_subnet(i, cam.ip)))
     }
     use async_trait::async_trait;
+    use lenscout_core::route::Route;
+    use lenscout_core::testing::FakeRoutes;
+
+    /// Aucune caméra routée : seule la garde de sous-réseau joue.
+    fn no_route() -> FakeRoutes {
+        FakeRoutes::new(Route::Unknown)
+    }
     use bytes::Bytes;
     use lenscout_core::model::{Activation, Family};
     use lenscout_core::secret::Secret;
@@ -428,7 +454,7 @@ mod tests {
     async fn ip_saisie_hors_sous_reseau_ou_illisible_refusee_avant_toute_requete() {
         let http = FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, "{}");
         for (ip, want) in [("198.51.100.7", "camera_off_subnet"), ("192.0.2", "bad_ip"), ("x", "bad_ip"), ("192.0.2.10", "bad_ip")] {
-            assert_eq!(identify_guarded(&http, ip, &[iface()], || Ok(creds())).await.err().as_deref(), Some(want), "{ip}");
+            assert_eq!(identify_guarded(&http, ip, &[iface()], &[], &no_route(), || Ok(creds())).await.err().as_deref(), Some(want), "{ip}");
         }
         assert!(http.requests().is_empty(), "aucune requete");
     }
@@ -437,23 +463,23 @@ mod tests {
     async fn ip_saisie_identifiee_par_la_meme_garde_puis_codes_clairs() {
         let info = br#"{"apiVersion":"1.0","data":{"propertyList":{"Brand":"AXIS","ProdNbr":"M3106","SerialNumber":"ACCC8E000002"}}}"#;
         let http = FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info.to_vec());
-        let cam = identify_guarded(&http, " 192.0.2.20 ", &[iface()], || Ok(creds())).await.unwrap();
+        let cam = identify_guarded(&http, " 192.0.2.20 ", &[iface()], &[], &no_route(), || Ok(creds())).await.unwrap();
         assert_eq!((cam.family, cam.ip), (Family::Axis, "192.0.2.20".parse().unwrap()));
         // La garde de flux accepte la caméra identifiée.
         assert!(guarded_url(&cam, &[iface()]).is_ok());
-        assert_eq!(identify_guarded(&FakeHttp::new(), "192.0.2.20", &[iface()], || Ok(creds())).await.err().as_deref(), Some("unreachable"));
+        assert_eq!(identify_guarded(&FakeHttp::new(), "192.0.2.20", &[iface()], &[], &no_route(), || Ok(creds())).await.err().as_deref(), Some("unreachable"));
         let refused = FakeHttp::new()
             .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 404, "")
             .on(Method::Get, "/axis-cgi/param.cgi", 404, "")
             .on(Method::Get, "/ISAPI/System/deviceInfo", 401, "");
-        assert_eq!(identify_guarded(&refused, "192.0.2.20", &[iface()], || Ok(creds())).await.err().as_deref(), Some("auth_failed"));
+        assert_eq!(identify_guarded(&refused, "192.0.2.20", &[iface()], &[], &no_route(), || Ok(creds())).await.err().as_deref(), Some("auth_failed"));
         let other = FakeHttp::new()
             .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 404, "")
             .on(Method::Get, "/axis-cgi/param.cgi", 404, "")
             .on(Method::Get, "/ISAPI/System/deviceInfo", 404, "");
-        assert_eq!(identify_guarded(&other, "192.0.2.20", &[iface()], || Ok(creds())).await.err().as_deref(), Some("not_a_camera"));
+        assert_eq!(identify_guarded(&other, "192.0.2.20", &[iface()], &[], &no_route(), || Ok(creds())).await.err().as_deref(), Some("not_a_camera"));
         // Compte introuvable : le code du compte remonte.
-        assert_eq!(identify_guarded(&other, "192.0.2.20", &[iface()], || Err("not_found".into())).await.err().as_deref(), Some("not_found"));
+        assert_eq!(identify_guarded(&other, "192.0.2.20", &[iface()], &[], &no_route(), || Err("not_found".into())).await.err().as_deref(), Some("not_found"));
     }
 
     fn si(name: &str, ip: &str, mask: &str) -> ScanInterface {
@@ -520,7 +546,7 @@ mod tests {
         let state = StreamState::default();
         for (ip, ifaces) in [("198.51.100.7", vec![iface()]), ("192.0.3.7", vec![iface()]), ("192.0.2.20", vec![])] {
             let run = state.replace();
-            let r = start_guarded(&state, run, http.clone(), &cam(ip, Family::Axis), None, &ifaces, creds(), |_| Ok(()));
+            let r = start_guarded(&state, run, http.clone(), &cam(ip, Family::Axis), None, ifaces.iter().any(|i| on_subnet(i, ip.parse().unwrap())), creds(), |_| Ok(()));
             assert_eq!(r.err().as_deref(), Some("camera_off_subnet"), "{ip}");
             // Le refus libère le jeton posé au départ.
             assert!(!active(&state), "{ip}");
@@ -544,7 +570,7 @@ mod tests {
     fn marque_sans_flux() {
         let state = StreamState::default();
         let run = state.replace();
-        let r = start_guarded(&state, run, fake(1), &cam("192.0.2.20", Family::Other), None, &[iface()], creds(), |_| Ok(()));
+        let r = start_guarded(&state, run, fake(1), &cam("192.0.2.20", Family::Other), None, true, creds(), |_| Ok(()));
         assert_eq!(r.err().as_deref(), Some("unsupported_brand"));
         assert!(!active(&state));
     }
@@ -554,7 +580,7 @@ mod tests {
         let http = fake(0);
         let state = StreamState::default();
         let run = state.replace();
-        let h = start_guarded(&state, run, http.clone(), &cam("192.0.2.20", Family::Axis), None, &[iface()], creds(), |_| Ok(()))
+        let h = start_guarded(&state, run, http.clone(), &cam("192.0.2.20", Family::Axis), None, true, creds(), |_| Ok(()))
             .unwrap();
         let _ = h.await;
         let reqs = http.requests();
@@ -570,7 +596,7 @@ mod tests {
         let state = StreamState::default();
         let run = state.replace(); // debut de cmd_stream_start
         state.stop(); // le front arrete pendant les await
-        let h = start_guarded(&state, run, http.clone(), &cam("192.0.2.20", Family::Axis), None, &[iface()], creds(), |_| Ok(()))
+        let h = start_guarded(&state, run, http.clone(), &cam("192.0.2.20", Family::Axis), None, true, creds(), |_| Ok(()))
             .unwrap();
         assert_eq!(h.await.unwrap(), Ok(()));
         assert!(http.requests().is_empty(), "le flux annule n'a rien demande a la camera");
@@ -677,7 +703,7 @@ mod tests {
         let http = fake(0);
         let state = StreamState::default();
         let run = state.replace();
-        let h = start_guarded(&state, run, http.clone(), &cam("192.0.2.20", Family::Axis), Some(3), &[iface()], creds(), |_| Ok(()))
+        let h = start_guarded(&state, run, http.clone(), &cam("192.0.2.20", Family::Axis), Some(3), true, creds(), |_| Ok(()))
             .unwrap();
         let _ = h.await;
         assert!(http.requests()[0].url.ends_with("&camera=3"), "{}", http.requests()[0].url);
@@ -688,15 +714,43 @@ mod tests {
         let http = FakeHttp::new()
             .on(Method::Get, "/axis-cgi/param.cgi?action=list&group=Properties.Image.NbrOfViews", 200, "root.Properties.Image.NbrOfViews=3\n")
             .on(Method::Get, "/axis-cgi/param.cgi?action=list&group=Image", 200, "");
-        let v = views_guarded(&http, &cam("192.0.2.20", Family::Axis), &[iface()], || Ok(creds())).await.unwrap();
+        let v = views_guarded(&http, &cam("192.0.2.20", Family::Axis), true, || Ok(creds())).await.unwrap();
         assert_eq!(v.len(), 3);
         // Hors sous-réseau : refusé avant toute requête, le compte n'est pas lu.
         let silent = FakeHttp::new();
-        let r = views_guarded(&silent, &cam("198.51.100.7", Family::Axis), &[iface()], || panic!("compte lu")).await;
+        let r = views_guarded(&silent, &cam("198.51.100.7", Family::Axis), false, || panic!("compte lu")).await;
         assert_eq!(r.err().as_deref(), Some("camera_off_subnet"));
         // Hikvision : une vue, aucune requête.
-        let v = views_guarded(&silent, &cam("192.0.2.21", Family::Hikvision), &[iface()], || Ok(creds())).await.unwrap();
+        let v = views_guarded(&silent, &cam("192.0.2.21", Family::Hikvision), true, || Ok(creds())).await.unwrap();
         assert_eq!(v.len(), 1);
+        assert!(silent.requests().is_empty());
+    }
+
+    /// Mode routé : une caméra d'un autre VLAN se cadre si elle a répondu au
+    /// balayage routé, à une adresse privée, et que la route passe par une
+    /// passerelle à l'instant ; sinon la garde de sous-réseau tient.
+    #[tokio::test]
+    async fn une_camera_routee_se_cadre_selon_la_regle_des_actions() {
+        let routed: Ipv4Addr = "10.0.20.11".parse().unwrap();
+        let gw = FakeRoutes::routed("192.0.2.1");
+        assert!(reachable(&[iface()], &[routed], &gw, routed).await);
+        assert!(!reachable(&[iface()], &[], &gw, routed).await, "pas entendue au balayage routé");
+        assert!(!reachable(&[iface()], &[routed], &FakeRoutes::new(Route::OnLink("eth0".into())), routed).await);
+        assert!(!reachable(&[iface()], &[routed], &no_route(), routed).await);
+        let public: Ipv4Addr = "198.51.100.7".parse().unwrap();
+        assert!(!reachable(&[iface()], &[public], &gw, public).await, "jamais une adresse publique");
+        // Dans le sous-réseau : la route n'est pas demandée.
+        let asked = FakeRoutes::routed("192.0.2.1");
+        assert!(reachable(&[iface()], &[], &asked, "192.0.2.20".parse().unwrap()).await);
+        assert!(asked.asked().is_empty());
+        // L'adresse saisie dans Cadrage suit la même règle.
+        let info = br#"{"apiVersion":"1.0","data":{"propertyList":{"Brand":"AXIS","SerialNumber":"ACCC8E000002"}}}"#;
+        let http = FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info.to_vec());
+        let cam = identify_guarded(&http, "10.0.20.11", &[iface()], &[routed], &gw, || Ok(creds())).await.unwrap();
+        assert_eq!(cam.ip, routed);
+        let silent = FakeHttp::new();
+        let r = identify_guarded(&silent, "10.0.20.12", &[iface()], &[routed], &gw, || panic!("compte lu")).await;
+        assert_eq!(r.err().as_deref(), Some("camera_off_subnet"));
         assert!(silent.requests().is_empty());
     }
 }

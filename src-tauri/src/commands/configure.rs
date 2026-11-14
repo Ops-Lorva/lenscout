@@ -14,6 +14,7 @@ use lenscout_core::transport::Datagram;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use lenscout_core::model::{Camera, Family};
+use lenscout_core::route::SystemRoutes;
 use lenscout_core::temp_ip::SystemElevator;
 use lenscout_core::vapix::{NetworkSettings, ResetMode, TimeSettings};
 use serde::{Deserialize, Serialize};
@@ -173,6 +174,8 @@ async fn build_context(
         account_network,
         seen_states: seen.states,
         neighbours: Arc::new(SystemNeighbours),
+        seen_routed: seen.routed,
+        routes: Arc::new(SystemRoutes),
     })
 }
 

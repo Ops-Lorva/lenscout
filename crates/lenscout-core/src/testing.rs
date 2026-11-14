@@ -272,6 +272,35 @@ impl crate::discovery::arp::Neighbours for FakeNeighbours {
     }
 }
 
+/// Route fixe, quelle que soit l'adresse ; compte les questions.
+pub struct FakeRoutes {
+    route: crate::route::Route,
+    asked: Mutex<Vec<std::net::Ipv4Addr>>,
+}
+
+impl FakeRoutes {
+    pub fn new(route: crate::route::Route) -> Self {
+        FakeRoutes { route, asked: Mutex::new(vec![]) }
+    }
+
+    /// Par la passerelle `gw`.
+    pub fn routed(gw: &str) -> Self {
+        Self::new(crate::route::Route::Routed(gw.parse().unwrap()))
+    }
+
+    pub fn asked(&self) -> Vec<std::net::Ipv4Addr> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl crate::route::Routes for FakeRoutes {
+    async fn route_to(&self, ip: std::net::Ipv4Addr) -> crate::route::Route {
+        self.asked.lock().unwrap().push(ip);
+        self.route.clone()
+    }
+}
+
 /// `Elevator` des tests où aucune élévation ne doit avoir lieu.
 pub struct PanicElevator;
 

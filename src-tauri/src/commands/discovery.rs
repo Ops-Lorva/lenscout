@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use lenscout_core::discovery::arp::{ScanInterface, SystemArp};
 use lenscout_core::discovery::scanner::{
-    open_probe_socket, run_scan, MdnsProbe, Probe, ScanConfig, ScanEvent, WsdProbe,
+    open_probe_socket, routed_targets, run_scan, MdnsProbe, Probe, RoutedSweep, ScanConfig, ScanEvent, WsdProbe,
 };
 use lenscout_core::discovery::sadp::SadpProbe;
 use lenscout_core::http_client::ReqwestCameraHttp;
@@ -24,6 +24,9 @@ use tokio_util::sync::CancellationToken;
 const LISTEN: Duration = Duration::from_secs(6);
 /// Délai d'une requête HTTP vers une caméra pendant l'enrichissement.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(4);
+/// Délai d'une requête du balayage routé : la plupart des adresses ne
+/// répondent pas, le balayage doit tenir dans le temps d'écoute.
+const ROUTED_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Le scan en cours, s'il y en a un : un seul à la fois.
 #[derive(Default)]
@@ -52,6 +55,10 @@ pub struct LastSeen {
     /// dernière annonce. Seule une ligne lue neuve (ou inconnue, relue à
     /// l'action) à cette adresse peut être activée.
     pub states: HashMap<String, (Ipv4Addr, Activation)>,
+    /// Adresses qui ont répondu au balayage HTTP du réseau routé
+    /// (`ScanEvent::HeardRouted`) : seules celles-ci peuvent être jointes à
+    /// travers le routeur, sans IP temporaire.
+    pub routed: HashSet<Ipv4Addr>,
 }
 
 /// Instantané de `LastSeen`, adresses triées.
@@ -61,6 +68,8 @@ pub struct SeenSnapshot {
     pub sadp_macs: Vec<String>,
     /// Triés par clé.
     pub states: Vec<SeenState>,
+    /// Triées.
+    pub routed: Vec<Ipv4Addr>,
 }
 
 impl ScanState {
@@ -76,7 +85,9 @@ impl ScanState {
             .map(|(key, (ip, activation))| SeenState { key: key.clone(), ip: *ip, activation: *activation })
             .collect();
         states.sort_by(|a, b| a.key.cmp(&b.key));
-        SeenSnapshot { iface: last.iface.clone(), ips, sadp_macs, states }
+        let mut routed: Vec<Ipv4Addr> = last.routed.iter().copied().collect();
+        routed.sort();
+        SeenSnapshot { iface: last.iface.clone(), ips, sadp_macs, states, routed }
     }
 
     /// Un nouveau scan repart de zéro, sur son interface ; rend son numéro.
@@ -99,6 +110,9 @@ impl ScanState {
             }
             ScanEvent::HeardSadp { mac } => {
                 last.sadp_macs.insert(mac.clone());
+            }
+            ScanEvent::HeardRouted { ip } => {
+                last.routed.insert(*ip);
             }
             ScanEvent::Upsert { camera } => {
                 last.states.insert(row_key(camera), (camera.ip, camera.activation));
@@ -192,13 +206,18 @@ pub async fn cmd_scan_start(
 
     let generation = state.begin(&scan_iface);
     let (tx, mut rx) = mpsc::channel(256);
-    let cfg = ScanConfig { iface: scan_iface, listen: LISTEN };
+    // Mode routé : le réseau du compte, balayé en HTTP à travers le routeur.
+    let routed = join.routed_on(&base.name).map(|r| RoutedSweep {
+        targets: routed_targets(r.probe, r.mask),
+        http: Arc::new(ReqwestCameraHttp::new(ROUTED_TIMEOUT)),
+    });
+    let cfg = ScanConfig { iface: scan_iface, listen: LISTEN, routed };
     let http = Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT));
     let scan = tokio::spawn(run_scan(probes, http, Arc::new(SystemArp), cfg, tx, token.clone()));
     while let Some(ev) = rx.recv().await {
         state.record(generation, &ev);
         // Interne : l'adresse entendue ne part pas au webview.
-        if matches!(ev, ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. }) {
+        if matches!(ev, ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. } | ScanEvent::HeardRouted { .. }) {
             continue;
         }
         // Webview disparue : plus personne n'écoute, on arrête le scan.
@@ -417,6 +436,19 @@ mod tests {
     }
 
     #[test]
+    fn les_adresses_du_balayage_route_sont_retenues_a_part() {
+        let state = ScanState::default();
+        let g = state.begin(&eth0());
+        let ip: Ipv4Addr = "10.0.20.11".parse().unwrap();
+        state.record(g, &ScanEvent::HeardRouted { ip });
+        let seen = state.seen();
+        assert_eq!(seen.routed, vec![ip]);
+        assert!(seen.ips.is_empty(), "une réponse routée n'est pas une annonce de couche 2");
+        state.begin(&eth0());
+        assert!(state.seen().routed.is_empty());
+    }
+
+    #[test]
     fn seules_les_mac_entendues_en_sadp_sont_retenues_avec_leur_interface() {
         let state = ScanState::default();
         let g = state.begin(&eth0());
@@ -441,7 +473,7 @@ mod tests {
             let state = ScanState::default();
             let g = state.begin(&eth0());
             let (tx, mut rx) = mpsc::channel(64);
-            let cfg = ScanConfig { iface: eth0(), listen: Duration::from_millis(200) };
+            let cfg = ScanConfig { iface: eth0(), listen: Duration::from_millis(200), routed: None };
             run_scan_with_capture(probes, Arc::new(FakeHttp::new()), Arc::new(NoArp), cfg, tx, CancellationToken::new(), None).await;
             while let Ok(ev) = rx.try_recv() {
                 state.record(g, &ev);
@@ -476,7 +508,7 @@ mod tests {
         let state = ScanState::default();
         let g = state.begin(&eth0());
         let (tx, mut rx) = mpsc::channel(64);
-        let cfg = ScanConfig { iface: eth0(), listen: Duration::from_millis(200) };
+        let cfg = ScanConfig { iface: eth0(), listen: Duration::from_millis(200), routed: None };
         run_scan_with_capture(probes, Arc::new(FakeHttp::new()), Arc::new(NoArp), cfg, tx, CancellationToken::new(), None).await;
         let mut listed = false;
         while let Ok(ev) = rx.try_recv() {
@@ -503,6 +535,8 @@ mod tests {
             account_network: false,
             seen_states: seen.states,
             neighbours: Arc::new(lenscout_core::testing::FakeNeighbours::any("AC:CC:8E:12:34:56")),
+            seen_routed: seen.routed,
+            routes: Arc::new(lenscout_core::testing::FakeRoutes::routed("10.0.50.1")),
         };
         let cam = Camera {
             ip: "10.66.66.66".parse().unwrap(),

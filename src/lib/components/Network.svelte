@@ -13,7 +13,7 @@
   import { actionResults, rescanDelaysAfter, resultFor, type ActionDto } from '#lib/api/configure.ts';
   import { accountList, ensureAccounts } from '#lib/stores/accounts.ts';
   import {
-    accountChoices, canScan, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, type JoinChoice,
+    accountChoices, canScan, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, shownAddress, type JoinChoice,
   } from '#lib/api/net.ts';
 
   const IFACE_KEY = 'lenscout.iface';
@@ -34,8 +34,10 @@
   // Liste partagée : un compte ajouté ou importé apparaît sans quitter l'onglet ;
   // un compte supprimé alors que son IP est posée reste, marqué.
   const choices = $derived($accountList ? accountChoices($accountList, $joined) : []);
-  // DHCP : l'adresse actuelle de l'interface ; compte : l'IP réellement posée.
-  const shownAddr = $derived(account ? ($joined?.account_id === account ? $joined.cidr : '') : ifaceAddr);
+  // DHCP : l'adresse actuelle de l'interface ; compte : l'IP réellement posée ;
+  // mode routé : celle de l'interface, et la passerelle du routeur.
+  const shown_ = $derived(shownAddress(account, $joined, ifaceAddr));
+  const shownAddr = $derived(shown_.addr);
   const sw = createJoinSwitch({ join: joinNetwork, leave: leaveNetwork });
   let failStatus: Status | null = null;
   let error = $state('');
@@ -281,7 +283,7 @@
     <option value="">{$_('network.dhcp')}</option>
     {#each choices as a (a.id)}<option value={a.id}>{a.deleted ? $_('network.deletedAccount') : a.name}</option>{/each}
   </select>
-  {#if switching}<span class="spin"></span>{:else if shownAddr}<span class="iface">{shownAddr}</span>{/if}
+  {#if switching}<span class="spin"></span>{:else if shownAddr}<span class="iface">{shownAddr}{#if shown_.via}<span class="via">{$_('network.via', { values: { gateway: shown_.via } })}</span>{/if}</span>{/if}
   {#if scanning}
     <button class="btn" onclick={stop}><span class="spin"></span>{$_('network.stop')}</button>
   {:else if posing}

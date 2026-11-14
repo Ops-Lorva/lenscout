@@ -117,6 +117,7 @@ select {
 }
 select:disabled { opacity: .55; }
 .iface { color: var(--text-2); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.iface .via { color: var(--text-2); margin-left: 6px; }
 .err { color: var(--err); font-size: 12.5px; margin: 0 0 10px; }
 .warn { color: var(--warn); font-size: 12px; }
 .dim-t { color: var(--text-2); }

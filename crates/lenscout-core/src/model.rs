@@ -32,7 +32,9 @@ pub enum Addressing {
     Static,
 }
 
-/// Protocole qui a vu la caméra (`Oui` = simple préfixe MAC vu dans l'ARP).
+/// Protocole qui a vu la caméra (`Oui` = simple préfixe MAC vu dans l'ARP ;
+/// `Http` = balayage HTTP d'un réseau routé, sans MAC : la couche 2 ne passe
+/// pas le routeur).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
@@ -40,6 +42,7 @@ pub enum Source {
     Wsd,
     Sadp,
     Oui,
+    Http,
 }
 
 /// Une observation brute, produite par un parser de découverte.

@@ -55,5 +55,6 @@
     "static": "Static IP",
     "unknown": "—"
   },
+  "via": "via {gateway}",
   "more": "More actions"
 }

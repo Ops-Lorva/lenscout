@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  accountChoices, activeAddress, canScan, createJoinSwitch, DEFAULT_MASK, generations, joinReady, joinStep, maskOf, networkOf, prefillFor,
+  accountChoices, activeAddress, canScan, createJoinSwitch, DEFAULT_MASK, generations, joinReady, joinStep, maskOf, networkOf, prefillFor, shownAddress,
   type Joined,
 } from './net';
 
@@ -203,4 +203,15 @@ test('jamais de scan sans interface ni pendant la pose d’une IP', () => {
   expect(canScan('en0', false)).toBe(true);
   expect(canScan('en0', true)).toBe(false);
   expect(canScan('', false)).toBe(false);
+});
+
+test('adresse affichée : celle posée, ou celle de l’interface avec la passerelle en mode routé', () => {
+  const posed: Joined = { account_id: 'a', iface: 'en0', ip: '192.168.1.250', mask: '255.255.255.0', cidr: '192.168.1.250/24' };
+  const routed: Joined = { account_id: 'g', iface: 'Wi-Fi', ip: '10.0.20.0', mask: '255.255.255.0', cidr: '10.0.20.0/24', via: '10.0.8.1' };
+  expect(shownAddress('', null, '10.0.8.235/24')).toEqual({ addr: '10.0.8.235/24', via: null });
+  expect(shownAddress('a', posed, '10.0.8.235/24')).toEqual({ addr: '192.168.1.250/24', via: null });
+  // Rien de posé : l’adresse de l’interface, et la passerelle par laquelle passe le compte.
+  expect(shownAddress('g', routed, '10.0.8.235/24')).toEqual({ addr: '10.0.8.235/24', via: '10.0.8.1' });
+  // Compte choisi, pas encore joint.
+  expect(shownAddress('b', routed, '10.0.8.235/24')).toEqual({ addr: '', via: null });
 });

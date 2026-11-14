@@ -2,7 +2,8 @@
 
 export type Family = 'axis' | 'hikvision' | 'other';
 export type Activation = 'new' | 'activated' | 'unknown';
-export type Source = 'mdns' | 'wsd' | 'sadp' | 'oui';
+/** `http` : balayage d'un réseau routé, sans MAC (la couche 2 ne passe pas le routeur). */
+export type Source = 'mdns' | 'wsd' | 'sadp' | 'oui' | 'http';
 /** `null` : inconnu (le protocole ne le dit pas, ou pas de lecture avec un compte). */
 export type Addressing = 'dhcp' | 'static';
 

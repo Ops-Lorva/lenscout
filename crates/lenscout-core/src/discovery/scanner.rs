@@ -74,6 +74,11 @@ pub enum ScanEvent {
     /// là où un mot de passe SADP sera diffusé. Interne à Rust.
     #[serde(skip)]
     HeardSadp { mac: String },
+    /// `ip` a répondu au balayage HTTP d'un réseau routé, depuis sa propre
+    /// adresse (connexion TCP). Seule preuve qui autorise une action à
+    /// travers le routeur. Interne à Rust.
+    #[serde(skip)]
+    HeardRouted { ip: Ipv4Addr },
     Done,
 }
 
@@ -90,6 +95,67 @@ pub struct ScanConfig {
     pub iface: ScanInterface,
     /// Durée d'écoute des sondes (6 s en usage normal).
     pub listen: Duration,
+    /// Réseau routé à balayer en plus (mode routé) ; la découverte de couche
+    /// 2 tourne comme avant sur l'interface.
+    pub routed: Option<RoutedSweep>,
+}
+
+/// Balayage HTTP unicast d'un réseau routé : ni le multicast ni l'ARP ne
+/// passent le routeur, une requête courte vers chaque adresse, si.
+#[derive(Clone)]
+pub struct RoutedSweep {
+    /// Adresses à interroger (`routed_targets`).
+    pub targets: Vec<Ipv4Addr>,
+    /// Client à délai court : la plupart des adresses ne répondent pas.
+    pub http: Arc<dyn CameraHttp>,
+}
+
+/// Requêtes du balayage routé en vol en même temps.
+const ROUTED_PARALLEL: usize = 64;
+
+/// Les hôtes d'un réseau routé, bornés comme la recherche d'IP libres
+/// (`free_ips::candidates` : 1 024 au plus, autour de `near`).
+pub fn routed_targets(near: Ipv4Addr, mask: Ipv4Addr) -> Vec<Ipv4Addr> {
+    let prefix = u32::from(mask).count_ones() as u8;
+    crate::free_ips::candidates(near, prefix).0
+}
+
+/// Ce que l'identification anonyme a lu, en observation : sans MAC.
+fn routed_sighting(cam: Camera) -> Sighting {
+    Sighting {
+        source: Source::Http,
+        ip: cam.ip,
+        mac: None,
+        family: Some(cam.family),
+        brand: cam.brand,
+        model: cam.model,
+        serial: cam.serial,
+        firmware: cam.firmware,
+        activation: cam.activation,
+        http_port: Some(cam.http_port),
+        addressing: None,
+    }
+}
+
+/// Interroge chaque adresse sans compte, en parallèle borné ; chaque caméra
+/// reconnue part comme une observation dont la source est son adresse.
+async fn routed_sweep(sweep: RoutedSweep, events: mpsc::Sender<Event>) {
+    use futures_util::StreamExt;
+    let http = sweep.http;
+    let mut found = futures_util::stream::iter(sweep.targets)
+        .map(|ip| {
+            let http = http.clone();
+            async move { crate::identify::identify_anonymous(&*http, ip).await }
+        })
+        .buffer_unordered(ROUTED_PARALLEL);
+    while let Some(r) = found.next().await {
+        if let Some(cam) = r {
+            let ip = cam.ip;
+            if events.send(Event::Seen(routed_sighting(cam), ip)).await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 /// Ce que les tâches de fond rapportent à la boucle principale.
@@ -105,6 +171,7 @@ fn source_name(s: Source) -> &'static str {
         Source::Wsd => "wsd",
         Source::Sadp => "sadp",
         Source::Oui => "oui",
+        Source::Http => "http",
     }
 }
 
@@ -131,7 +198,7 @@ fn capture_name(name: &str) -> Option<(&'static str, Ipv4Addr, u64)> {
     let stem = name.strip_suffix(".bin")?;
     let (source, rest) = stem.split_once('-')?;
     let (ip, n) = rest.rsplit_once('-')?;
-    let source = [Source::Mdns, Source::Wsd, Source::Sadp, Source::Oui].into_iter().map(source_name).find(|s| *s == source)?;
+    let source = [Source::Mdns, Source::Wsd, Source::Sadp, Source::Oui, Source::Http].into_iter().map(source_name).find(|s| *s == source)?;
     Some((source, ip.parse().ok()?, n.parse().ok()?))
 }
 
@@ -473,7 +540,14 @@ impl Scan {
     async fn handle(&mut self, ev: Event) {
         match ev {
             Event::Seen(s, src) => {
-                if s.ip == src && self.out.send(ScanEvent::Heard { ip: src }).await.is_err() {
+                // Une réponse du balayage routé n'est pas une annonce de couche
+                // 2 : elle ne justifie jamais une IP temporaire, seulement le
+                // passage par le routeur.
+                let heard = match s.source {
+                    Source::Http => ScanEvent::HeardRouted { ip: src },
+                    _ => ScanEvent::Heard { ip: src },
+                };
+                if s.ip == src && self.out.send(heard).await.is_err() {
                     self.cancel.cancel();
                 }
                 if let (Source::Sadp, true, Some(mac)) = (s.source, s.ip == src, &s.mac)
@@ -602,6 +676,8 @@ pub async fn run_scan_with_capture(
         probe_tasks.spawn(recv_loop(probe, dg, cfg.iface.clone(), etx.clone(), captures.clone()));
     }
 
+    let mut routed = cfg.routed.clone().map(|sweep| tokio::spawn(routed_sweep(sweep, etx.clone())));
+
     let deadline = start + cfg.listen;
     loop {
         tokio::select! {
@@ -612,6 +688,19 @@ pub async fn run_scan_with_capture(
     }
     // Fin d'écoute : les envois et lectures restants sont abandonnés.
     drop(probe_tasks);
+    // Le balayage routé va à son terme (ses délais sont courts), sauf annulation.
+    if let Some(task) = routed.as_mut() {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    task.abort();
+                    break;
+                }
+                _ = &mut *task => break,
+                Some(ev) = erx.recv() => scan.handle(ev).await,
+            }
+        }
+    }
 
     if !cancel.is_cancelled() {
         scan.settle(&mut erx).await;
@@ -744,6 +833,7 @@ mod tests {
                 mask: "255.255.255.0".parse().unwrap(),
             },
             listen: Duration::from_secs(6),
+            routed: None,
         }
     }
 
@@ -776,7 +866,7 @@ mod tests {
             .iter()
             .filter_map(|e| match e {
                 ScanEvent::Upsert { camera } => Some(camera),
-                ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. } | ScanEvent::Done => None,
+                ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. } | ScanEvent::HeardRouted { .. } | ScanEvent::Done => None,
             })
             .collect()
     }
@@ -1351,5 +1441,60 @@ mod tests {
     #[test]
     fn scan_event_serializes_with_a_kind_tag() {
         assert_eq!(serde_json::to_string(&ScanEvent::Done).unwrap(), r#"{"kind":"done"}"#);
+    }
+
+    /// Une Axis à une seule adresse du réseau routé ; ailleurs, rien n'écoute.
+    struct RoutedAxis {
+        at: Ipv4Addr,
+        inner: FakeHttp,
+    }
+
+    #[async_trait]
+    impl CameraHttp for RoutedAxis {
+        async fn send(&self, req: crate::transport::HttpRequest, c: Option<&crate::transport::Credentials>) -> Result<crate::transport::HttpResponse, NetError> {
+            if !req.url.starts_with(&format!("http://{}/", self.at)) {
+                return Err(NetError::Unreachable("non".into()));
+            }
+            self.inner.send(req, c).await
+        }
+        async fn stream(&self, req: crate::transport::HttpRequest, c: Option<&crate::transport::Credentials>) -> Result<(crate::transport::HttpResponse, crate::transport::ByteStream), NetError> {
+            self.inner.stream(req, c).await
+        }
+    }
+
+    #[test]
+    fn le_reseau_route_est_borne_comme_les_ip_libres() {
+        let t = routed_targets("10.0.20.1".parse().unwrap(), "255.255.255.0".parse().unwrap());
+        assert_eq!(t.len(), 254);
+        assert_eq!(t[0], "10.0.20.1".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(routed_targets("10.0.0.1".parse().unwrap(), "255.255.0.0".parse().unwrap()).len(), 1024);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn le_balayage_route_s_ajoute_a_la_couche_2_sans_mac() {
+        let at: Ipv4Addr = "10.0.20.11".parse().unwrap();
+        let http = Arc::new(RoutedAxis { at, inner: FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, DEVICE_INFO) });
+        // La couche 2 tourne comme avant : une Axis du VLAN de l'interface par mDNS.
+        let (p, _) = probe_pair(Arc::new(MdnsProbe), vec![(axis_response_packet(), from("192.0.2.21", 5353))]);
+        let mut c = cfg();
+        c.routed = Some(RoutedSweep { targets: routed_targets("10.0.20.1".parse().unwrap(), "255.255.255.0".parse().unwrap()), http: http.clone() });
+        let (tx, mut rx) = mpsc::channel(1024);
+        run_scan(vec![p], axis_http(), arp(&[]), c, tx, CancellationToken::new()).await;
+        let mut events = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        let cams = cameras(&events);
+        let routed = cams.iter().rev().find(|c| c.ip == at).expect("la caméra routée est listée");
+        assert_eq!((routed.family, routed.mac.as_deref()), (Family::Axis, None));
+        assert_eq!(routed.serial.as_deref(), Some("ACCC8E123456"));
+        assert!(routed.sources.contains(&Source::Http));
+        assert!(cams.iter().any(|c| c.ip == "192.0.2.21".parse::<Ipv4Addr>().unwrap()), "la couche 2 aussi");
+        // Entendue par le routeur, jamais comme une annonce de couche 2.
+        assert!(events.iter().any(|e| matches!(e, ScanEvent::HeardRouted { ip } if *ip == at)));
+        assert!(!events.iter().any(|e| matches!(e, ScanEvent::Heard { ip } if *ip == at)));
+        // Aucun compte ne part pendant le balayage.
+        assert!(http.inner.requests().iter().all(|r| r.login.is_none()));
+        assert!(matches!(events.last(), Some(ScanEvent::Done)));
     }
 }

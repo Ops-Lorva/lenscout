@@ -21,6 +21,7 @@ use crate::temp_ip::{
 };
 use crate::discovery::sadp;
 use crate::isapi;
+use crate::route::{Route, Routes};
 use crate::transport::{CameraHttp, Credentials, Datagram, NetError};
 use std::time::Duration;
 use crate::vapix::{self, NetworkSettings, ResetMode, TimeSettings, VapixError};
@@ -165,6 +166,11 @@ pub struct ActionContext {
     /// Table ARP : la MAC de couche 2 d'une caméra avant l'envoi d'un mot de
     /// passe d'activation.
     pub neighbours: Arc<dyn Neighbours>,
+    /// Adresses qui ont répondu au balayage HTTP du réseau routé, au dernier
+    /// scan (`seen_iface`), tenues par Rust.
+    pub seen_routed: Vec<Ipv4Addr>,
+    /// Route du poste vers une caméra, demandée au moment de l'action.
+    pub routes: Arc<dyn Routes>,
 }
 
 /// Erreur d'un appel VAPIX → code affiché. `ip` n'est que celle de la caméra visée.
@@ -285,6 +291,25 @@ fn off_subnet_allowed(ctx: &ActionContext, ip: Ipv4Addr) -> bool {
             .any(|o| subnets_overlap(ip, mask, o.ip, o.mask))
 }
 
+/// Mode routé : une caméra hors du sous-réseau de l'interface est jointe à
+/// travers le routeur, SANS IP temporaire, si tout tient :
+/// - c'est une adresse privée (RFC 1918) ;
+/// - elle a répondu au balayage du réseau routé au dernier scan (`seen_routed`,
+///   tenu par Rust : le front ne peut pas inventer une cible) ;
+/// - la route du poste vers elle passe, À CET INSTANT, par une passerelle.
+///
+/// Les adresses sont vérifiées avant la route : une caméra que rien ne
+/// désigne ne coûte pas une commande système.
+pub async fn routed_allowed(routes: &dyn Routes, seen_routed: &[Ipv4Addr], ip: Ipv4Addr) -> bool {
+    ip.is_private() && seen_routed.contains(&ip) && matches!(routes.route_to(ip).await, Route::Routed(_))
+}
+
+/// `routed_allowed` pour une action : le dernier scan doit être celui de
+/// cette interface.
+async fn routed_for(ctx: &ActionContext, ip: Ipv4Addr) -> bool {
+    ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str()) && routed_allowed(ctx.routes.as_ref(), &ctx.seen_routed, ip).await
+}
+
 fn result(cam: &Camera, outcome: Result<(), ActionError>) -> ActionResult {
     ActionResult {
         key: row_key(cam),
@@ -321,7 +346,9 @@ async fn apply_checked(
         }
         Family::Other => return Err(ActionError::Unsupported),
     }
-    let on = on_subnet(&ctx.iface, cam.ip);
+    // Le routeur joint la caméra : ni IP temporaire, ni invite ; l'identité
+    // (n° de série, la MAC ne passe pas le routeur) est relue comme ailleurs.
+    let on = on_subnet(&ctx.iface, cam.ip) || routed_for(ctx, cam.ip).await;
     if !on && !off_subnet_allowed(ctx, cam.ip) {
         return Err(ActionError::CameraOffSubnet);
     }
@@ -400,17 +427,19 @@ async fn apply_sadp(
 }
 
 /// Hikvision, réinitialisation : ISAPI en HTTP avec le compte, donc dans le
-/// sous-réseau seulement (pas d'IP temporaire) et vers une caméra que le
-/// dernier scan a entendue, sur cette interface : depuis son adresse, ou sa
-/// MAC en SADP. L'identité (MAC, sinon n° de série) est relue avec le compte
-/// juste avant l'ordre.
+/// sous-réseau ou à travers le routeur (`routed_allowed`), jamais par une IP
+/// temporaire, et vers une caméra que le dernier scan a entendue, sur cette
+/// interface : depuis son adresse, sa MAC en SADP, ou au balayage routé.
+/// L'identité (MAC, sinon n° de série) est relue avec le compte juste avant
+/// l'ordre.
 async fn reset_isapi(ctx: &ActionContext, cam: &Camera, creds: &Credentials, mode: ResetMode) -> Result<(), ActionError> {
-    if !on_subnet(&ctx.iface, cam.ip) {
+    let routed = !on_subnet(&ctx.iface, cam.ip) && routed_for(ctx, cam.ip).await;
+    if !on_subnet(&ctx.iface, cam.ip) && !routed {
         return Err(ActionError::CameraOffSubnet);
     }
     let mac = cam.mac.as_deref().and_then(normalize_mac);
     let heard = ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str())
-        && (ctx.seen.contains(&cam.ip) || mac.as_ref().is_some_and(|m| ctx.seen_sadp.contains(m)));
+        && (ctx.seen.contains(&cam.ip) || routed || mac.as_ref().is_some_and(|m| ctx.seen_sadp.contains(m)));
     if !heard {
         return Err(ActionError::CameraNotSeen);
     }
@@ -539,7 +568,7 @@ mod tests {
     use crate::model::{Activation, Source};
     use crate::secret::Secret;
     use crate::temp_ip::TempIpError;
-    use crate::testing::{FakeElevator, FakeHttp, FakeNeighbours, PanicElevator};
+    use crate::testing::{FakeElevator, FakeHttp, FakeNeighbours, FakeRoutes, PanicElevator};
     use crate::transport::{ByteStream, HttpRequest, HttpResponse, Method};
     use async_trait::async_trait;
 
@@ -594,6 +623,8 @@ mod tests {
             account_network: false,
             seen_states: scan_states(Activation::New),
             neighbours: Arc::new(FakeNeighbours::any(MAC)),
+            seen_routed: vec![],
+            routes: Arc::new(FakeRoutes::new(Route::Unknown)),
         };
         TestCtx { c, _journal: journal }
     }
@@ -1788,5 +1819,121 @@ mod tests {
         assert!(out[0].ok, "{out:?}");
         let body = http.requests().into_iter().find(|r| r.url.ends_with("/axis-cgi/param.cgi")).unwrap();
         assert!(String::from_utf8(body.body).unwrap().contains("Network.IPAddress=192.0.2.11"));
+    }
+
+    /// Caméra du réseau routé (10.0.20.0/24, l'interface est en 192.0.2.0/24),
+    /// vue au balayage HTTP : sans MAC, avec son n° de série.
+    fn routed_cam(family: Family) -> Camera {
+        let mut c = cam("10.0.20.11", family);
+        c.mac = None;
+        c.serial = Some(if family == Family::Axis { SERIAL.into() } else { "DS-1".into() });
+        c.sources = vec![Source::Http];
+        c.activation = Activation::Activated;
+        c
+    }
+
+    /// Contexte du mode routé : l'adresse a répondu au balayage routé et la
+    /// route vers elle passe par `route`. `PanicElevator` : jamais d'IP temporaire.
+    fn routed_ctx(http: Arc<dyn CameraHttp>, route: Route) -> (TestCtx, Arc<FakeRoutes>) {
+        let routes = Arc::new(FakeRoutes::new(route));
+        let mut c = ctx(http);
+        c.seen_routed = vec!["10.0.20.11".parse().unwrap()];
+        c.routes = routes.clone();
+        (c, routes)
+    }
+
+    #[tokio::test]
+    async fn routed_camera_is_configured_through_the_router_without_temp_ip() {
+        let http = Arc::new(axis_ok());
+        let (c, routes) = routed_ctx(http.clone(), Route::Routed("192.0.2.1".parse().unwrap()));
+        let r = apply(&c, &routed_cam(Family::Axis), &creds(), &time()).await;
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.key, "10.0.20.11", "sans MAC, la clé est l'IP");
+        let reqs = http.requests();
+        assert!(reqs[0].url.ends_with("/axis-cgi/basicdeviceinfo.cgi"), "identité d'abord");
+        assert!(reqs.iter().all(|r| r.url.starts_with("http://10.0.20.11/")));
+        assert!(!writes(&http).is_empty());
+        // La route est relue à l'action, pour cette adresse.
+        assert_eq!(routes.asked(), vec!["10.0.20.11".parse::<Ipv4Addr>().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn routed_camera_identity_is_its_serial() {
+        let other = String::from_utf8_lossy(INFO).replace(SERIAL, "ACCC8E999999");
+        let http = Arc::new(FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, other.into_bytes()));
+        let (c, _) = routed_ctx(http.clone(), Route::Routed("192.0.2.1".parse().unwrap()));
+        let r = apply(&c, &routed_cam(Family::Axis), &creds(), &time()).await;
+        assert_eq!(r.error, Some(ActionError::IdentityMismatch));
+        // Ni n° de série ni MAC : rien à comparer, rien n'est écrit.
+        let mut blind = routed_cam(Family::Axis);
+        blind.serial = None;
+        let r = apply(&c, &blind, &creds(), &time()).await;
+        assert_eq!(r.error, Some(ActionError::IdentityMismatch));
+        assert!(writes(&http).is_empty());
+    }
+
+    #[tokio::test]
+    async fn routed_needs_a_route_by_a_gateway_now_a_routed_answer_and_a_private_address() {
+        let gw = Route::Routed("192.0.2.1".parse().unwrap());
+        // Sur le lien, ou route illisible : comme avant (hors sous-réseau, pas vue en couche 2).
+        for route in [Route::OnLink("eth0".into()), Route::Unknown] {
+            let http = Arc::new(axis_ok());
+            let (c, _) = routed_ctx(http.clone(), route.clone());
+            let r = apply(&c, &routed_cam(Family::Axis), &creds(), &time()).await;
+            assert_eq!(r.error, Some(ActionError::CameraOffSubnet), "{route:?}");
+            assert!(http.requests().is_empty(), "{route:?}");
+        }
+        // Pas entendue au balayage routé : la route n'est même pas demandée.
+        let http = Arc::new(axis_ok());
+        let (mut c, routes) = routed_ctx(http.clone(), gw.clone());
+        c.seen_routed.clear();
+        assert_eq!(apply(&c, &routed_cam(Family::Axis), &creds(), &time()).await.error, Some(ActionError::CameraOffSubnet));
+        assert!(routes.asked().is_empty());
+        // Adresse publique, même « entendue » et routée.
+        let (mut c, _) = routed_ctx(http.clone(), gw.clone());
+        c.seen_routed = vec!["203.0.113.5".parse().unwrap()];
+        let mut public = routed_cam(Family::Axis);
+        public.ip = "203.0.113.5".parse().unwrap();
+        assert_eq!(apply(&c, &public, &creds(), &time()).await.error, Some(ActionError::CameraOffSubnet));
+        // Balayage fait sur une autre interface.
+        let (mut c, _) = routed_ctx(http.clone(), gw);
+        c.seen_iface = Some("wlan0".into());
+        assert_eq!(apply(&c, &routed_cam(Family::Axis), &creds(), &time()).await.error, Some(ActionError::CameraOffSubnet));
+        assert!(http.requests().is_empty(), "aucun compte n'est parti");
+    }
+
+    #[tokio::test]
+    async fn on_subnet_camera_never_asks_for_a_route() {
+        let http = Arc::new(axis_ok());
+        let (c, routes) = routed_ctx(http, Route::Routed("192.0.2.1".parse().unwrap()));
+        assert!(apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &time()).await.ok);
+        assert!(routes.asked().is_empty());
+    }
+
+    #[tokio::test]
+    async fn routed_hikvision_reset_goes_through_isapi_after_its_serial_is_confirmed() {
+        let reset = "<ResponseStatus><statusCode>1</statusCode></ResponseStatus>";
+        let http = Arc::new(
+            FakeHttp::new()
+                .on(Method::Get, "/ISAPI/System/deviceInfo", 200, HIK_INFO)
+                .on(Method::Put, "/ISAPI/System/factoryReset", 200, reset),
+        );
+        let (c, _) = routed_ctx(http.clone(), Route::Routed("192.0.2.1".parse().unwrap()));
+        let r = apply(&c, &routed_cam(Family::Hikvision), &creds(), &keep_ip()).await;
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(http.requests().pop().unwrap().url, "http://10.0.20.11/ISAPI/System/factoryReset?mode=basic");
+        // Autre n° de série : pas d'ordre.
+        let http = Arc::new(
+            FakeHttp::new()
+                .on(Method::Get, "/ISAPI/System/deviceInfo", 200, HIK_INFO.replace("DS-1", "DS-2"))
+                .on(Method::Put, "/ISAPI/System/factoryReset", 200, reset),
+        );
+        let (c, _) = routed_ctx(http.clone(), Route::Routed("192.0.2.1".parse().unwrap()));
+        assert_eq!(apply(&c, &routed_cam(Family::Hikvision), &creds(), &keep_ip()).await.error, Some(ActionError::IdentityMismatch));
+        // Plus routée à l'action : refusée avant toute requête.
+        let http = Arc::new(FakeHttp::new());
+        let (c, _) = routed_ctx(http.clone(), Route::OnLink("eth0".into()));
+        assert_eq!(apply(&c, &routed_cam(Family::Hikvision), &creds(), &keep_ip()).await.error, Some(ActionError::CameraOffSubnet));
+        assert!(http.requests().is_empty());
     }
 }

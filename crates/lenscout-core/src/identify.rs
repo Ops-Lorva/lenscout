@@ -110,6 +110,59 @@ pub async fn identify(http: &dyn CameraHttp, ip: Ipv4Addr, creds: &Credentials) 
     Ok(cam)
 }
 
+/// Corps de `GET /SDK/activateStatus` d'une Hikvision : lu sans compte (la
+/// page de connexion s'en sert pour proposer l'activation).
+fn hik_activation(xml: &str) -> Option<Activation> {
+    match tag(xml, "Activated")?.as_str() {
+        "true" => Some(Activation::Activated),
+        "false" => Some(Activation::New),
+        _ => Some(Activation::Unknown),
+    }
+}
+
+/// Identifie SANS compte ce qui répond à `ip` : rien du compte ne part, la
+/// cible n'a pas encore été vue. Sert au balayage d'un réseau routé, où ni le
+/// multicast ni l'ARP ne passent. Axis : `basicdeviceinfo.cgi` (repli
+/// `param.cgi` anonyme des AXIS OS < 8.40). Hikvision : `deviceInfo` quand le
+/// firmware le laisse lire, sinon `/SDK/activateStatus`, qui dit la marque et
+/// l'état d'activation sans le modèle. `None` : rien, ou pas une caméra gérée.
+pub async fn identify_anonymous(http: &dyn CameraHttp, ip: Ipv4Addr) -> Option<Camera> {
+    let mut cam = camera(ip, Family::Axis, "AXIS");
+    let base = cam.base_url();
+    match vapix::device_info(http, &base).await {
+        Ok(info) => {
+            cam.brand = info.brand.or(cam.brand);
+            cam.model = info.model;
+            cam.serial = info.serial;
+            cam.firmware = info.firmware;
+            return Some(cam);
+        }
+        // Rien n'écoute : inutile d'essayer le reste.
+        Err(VapixError::Net(e)) if net_error(&e) == Some(IdentifyError::Unreachable) => return None,
+        Err(VapixError::Net(NetError::Status(404))) => {
+            if let Ok(serial) = vapix::serial_from_params(http, &base, None).await {
+                cam.serial = Some(serial);
+                return Some(cam);
+            }
+        }
+        Err(_) => {}
+    }
+    let get = |path: &str| HttpRequest { method: Method::Get, url: format!("{base}{path}"), body: None, content_type: None };
+    let mut cam = camera(ip, Family::Hikvision, "Hikvision");
+    if let Ok(resp) = http.send(get("/ISAPI/System/deviceInfo"), None).await {
+        let xml = String::from_utf8_lossy(&resp.body);
+        if resp.status == 200 && xml.contains("<deviceInfo") {
+            cam.model = tag(&xml, "model");
+            cam.serial = tag(&xml, "serialNumber");
+            cam.firmware = tag(&xml, "firmwareVersion");
+            return Some(cam);
+        }
+    }
+    let resp = http.send(get("/SDK/activateStatus"), None).await.ok().filter(|r| r.status == 200)?;
+    cam.activation = hik_activation(&String::from_utf8_lossy(&resp.body))?;
+    Some(cam)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +278,62 @@ mod tests {
             .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, "pas du json")
             .on(Method::Get, "/ISAPI/System/deviceInfo", 200, "<html>routeur</html>");
         assert_eq!(identify(&http, ip(), &creds()).await, Err(IdentifyError::NotACamera));
+    }
+
+    /// Réponse de `/SDK/activateStatus` (forme supposée d'après la page de
+    /// connexion Hikvision : à confirmer sur une vraie caméra).
+    const HIK_ACTIVATED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ActivateStatus version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<Activated>true</Activated>
+</ActivateStatus>"#;
+
+    #[tokio::test]
+    async fn sans_compte_une_axis_se_reconnait_par_basicdeviceinfo() {
+        let http = FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, INFO.to_vec());
+        let cam = identify_anonymous(&http, ip()).await.unwrap();
+        assert_eq!((cam.family, cam.ip, cam.serial.as_deref()), (Family::Axis, ip(), Some("ACCC8E123456")));
+        assert!(cam.mac.is_none(), "pas de MAC sans couche 2");
+        assert!(http.requests().iter().all(|r| r.login.is_none()));
+        // Ancienne Axis : param.cgi anonyme.
+        let old = FakeHttp::new()
+            .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 404, "")
+            .on(Method::Get, "/axis-cgi/param.cgi", 200, "root.Properties.System.SerialNumber=ACCC8E000001\n");
+        let cam = identify_anonymous(&old, ip()).await.unwrap();
+        assert_eq!((cam.family, cam.serial.as_deref()), (Family::Axis, Some("ACCC8E000001")));
+    }
+
+    #[tokio::test]
+    async fn sans_compte_une_hikvision_se_reconnait_par_isapi_ou_activate_status() {
+        let open = FakeHttp::new()
+            .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 404, "")
+            .on(Method::Get, "/axis-cgi/param.cgi", 404, "")
+            .on(Method::Get, "/ISAPI/System/deviceInfo", 200, HIK);
+        let cam = identify_anonymous(&open, ip()).await.unwrap();
+        assert_eq!((cam.family, cam.model.as_deref()), (Family::Hikvision, Some("DS-2CD2143G2-I")));
+        assert_eq!(cam.serial.as_deref(), Some("DS-2CD2143G2-I20230101AAWRJ12345678"));
+        // deviceInfo fermé (401) : activateStatus dit la marque et l'état.
+        let closed = FakeHttp::new()
+            .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 404, "")
+            .on(Method::Get, "/axis-cgi/param.cgi", 404, "")
+            .on(Method::Get, "/ISAPI/System/deviceInfo", 401, "")
+            .on(Method::Get, "/SDK/activateStatus", 200, HIK_ACTIVATED);
+        let cam = identify_anonymous(&closed, ip()).await.unwrap();
+        assert_eq!((cam.family, cam.activation, cam.serial.as_deref()), (Family::Hikvision, Activation::Activated, None));
+        assert!(closed.requests().iter().all(|r| r.login.is_none()), "aucun compte ne part");
+    }
+
+    #[tokio::test]
+    async fn sans_compte_rien_ou_autre_chose_ne_donne_rien() {
+        assert!(identify_anonymous(&FakeHttp::new(), ip()).await.is_none());
+        let other = FakeHttp::new()
+            .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 404, "")
+            .on(Method::Get, "/axis-cgi/param.cgi", 404, "")
+            .on(Method::Get, "/ISAPI/System/deviceInfo", 404, "<html>box</html>")
+            .on(Method::Get, "/SDK/activateStatus", 200, "<html>routeur</html>");
+        assert!(identify_anonymous(&other, ip()).await.is_none());
+        // Rien n'écoute : une seule requête.
+        let dead = FakeHttp::new();
+        let _ = identify_anonymous(&dead, ip()).await;
+        assert_eq!(dead.requests().len(), 1);
     }
 }
