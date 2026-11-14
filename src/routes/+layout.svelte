@@ -11,7 +11,7 @@
   // changements faits dans les Réglages.
   $effect(() => applyTheme($theme, document.documentElement));
 
-  const { children } = $props<{ children: Snippet }>();
+  const { children }: { children: Snippet } = $props();
 </script>
 
 {#if !$isLoading}

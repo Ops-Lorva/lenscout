@@ -1,0 +1,8 @@
+{
+  "name": "deepmerge",
+  "version": "4.3.2-lorva.1",
+  "description": "deepmerge 4.3.1 (MIT, TehShrike) + correctif GHSA-gcqx-w48m-w2h4",
+  "main": "cjs.js",
+  "types": "index.d.ts",
+  "license": "MIT"
+}
