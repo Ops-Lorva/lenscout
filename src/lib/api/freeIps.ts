@@ -33,17 +33,19 @@ const nextId = () => Date.now() * 1000 + (counter++ % 1000);
 /**
  * `done` rend la main à la fin du balayage et rejette avec un code stable
  * (`ping_unavailable`…) ; `id` sert à l'annuler, même avant son démarrage.
- * `accountId` : le compte retenu, dont Rust écarte les IP exclues.
+ * `accountId` : le compte retenu, dont Rust écarte les IP exclues ; `own` :
+ * les adresses actuelles des caméras à réadresser, libres pour elles.
  */
 export function startFreeIps(
   iface: string,
   onEvent: (e: FreeIpsEvent) => void,
   accountId = '',
+  own: string[] = [],
 ): { id: number; done: Promise<void> } {
   const id = nextId();
   const channel = new Channel<FreeIpsEvent>();
   channel.onmessage = onEvent;
-  return { id, done: invoke<void>('cmd_free_ips', { id, interface: iface, accountId: accountId || null, channel }) };
+  return { id, done: invoke<void>('cmd_free_ips', { id, interface: iface, accountId: accountId || null, own, channel }) };
 }
 
 export const cancelFreeIps = (id: number) => invoke<void>('cmd_free_ips_cancel', { id });

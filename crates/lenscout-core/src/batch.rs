@@ -108,6 +108,29 @@ pub fn plan_batch(
         addrs.push(a);
         next = a.checked_add(1);
     }
+    if let Some(&a) = addrs.iter().find(|&&a| a == net || a == net | !m) {
+        return Err(BatchError::NetworkOrBroadcast { ip: Ipv4Addr::from(a) });
+    }
+    // Une caméra dont l'adresse actuelle tombe dans la plage la garde ; les
+    // autres prennent les adresses restantes, dans l'ordre affiché. Aucune ne
+    // reçoit donc l'adresse actuelle d'une autre caméra du lot : un échange
+    // ou une chaîne dépendrait de l'ordre d'application et de la réussite de
+    // la caméra précédente (une caméra refusée est sautée, les autres
+    // continuent), et laisserait deux caméras sur la même adresse.
+    let mut left: Vec<Option<u32>> = addrs.iter().copied().map(Some).collect();
+    let mut chosen: Vec<Option<u32>> = selection
+        .iter()
+        .map(|cam| {
+            let own = u32::from(cam.ip);
+            let slot = left.iter_mut().find(|a| **a == Some(own))?;
+            slot.take()
+        })
+        .collect();
+    let mut rest = left.into_iter().flatten();
+    for c in chosen.iter_mut().filter(|c| c.is_none()) {
+        *c = rest.next();
+    }
+    let addrs: Vec<u32> = chosen.into_iter().map(|c| c.expect("autant d'adresses que de caméras")).collect();
     // Passerelle : dans le sous-réseau, ni adresse réseau ni broadcast.
     if let Some(gw) = req.gateway {
         let g = u32::from(gw);
@@ -118,11 +141,10 @@ pub fn plan_batch(
     let mut out: Vec<Assignment> = Vec::with_capacity(selection.len());
     for (i, ((cam, mac), a)) in selection.iter().zip(macs).zip(addrs).enumerate() {
         let new_ip = Ipv4Addr::from(a);
-        if a == net || a == net | !m {
-            return Err(BatchError::NetworkOrBroadcast { ip: new_ip });
-        }
         // L'adresse d'une autre caméra de la sélection collisionnerait pendant
-        // l'application (échange, chevauchement) ; la sienne est permise.
+        // l'application (échange, chevauchement) ; la sienne est permise. Le
+        // partage ci-dessus l'évite ; reste le cas de deux caméras de la
+        // sélection vues à la même adresse.
         let taken = selection
             .iter()
             .enumerate()
@@ -242,19 +264,57 @@ mod tests {
     }
 
     #[test]
-    fn swap_inside_the_selection_is_ip_in_use_but_own_ip_is_fine() {
-        // A (.12) reçoit .11 que porte B (.11) : collision pendant l'application.
+    fn a_camera_whose_address_is_in_the_range_keeps_it() {
+        // A (.12) et B (.11) sur .11–.12 : chacune garde la sienne, jamais
+        // d'échange (B serait encore en .11 quand A y arrive).
         let sel = [axis(12), axis(11)];
-        assert_eq!(
-            plan_batch(&sel, &req("10.0.50.11"), &[], &[], &none()),
-            Err(BatchError::IpInUse { ip: ip("10.0.50.11"), mac: Some("AC:CC:8E:00:00:0B".into()) })
-        );
+        let rows = plan_batch(&sel, &req("10.0.50.11"), &[], &[], &none()).unwrap();
+        assert!(rows.iter().all(|r| r.new_ip == r.current_ip));
         // Une caméra qui garde sa propre adresse n'est pas sautée.
         let sel = [axis(11), axis(13)];
         let rows = plan_batch(&sel, &req("10.0.50.11"), &[], &[], &none()).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].new_ip, rows[0].current_ip);
         assert_eq!(rows[1].new_ip, ip("10.0.50.12"));
+    }
+
+    #[test]
+    fn the_others_fill_the_addresses_left_in_display_order() {
+        // .11–.13 : B (.13) garde la sienne, A et C prennent .11 et .12 dans l'ordre.
+        let sel = [axis(200), axis(13), axis(150)];
+        let rows = plan_batch(&sel, &req("10.0.50.11"), &[], &[], &none()).unwrap();
+        let ips: Vec<_> = rows.iter().map(|r| r.new_ip).collect();
+        assert_eq!(ips, [ip("10.0.50.11"), ip("10.0.50.13"), ip("10.0.50.12")]);
+        // A (.12) n'est plus « déplacée sur .11 puis B sur .12 » : A garde .12, B prend .11.
+        let sel = [axis(12), axis(200)];
+        let rows = plan_batch(&sel, &req("10.0.50.11"), &[], &[], &none()).unwrap();
+        assert_eq!(rows.iter().map(|r| r.new_ip).collect::<Vec<_>>(), [ip("10.0.50.12"), ip("10.0.50.11")]);
+    }
+
+    #[test]
+    fn no_camera_ever_receives_the_current_address_of_another_of_the_lot() {
+        for start in 1..=20u8 {
+            let sel = [axis(5), axis(7), axis(8), axis(30), axis(6)];
+            let Ok(rows) = plan_batch(&sel, &req(&format!("10.0.50.{start}")), &[], &[], &none()) else { continue };
+            let mut seen = std::collections::HashSet::new();
+            for r in &rows {
+                assert!(seen.insert(r.new_ip), "doublon {start}");
+                assert!(
+                    r.new_ip == r.current_ip || sel.iter().all(|c| c.ip != r.new_ip),
+                    "{} reçoit l'adresse d'une autre caméra du lot (départ .{start})",
+                    r.new_ip
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_excluded_own_address_is_left() {
+        // .12 exclue : A (.12) ne la garde pas, la plage devient .11 et .13.
+        let ex = Exclusions::parse("10.0.50.12").unwrap();
+        let sel = [axis(12), axis(200)];
+        let rows = plan_batch(&sel, &req("10.0.50.11"), &[], &[], &ex).unwrap();
+        assert_eq!(rows.iter().map(|r| r.new_ip).collect::<Vec<_>>(), [ip("10.0.50.11"), ip("10.0.50.13")]);
     }
 
     #[test]

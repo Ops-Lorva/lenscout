@@ -73,11 +73,19 @@ pub enum FreeIpsEvent {
 
 /// Ce que le balayage ne doit pas proposer : les caméras entendues au dernier
 /// scan de cette interface, la passerelle de l'interface, les IP exclues du
-/// compte retenu. (L'adresse du poste est écartée par le balayage lui-même.)
-fn exclusions(iface: &ScanInterface, seen: &SeenSnapshot, gateway: Option<&str>, account: &Exclusions) -> HashSet<Ipv4Addr> {
+/// compte retenu. Les caméras à réadresser (`own`) ne sont pas écartées pour
+/// avoir été entendues : leur adresse est libre pour elles. (L'adresse du
+/// poste est écartée par le balayage lui-même.)
+fn exclusions(
+    iface: &ScanInterface,
+    seen: &SeenSnapshot,
+    gateway: Option<&str>,
+    account: &Exclusions,
+    own: &HashSet<Ipv4Addr>,
+) -> HashSet<Ipv4Addr> {
     let mut out: HashSet<Ipv4Addr> = excluded_in(iface, account);
     if seen.iface.as_deref() == Some(iface.name.as_str()) {
-        out.extend(seen.ips.iter().copied());
+        out.extend(seen.ips.iter().copied().filter(|a| !own.contains(a)));
     }
     out.extend(gateway.and_then(|g| g.trim().parse::<Ipv4Addr>().ok()));
     out
@@ -90,13 +98,15 @@ fn exclusions(iface: &ScanInterface, seen: &SeenSnapshot, gateway: Option<&str>,
 /// balayage annulé (`cmd_free_ips_cancel`, feuille fermée, balayage remplacé)
 /// rend `Ok` sans `Done` : plus rien ne doit viser la feuille disparue.
 /// `account_id` : le compte retenu par la feuille, dont les IP exclues ne sont
-/// jamais proposées.
+/// jamais proposées ; `own` : les adresses actuelles des caméras à réadresser,
+/// proposées comme libres (pour elles).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_free_ips(
     id: u64,
     interface: String,
     account_id: Option<String>,
+    own: Option<Vec<Ipv4Addr>>,
     channel: Channel<FreeIpsEvent>,
     state: State<'_, FreeIpsState>,
     scan_state: State<'_, ScanState>,
@@ -124,10 +134,11 @@ pub async fn cmd_free_ips(
         None => (iface, gateway),
     };
     let account = super::accounts::exclusions_for(&accounts, account_id.as_deref());
-    let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref(), &account);
+    let own: HashSet<Ipv4Addr> = own.unwrap_or_default().into_iter().collect();
+    let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref(), &account, &own);
     let probe = Arc::new(SystemProbe { iface: iface.clone() });
     let sender = channel.clone();
-    let result = scan(&iface, exclude, probe, progress_to(token.clone(), move |e| sender.send(e).is_ok()), token.clone()).await;
+    let result = scan(&iface, exclude, &own, probe, progress_to(token.clone(), move |e| sender.send(e).is_ok()), token.clone()).await;
     match result {
         Ok(found) if !token.is_cancelled() => {
             let _ = channel.send(FreeIpsEvent::Done { ranges: found.ranges, truncated: found.truncated });
@@ -167,7 +178,7 @@ mod tests {
 
     #[test]
     fn exclusions_hold_seen_cameras_and_the_gateway() {
-        let out = exclusions(&eth0(), &seen("eth0", &["10.0.50.31"]), Some("10.0.50.1"), &Exclusions::default());
+        let out = exclusions(&eth0(), &seen("eth0", &["10.0.50.31"]), Some("10.0.50.1"), &Exclusions::default(), &HashSet::new());
         let want: HashSet<Ipv4Addr> = ["10.0.50.31", "10.0.50.1"].iter().map(|s| s.parse().unwrap()).collect();
         assert_eq!(out, want);
     }
@@ -175,16 +186,26 @@ mod tests {
     #[test]
     fn exclusions_hold_the_account_exclusions_of_the_subnet() {
         let account = Exclusions::parse("10.0.50.40-10.0.50.42, 192.168.1.1").unwrap();
-        let out = exclusions(&eth0(), &seen("eth0", &[]), None, &account);
+        let out = exclusions(&eth0(), &seen("eth0", &[]), None, &account, &HashSet::new());
         let want: HashSet<Ipv4Addr> = ["10.0.50.40", "10.0.50.41", "10.0.50.42"].iter().map(|s| s.parse().unwrap()).collect();
         assert_eq!(out, want);
     }
 
     #[test]
     fn cameras_heard_on_another_interface_are_not_excluded() {
-        let out = exclusions(&eth0(), &seen("wlan0", &["10.0.50.31"]), None, &Exclusions::default());
+        let out = exclusions(&eth0(), &seen("wlan0", &["10.0.50.31"]), None, &Exclusions::default(), &HashSet::new());
         assert!(out.is_empty());
-        assert!(exclusions(&eth0(), &seen("eth0", &[]), Some("pas une ip"), &Exclusions::default()).is_empty());
+        assert!(exclusions(&eth0(), &seen("eth0", &[]), Some("pas une ip"), &Exclusions::default(), &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn the_selected_cameras_are_not_excluded_by_the_last_scan() {
+        let own: HashSet<Ipv4Addr> = ["10.0.50.33".parse().unwrap(), "10.0.50.1".parse().unwrap(), "10.0.50.40".parse().unwrap()].into();
+        let account = Exclusions::parse("10.0.50.40").unwrap();
+        let out = exclusions(&eth0(), &seen("eth0", &["10.0.50.31", "10.0.50.33"]), Some("10.0.50.1"), &account, &own);
+        // .33 (la caméra cliquée) reste candidate ; passerelle et exclusions du compte priment.
+        let want: HashSet<Ipv4Addr> = ["10.0.50.31", "10.0.50.1", "10.0.50.40"].iter().map(|s| s.parse().unwrap()).collect();
+        assert_eq!(out, want);
     }
 
     #[test]

@@ -125,7 +125,7 @@
 <Dialog title={$_('batch.title')} width={560} {onClose}>
   <div class="form">
     <label for="b-account">{$_('accounts.picker')}</label><AccountPicker id="b-account" bind:accountId bind:account />
-    <FreeIps {iface} {accountId} {ifaceIp} {ifaceMask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
+    <FreeIps {iface} {accountId} own={cams.map((c) => c.ip)} {ifaceIp} {ifaceMask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
     <label for="b-start">{$_('batch.start')}</label><input id="b-start" type="text" bind:value={start} inputmode="decimal" autocomplete="off" />
     {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
     <label for="b-mask">{$_('configure.mask')}</label><input id="b-mask" type="text" bind:value={mask} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />

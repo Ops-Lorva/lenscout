@@ -8,16 +8,18 @@
   import { orNull, outsideSubnet, splitList } from '#lib/api/configure.ts';
   import AccountPicker from './AccountPicker.svelte';
   import Dialog from './Dialog.svelte';
+  import { firstFit, type FreeRange } from '#lib/api/freeIps.ts';
   import FreeIps from './FreeIps.svelte';
 
   let {
     accountId = $bindable(''),
     subtitle = '',
+    own = [],
     iface,
     busy,
     onSubmit,
     onClose,
-  }: { accountId?: string; subtitle?: string; iface: string; busy: boolean; onSubmit: (a: ActionDto) => void; onClose: () => void } = $props();
+  }: { accountId?: string; subtitle?: string; own?: string[]; iface: string; busy: boolean; onSubmit: (a: ActionDto) => void; onClose: () => void } = $props();
 
   let dhcp = $state(false);
   let ip = $state('');
@@ -53,6 +55,13 @@
   });
   const off = $derived(!dhcp && outsideSubnet(ip, ifaceIp, ifaceMask));
 
+  // La première adresse libre est proposée, sauf si l'IP est déjà saisie ;
+  // l'adresse actuelle de la caméra compte comme libre pour elle.
+  function proposeIp(ranges: FreeRange[]) {
+    if (ip.trim() !== '') return;
+    ip = firstFit(ranges, 1) ?? '';
+  }
+
   // Les adresses sont validées par Rust (type `Ipv4Addr` puis règles de la caméra) :
   // ici on ne fait qu'exiger les champs obligatoires.
   const ready = $derived(!busy && !!accountId && (dhcp || (ip.trim() !== '' && mask.trim() !== '')));
@@ -75,7 +84,7 @@
       <option value={true}>{$_('configure.dhcp')}</option>
     </select>
     <!-- Au-dessus du champ : on choisit une plage, le champ se remplit. -->
-    <FreeIps {iface} {accountId} {ifaceIp} {ifaceMask} value={ip} hidden={dhcp} onPick={(a) => (ip = a)} />
+    <FreeIps {iface} {accountId} {own} {ifaceIp} {ifaceMask} value={ip} hidden={dhcp} onPick={(a) => (ip = a)} onFound={proposeIp} />
     {#if !dhcp}
       <label for="ip-ip">{$_('configure.ipaddr')}</label><input id="ip-ip" type="text" bind:value={ip} inputmode="decimal" autocomplete="off" />
       {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}

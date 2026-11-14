@@ -105,7 +105,7 @@
 {#if open === 'activate'}
   <ActivateDialog count={cams.length} bind:accountId {busy} {pending} onSubmit={() => run({ kind: 'activate' })} onConfirm={confirmCleartext} onClose={closeDialog} />
 {:else if open === 'network'}
-  <NetworkDialog subtitle={oneLabel} bind:accountId {busy} {iface} onSubmit={run} onClose={() => (open = null)} />
+  <NetworkDialog subtitle={oneLabel} own={cams.map((c) => c.ip)} bind:accountId {busy} {iface} onSubmit={run} onClose={() => (open = null)} />
 {:else if open === 'batch'}
   <BatchIpDialog bind:accountId {iface} {cams} {others} onApplied={batchDone} onClose={() => (open = null)} />
 {:else if open === 'time'}

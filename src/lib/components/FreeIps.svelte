@@ -13,10 +13,12 @@
   // `value` : l'adresse du champ voisin, pour marquer la plage qui la contient ;
   // `onPick` la remplit ; `onFound` reçoit les plages à la fin de chaque balayage.
   // `accountId` : le compte retenu, ses IP exclues ne sont jamais proposées.
+  // `own` : les adresses actuelles des caméras visées, libres pour elles.
   // Fermer la feuille (démontage) annule le balayage.
   let {
     iface,
     accountId = '',
+    own = [],
     ifaceIp,
     ifaceMask,
     value,
@@ -26,6 +28,7 @@
   }: {
     iface: string;
     accountId?: string;
+    own?: string[];
     ifaceIp: string | null;
     ifaceMask: string | null;
     value: string;
@@ -54,6 +57,7 @@
           if (e.kind === 'done') onFound(e.ranges);
         },
         accountId,
+        own,
       );
       runId = started.id;
       await started.done;

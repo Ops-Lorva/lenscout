@@ -279,17 +279,22 @@ pub enum FreeError {
 
 /// Balaie le sous-réseau de `iface` : ce qui répond au ping, figure dans la
 /// table ARP, est dans `exclude` ou est l'adresse du poste n'est pas libre.
-/// `progress(faits, total)` est appelé à chaque ping terminé.
+/// `own` : les adresses actuelles des caméras à réadresser, libres pour elles
+/// (elles répondent, mais c'est elles-mêmes) et donc pas pinguées ; `exclude`
+/// et l'adresse du poste priment. `progress(faits, total)` est appelé à
+/// chaque ping terminé.
 pub async fn scan(
     iface: &ScanInterface,
     exclude: HashSet<Ipv4Addr>,
+    own: &HashSet<Ipv4Addr>,
     probe: Arc<dyn FreeProbe>,
     progress: impl Fn(usize, usize),
     cancel: CancellationToken,
 ) -> Result<FreeScan, FreeError> {
     let prefix = mask_to_prefix(&iface.mask.to_string()).unwrap_or(32) as u8;
     let (all, truncated) = candidates(iface.ip, prefix);
-    let targets: Vec<Ipv4Addr> = all.into_iter().filter(|a| *a != iface.ip && !exclude.contains(a)).collect();
+    let (kept, targets): (Vec<Ipv4Addr>, Vec<Ipv4Addr>) =
+        all.into_iter().filter(|a| *a != iface.ip && !exclude.contains(a)).partition(|a| own.contains(a));
     let total = targets.len();
     if cancel.is_cancelled() {
         return Err(FreeError::Cancelled);
@@ -331,7 +336,8 @@ pub async fn scan(
     taken.extend(probe.neighbours().await);
     // Libre = a reçu un ping resté sans réponse ET n'est pas dans l'ARP. Un tir
     // isolé qui n'a pas pu partir n'est jamais libre.
-    let free: Vec<Ipv4Addr> = targets.into_iter().filter(|a| silent.contains(a) && !taken.contains(a)).collect();
+    let mut free: Vec<Ipv4Addr> = targets.into_iter().filter(|a| silent.contains(a) && !taken.contains(a)).collect();
+    free.extend(kept);
     Ok(FreeScan { ranges: ranges(&free), truncated })
 }
 
@@ -450,7 +456,7 @@ mod tests {
         let fake = Arc::new(Fake::new(&["192.0.2.9"], &["192.0.2.11"]));
         let exclude: HashSet<Ipv4Addr> = [ip("192.0.2.12")].into();
         let calls = Mutex::new(vec![]);
-        let out = scan(&iface(), exclude, fake.clone(), |d, t| calls.lock().unwrap().push((d, t)), CancellationToken::new())
+        let out = scan(&iface(), exclude, &HashSet::new(), fake.clone(), |d, t| calls.lock().unwrap().push((d, t)), CancellationToken::new())
             .await
             .unwrap();
         // .9 répond au ping, .10 est le poste, .11 est en ARP, .12 est exclue : restent .13 et .14.
@@ -475,7 +481,7 @@ mod tests {
         // /29 : .9 à .14, le poste en .10. Exclues : .12 et .13.
         let ex = Exclusions::parse("192.0.2.12 - 192.0.2.13").unwrap();
         let fake = Arc::new(Fake::new(&[], &[]));
-        let out = scan(&iface(), excluded_in(&iface(), &ex), fake.clone(), |_, _| {}, CancellationToken::new())
+        let out = scan(&iface(), excluded_in(&iface(), &ex), &HashSet::new(), fake.clone(), |_, _| {}, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -493,10 +499,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_selected_cameras_own_addresses_are_free_for_them() {
+        // /29 : .9 à .14, le poste en .10. La caméra cliquée est en .9 : elle
+        // répond au ping, mais c'est elle-même.
+        let fake = Arc::new(Fake::new(&["192.0.2.9", "192.0.2.11"], &["192.0.2.9"]));
+        let own: HashSet<Ipv4Addr> = [ip("192.0.2.9")].into();
+        let out = scan(&iface(), HashSet::new(), &own, fake.clone(), |_, _| {}, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(out.ranges[0], FreeRange { first: ip("192.0.2.9"), last: ip("192.0.2.9"), count: 1 });
+        assert_eq!(first_fit(&out.ranges, 1), Some(ip("192.0.2.9")));
+        // Pas pinguée : la réponse ne dirait rien.
+        assert!(!fake.pinged.lock().unwrap().contains(&ip("192.0.2.9")));
+        // Une autre caméra qui répond (.11) n'est pas libre.
+        assert!(out.ranges.iter().all(|r| r.first != ip("192.0.2.11")));
+    }
+
+    #[tokio::test]
+    async fn an_excluded_own_address_stays_excluded() {
+        let ex = Exclusions::parse("192.0.2.9").unwrap();
+        let own: HashSet<Ipv4Addr> = [ip("192.0.2.9"), ip("192.0.2.10")].into();
+        let out = scan(&iface(), excluded_in(&iface(), &ex), &own, Arc::new(Fake::new(&[], &[])), |_, _| {}, CancellationToken::new())
+            .await
+            .unwrap();
+        // Ni l'exclue, ni l'adresse du poste.
+        let free: Vec<Ipv4Addr> = out.ranges.iter().flat_map(|r| u32::from(r.first)..=u32::from(r.last)).map(Ipv4Addr::from).collect();
+        assert_eq!(free, [ip("192.0.2.11"), ip("192.0.2.12"), ip("192.0.2.13"), ip("192.0.2.14")]);
+    }
+
+    #[tokio::test]
     async fn scan_stops_when_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let r = scan(&iface(), HashSet::new(), Arc::new(Fake::new(&[], &[])), |_, _| {}, cancel).await;
+        let r = scan(&iface(), HashSet::new(), &HashSet::new(), Arc::new(Fake::new(&[], &[])), |_, _| {}, cancel).await;
         assert_eq!(r, Err(FreeError::Cancelled));
     }
 
@@ -504,7 +539,7 @@ mod tests {
     async fn scan_without_any_sendable_ping_is_an_error_not_an_empty_network() {
         let mut fake = Fake::new(&[], &[]);
         fake.unsent = true;
-        let r = scan(&iface(), HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await;
+        let r = scan(&iface(), HashSet::new(), &HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await;
         assert_eq!(r, Err(FreeError::PingUnavailable));
     }
 
@@ -517,20 +552,20 @@ mod tests {
         let mut fake = Fake::new(&[], &["192.0.2.11"]);
         fake.pings_before_arp = Some(4); // /29 : 5 hôtes sans le poste .10 → .9 .11 .12 .13 .14, moins .12 exclue
         let exclude: HashSet<Ipv4Addr> = [ip("192.0.2.12")].into();
-        scan(&iface(), exclude, Arc::new(fake), |_, _| {}, CancellationToken::new()).await.unwrap();
+        scan(&iface(), exclude, &HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await.unwrap();
     }
 
     #[tokio::test]
     async fn scan_reports_a_truncated_big_subnet() {
         let big = ScanInterface { name: "eth0".into(), ip: ip("10.1.2.3"), mask: ip("255.255.0.0") };
         let fake = Arc::new(Fake::new(&[], &[]));
-        let out = scan(&big, HashSet::new(), fake.clone(), |_, _| {}, CancellationToken::new()).await.unwrap();
+        let out = scan(&big, HashSet::new(), &HashSet::new(), fake.clone(), |_, _| {}, CancellationToken::new()).await.unwrap();
         assert!(out.truncated);
         // 1024 adresses, moins celle du poste.
         assert_eq!(fake.pinged.lock().unwrap().len(), 1023);
         let n: usize = out.ranges.iter().map(|r| r.count).sum();
         assert_eq!(n, 1023);
-        let small = scan(&iface(), HashSet::new(), Arc::new(Fake::new(&[], &[])), |_, _| {}, CancellationToken::new())
+        let small = scan(&iface(), HashSet::new(), &HashSet::new(), Arc::new(Fake::new(&[], &[])), |_, _| {}, CancellationToken::new())
             .await
             .unwrap();
         assert!(!small.truncated);
@@ -540,7 +575,7 @@ mod tests {
     async fn an_address_that_could_not_be_pinged_is_never_free() {
         let mut fake = Fake::new(&[], &[]);
         fake.unsent_for = [ip("192.0.2.77")].into();
-        let out = scan(&lan(), HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await.unwrap();
+        let out = scan(&lan(), HashSet::new(), &HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await.unwrap();
         assert!(out.ranges.iter().all(|r| !(r.first..=r.last).contains(&ip("192.0.2.77"))));
         // Le poste (.10) et .77 coupent les plages : trois.
         assert_eq!(out.ranges.len(), 3);
@@ -552,7 +587,7 @@ mod tests {
         let mut fake = Fake::new(&[], &[]);
         // 26 sur 253 : plus de 10 %.
         fake.unsent_for = (100..126).map(|n| Ipv4Addr::new(192, 0, 2, n)).collect();
-        let r = scan(&lan(), HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await;
+        let r = scan(&lan(), HashSet::new(), &HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await;
         assert_eq!(r, Err(FreeError::PingUnavailable));
     }
 

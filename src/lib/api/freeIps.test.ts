@@ -80,6 +80,14 @@ test('le balayage part avec le compte retenu : ses IP exclues ne sont pas propos
   expect(invoke.mock.lastCall?.[1].accountId).toBe('acc');
 });
 
+test('les adresses actuelles des caméras à réadresser partent avec le balayage : libres pour elles', async () => {
+  invoke.mockResolvedValue(undefined);
+  await startFreeIps('eth0', () => {}, 'acc', ['10.0.50.33']).done;
+  expect(invoke.mock.lastCall?.[1].own).toEqual(['10.0.50.33']);
+  await startFreeIps('eth0', () => {}).done;
+  expect(invoke.mock.lastCall?.[1].own).toEqual([]);
+});
+
 test('deux balayages ont deux numéros différents', () => {
   invoke.mockResolvedValue(undefined);
   const a = startFreeIps('eth0', () => {});
