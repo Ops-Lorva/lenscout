@@ -52,5 +52,7 @@
     "too_many_dns": "2 DNS como máximo",
     "bad_login": "Usuario no válido (1 a 14 letras o cifras)",
     "bad_password": "Contraseña no válida (1 a 64 caracteres)"
-  }
+  },
+  "activate_note": "La contraseña de esta cuenta pasa a ser la de cada cámara.",
+  "busy": "En curso"
 }

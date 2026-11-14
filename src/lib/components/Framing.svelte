@@ -71,38 +71,34 @@
 </script>
 
 {#if !cam}
-  <div class="muted">{$_('framing.none')}</div>
+  <div class="none">{$_('framing.none')}</div>
 {:else}
-  <div class="bar">
-    <strong>{cam.model ?? cam.brand ?? ''}</strong>
+  <div class="fbar">
+    <strong>{[cam.brand, cam.model].filter(Boolean).join(' ')}</strong>
     <span class="ip">{cam.ip}</span>
-    <AccountPicker bind:accountId />
+    <span class="sp"></span>
+    <label class="acc"><span class="dim-t">{$_('accounts.picker')}</span> <AccountPicker bind:accountId /></label>
     {#if playing}
-      <button class="primary" onclick={stop}>{$_('framing.stop')}</button>
+      <button class="btn def" onclick={stop}>{$_('framing.stop')}</button>
     {:else}
-      <button class="primary" onclick={play} disabled={!accountId}>{$_('framing.play')}</button>
+      <button class="btn def" onclick={play} disabled={!accountId}>{$_('framing.play')}</button>
     {/if}
   </div>
-  {#if error}<div class="error">{error}</div>{/if}
-  <div class="view" ondblclick={fullscreen} role="presentation">
-    {#if src}<img {src} alt={$_('framing.image')} />{/if}
+  {#if error}<p class="err">{error}</p>{/if}
+  <!-- Sans flux, la zone reste à sa place, vide et claire, pour que la fenêtre ne saute pas. -->
+  <div class="view" class:off={!src} ondblclick={fullscreen} role="presentation">
+    {#if src}
+      <img {src} alt={$_('framing.image')} />
+      <!-- Grille des tiers et réticule du cadrage, par-dessus le flux. -->
+      <div class="grid"></div>
+      <div class="ret"></div>
+    {/if}
   </div>
 {/if}
 
 <style>
-  .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-  .ip { color: var(--ep-text-muted, inherit); font-variant-numeric: tabular-nums; }
-  .error { color: var(--ep-danger); font-size: 12.5px; margin-bottom: 8px; }
-  .muted { opacity: 0.7; }
-  .view {
-    flex: 1;
-    min-height: 240px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #000;
-    border-radius: 6px;
-    overflow: hidden;
-  }
+  .acc { display: inline-flex; align-items: center; gap: 6px; }
+  .view { display: flex; align-items: center; justify-content: center; }
   .view img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .view:fullscreen { border-radius: 0; background: #000; }
 </style>

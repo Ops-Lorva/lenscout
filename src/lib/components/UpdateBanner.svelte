@@ -39,31 +39,30 @@
   }
 </script>
 
+<!-- Bande plate sous la barre de titre, dans le gris de la barre latérale. -->
 {#if info}
-  <div class="banner" role="status">
-    <span class="text">
+  <div class="update" role="status">
+    <span class="t">
       {$_('update.available')} <strong>v{info.latest_version}</strong>
-      {#if failed}<span class="err"> · {$_('update.failed')}</span>{/if}
+      {#if failed}<span class="fail">{$_('update.failed')}</span>{/if}
     </span>
     {#if info.asset_url}
-      <button class="install" onclick={install} disabled={installing}>
-        {installing ? $_('update.installing') : $_('update.install')}
+      <button class="btn def" onclick={install} disabled={installing}>
+        {#if installing}<span class="spin"></span>{/if}{installing ? $_('update.installing') : $_('update.install')}
       </button>
     {:else if info.release_notes_url}
-      <a class="link" href={info.release_notes_url} target="_blank" rel="noopener noreferrer">{$_('update.view')}</a>
+      <a class="btn def" href={info.release_notes_url} target="_blank" rel="noopener noreferrer">{$_('update.view')}</a>
     {/if}
-    <button class="dismiss" onclick={dismiss} title={$_('update.dismiss')} aria-label={$_('update.dismiss')} disabled={installing}>✕</button>
+    <button class="btn" onclick={dismiss} disabled={installing}>{$_('update.dismiss')}</button>
   </div>
 {/if}
 
 <style>
-  .banner { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--ep-accent); color: #fff; font-size: 13px; flex-shrink: 0; }
-  .text { flex: 1; }
-  .err { opacity: 0.9; }
-  .link { color: #fff; font-weight: 700; text-decoration: underline; white-space: nowrap; }
-  .install { background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.4); color: #fff; font-weight: 600; padding: 4px 12px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
-  .install:hover:not(:disabled) { background: rgba(255,255,255,0.28); }
-  .install:disabled { opacity: 0.7; cursor: wait; }
-  .dismiss { background: transparent; border: none; color: rgba(255,255,255,0.8); cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 4px; }
-  .dismiss:hover:not(:disabled) { background: rgba(255,255,255,0.2); }
+  .update {
+    display: flex; align-items: center; gap: 10px; padding: 6px 16px; flex-shrink: 0;
+    border-bottom: 1px solid var(--line); background: var(--side); font-size: 12.5px;
+  }
+  .t { flex: 1; }
+  .fail { color: var(--err); margin-left: 6px; }
+  a.btn { text-decoration: none; }
 </style>

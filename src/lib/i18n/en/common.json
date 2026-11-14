@@ -1,5 +1,17 @@
 {
-  "nav": { "network": "Network", "framing": "Framing", "accounts": "Accounts" },
-  "lang": { "fr": "Français", "en": "English", "es": "Español" },
-  "interface": { "label": "Interface", "none": "No interface" }
+  "nav": {
+    "network": "Network",
+    "framing": "Framing",
+    "accounts": "Accounts",
+    "settings": "Settings"
+  },
+  "lang": {
+    "fr": "Français",
+    "en": "English",
+    "es": "Español"
+  },
+  "interface": {
+    "label": "Interface",
+    "none": "No interface"
+  }
 }

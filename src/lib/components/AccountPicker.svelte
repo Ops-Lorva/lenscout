@@ -4,7 +4,8 @@
   import { errorKey } from '$lib/api/errors';
   import { ACCOUNT_KEY, listAccounts, pickAccount, type Account } from '$lib/api/accounts';
 
-  let { accountId = $bindable('') }: { accountId?: string } = $props();
+  // `id` : pour le `<label for>` d'une feuille.
+  let { accountId = $bindable(''), id = undefined }: { accountId?: string; id?: string } = $props();
 
   let accounts = $state<Account[]>([]);
   let error = $state('');
@@ -27,12 +28,16 @@
   });
 </script>
 
-<select value={accountId} onchange={onChange} disabled={accounts.length === 0} aria-label={$_('accounts.picker')}>
-  {#if accounts.length === 0 && !error}<option value="">{$_('accounts.none')}</option>{/if}
-  {#each accounts as a (a.id)}<option value={a.id}>{a.name} ({a.login})</option>{/each}
-</select>
-{#if error}<span class="error">{error}</span>{/if}
+<span class="picker">
+  <select {id} value={accountId} onchange={onChange} disabled={accounts.length === 0} aria-label={$_('accounts.picker')}>
+    {#if accounts.length === 0 && !error}<option value="">{$_('accounts.none')}</option>{/if}
+    {#each accounts as a (a.id)}<option value={a.id}>{a.name} ({a.login})</option>{/each}
+  </select>
+  {#if error}<span class="err">{error}</span>{/if}
+</span>
 
 <style>
-  .error { color: var(--ep-danger); font-size: 12.5px; margin-left: 8px; }
+  .picker { display: inline-flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .picker select { max-width: 100%; }
+  .err { margin: 0; }
 </style>

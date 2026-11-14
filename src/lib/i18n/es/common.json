@@ -1,5 +1,17 @@
 {
-  "nav": { "network": "Red", "framing": "Encuadre", "accounts": "Cuentas" },
-  "lang": { "fr": "Français", "en": "English", "es": "Español" },
-  "interface": { "label": "Interfaz", "none": "Ninguna interfaz" }
+  "nav": {
+    "network": "Red",
+    "framing": "Encuadre",
+    "accounts": "Cuentas",
+    "settings": "Ajustes"
+  },
+  "lang": {
+    "fr": "Français",
+    "en": "English",
+    "es": "Español"
+  },
+  "interface": {
+    "label": "Interfaz",
+    "none": "Ninguna interfaz"
+  }
 }

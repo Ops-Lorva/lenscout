@@ -30,5 +30,6 @@
     "internal": "Erreur interne",
     "unknown": "Erreur",
     "local_network_denied": "Accès au réseau local refusé"
-  }
+  },
+  "scanning": "Recherche sur {iface}, {count} caméra(s)"
 }

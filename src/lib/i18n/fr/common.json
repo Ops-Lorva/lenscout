@@ -1,5 +1,17 @@
 {
-  "nav": { "network": "Réseau", "framing": "Cadrage", "accounts": "Comptes" },
-  "lang": { "fr": "Français", "en": "English", "es": "Español" },
-  "interface": { "label": "Interface", "none": "Aucune interface" }
+  "nav": {
+    "network": "Réseau",
+    "framing": "Cadrage",
+    "accounts": "Comptes",
+    "settings": "Réglages"
+  },
+  "lang": {
+    "fr": "Français",
+    "en": "English",
+    "es": "Español"
+  },
+  "interface": {
+    "label": "Interface",
+    "none": "Aucune interface"
+  }
 }

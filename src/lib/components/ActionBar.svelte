@@ -24,13 +24,16 @@
   const batchAllowed = $derived(canBatchIp(cams));
   // Les caméras non cochées (même masquées par la recherche) : leurs adresses sont à protéger.
   const others = $derived($cameras.filter((c) => !cams.some((s) => cameraKey(s) === cameraKey(c))));
+  // La feuille IP vise une caméra : son nom et son adresse dans le titre.
+  const one = $derived(cams.length === 1 ? cams[0] : null);
+  const oneLabel = $derived(one ? `${[one.brand, one.model].filter(Boolean).join(' ') || '—'}, ${one.ip}` : '');
 
   // Sélection vidée (décochée, recherche, rescan) : pas de dialogue sur rien.
   $effect(() => {
     open = dialogAfterSelection(open, cams);
   });
 
-  // Résultats d'un lot : mêmes pastilles par ligne, puis rescan comme après une IP.
+  // Résultats d'un lot : même texte par ligne, puis rescan comme après une IP.
   function batchDone(results: ActionResult[]) {
     clearResults();
     setResults(results);
@@ -59,21 +62,21 @@
 </script>
 
 {#if cams.length > 0}
-  <div class="actions">
-    <button disabled={!activatable} onclick={() => (open = 'activate')}>{$_('configure.activate')}</button>
-    <button disabled={!ipAllowed} onclick={() => (open = 'network')}>{$_('configure.ip')}</button>
-    <button disabled={!batchAllowed} onclick={() => (open = 'batch')}>{$_('batch.title')}</button>
-    <button disabled={!allowed} onclick={() => (open = 'time')}>{$_('configure.time')}</button>
+  <div class="tools">
+    <button class="btn" disabled={!activatable} onclick={() => (open = 'activate')}>{$_('configure.activate')}</button>
+    <button class="btn" disabled={!ipAllowed} onclick={() => (open = 'network')}>{$_('configure.ip')}</button>
+    <button class="btn" disabled={!batchAllowed} onclick={() => (open = 'batch')}>{$_('batch.title')}</button>
+    <button class="btn" disabled={!allowed} onclick={() => (open = 'time')}>{$_('configure.time')}</button>
     <span class="count">{$_('configure.cameras', { values: { count: cams.length } })}</span>
-    {#if busy}<span class="spinner"></span>{/if}
-    {#if error}<span class="error">{error}</span>{/if}
+    {#if busy}<span class="spin" aria-label={$_('configure.busy')}></span>{/if}
+    {#if error}<span class="err inline">{error}</span>{/if}
   </div>
 {/if}
 
 {#if open === 'activate'}
   <ActivateDialog count={cams.length} bind:accountId {busy} onSubmit={() => run({ kind: 'activate' })} onClose={() => (open = null)} />
 {:else if open === 'network'}
-  <NetworkDialog bind:accountId {busy} {iface} onSubmit={run} onClose={() => (open = null)} />
+  <NetworkDialog subtitle={oneLabel} bind:accountId {busy} {iface} onSubmit={run} onClose={() => (open = null)} />
 {:else if open === 'batch'}
   <BatchIpDialog bind:accountId {iface} {cams} {others} onApplied={batchDone} onClose={() => (open = null)} />
 {:else if open === 'time'}
@@ -81,20 +84,5 @@
 {/if}
 
 <style>
-  .actions { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
-  button {
-    padding: 5px 14px; font-size: 13px; cursor: pointer;
-    background: var(--ep-glass-bg-md); border: 1px solid var(--ep-glass-border);
-    border-radius: var(--ep-radius-md); color: var(--ep-text-primary);
-  }
-  button:hover:not(:disabled) { border-color: var(--ep-accent); }
-  button:disabled { opacity: 0.55; cursor: not-allowed; }
-  .count { color: var(--ep-text-muted); font-size: 12.5px; }
-  .error { color: var(--ep-danger); font-size: 12.5px; }
-  .spinner {
-    width: 11px; height: 11px; border-radius: 50%;
-    border: 2px solid var(--ep-accent-glow); border-top-color: var(--ep-accent-bright);
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .err.inline { margin: 0; }
 </style>

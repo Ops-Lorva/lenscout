@@ -52,5 +52,7 @@
     "too_many_dns": "2 DNS au plus",
     "bad_login": "Identifiant invalide (1 à 14 lettres ou chiffres)",
     "bad_password": "Mot de passe invalide (1 à 64 caractères)"
-  }
+  },
+  "activate_note": "Le mot de passe de ce compte devient celui de chaque caméra.",
+  "busy": "En cours"
 }

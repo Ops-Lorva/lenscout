@@ -52,5 +52,7 @@
     "too_many_dns": "2 DNS servers at most",
     "bad_login": "Invalid username (1 to 14 letters or digits)",
     "bad_password": "Invalid password (1 to 64 characters)"
-  }
+  },
+  "activate_note": "This account’s password becomes each camera’s password.",
+  "busy": "In progress"
 }

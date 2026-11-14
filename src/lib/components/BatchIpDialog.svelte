@@ -96,45 +96,44 @@
   }
 </script>
 
-<Dialog title={$_('batch.title')} {onClose}>
-  <label>{$_('accounts.picker')}<AccountPicker bind:accountId /></label>
-  <label>{$_('batch.start')}<input bind:value={start} inputmode="decimal" autocomplete="off" /></label>
-  {#if off}<div class="warn">{$_('configure.off_subnet', { values: { iface } })}</div>{/if}
-  <label>{$_('configure.mask')}<input bind:value={mask} inputmode="decimal" autocomplete="off" /></label>
-  <label>{$_('configure.gateway')}<input bind:value={gateway} inputmode="decimal" autocomplete="off" /></label>
-  <label>{$_('configure.dns')}<input bind:value={dns} autocomplete="off" /></label>
-  {#if error}<div class="error">{error}</div>{/if}
+<Dialog title={$_('batch.title')} width={560} {onClose}>
+  <div class="form">
+    <label for="b-account">{$_('accounts.picker')}</label><AccountPicker id="b-account" bind:accountId />
+    <label for="b-start">{$_('batch.start')}</label><input id="b-start" type="text" bind:value={start} inputmode="decimal" autocomplete="off" />
+    {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
+    <label for="b-mask">{$_('configure.mask')}</label><input id="b-mask" type="text" bind:value={mask} inputmode="decimal" autocomplete="off" />
+    <label for="b-gw">{$_('configure.gateway')}</label><input id="b-gw" type="text" bind:value={gateway} inputmode="decimal" autocomplete="off" />
+    <label for="b-dns">{$_('configure.dns')}</label><input id="b-dns" type="text" bind:value={dns} autocomplete="off" />
+  </div>
+  <!-- L'aperçu : MAC, n° de série et passage d'adresse, dans l'ordre de la liste. -->
   {#if shown}
-    <table>
-      <thead>
-        <tr>
-          <th>{$_('batch.col.mac')}</th>
-          <th>{$_('batch.col.serial')}</th>
-          <th>{$_('batch.col.change')}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each shown.rows as r (r.mac)}
+    <div class="scroll ptable">
+      <table>
+        <thead>
           <tr>
-            <td>{r.mac}</td>
-            <td>{r.serial ?? ''}</td>
-            <td>{r.current_ip} → {r.new_ip}</td>
+            <th>{$_('batch.col.mac')}</th>
+            <th>{$_('batch.col.serial')}</th>
+            <th>{$_('batch.col.change')}</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each shown.rows as r (r.mac)}
+            <tr>
+              <td class="mac">{r.mac}</td>
+              <td class="mac ser" title={r.serial ?? ''}>{r.serial ?? ''}</td>
+              <td>{r.current_ip} → {r.new_ip}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
-  <div class="row">
-    <button onclick={onClose}>{$_('configure.cancel')}</button>
-    <button onclick={runPreview} disabled={!ready}>{$_('batch.preview')}</button>
-    <button class="primary" onclick={runApply} disabled={busy || !accountId || !shown}>{$_('batch.apply')}</button>
+  <div class="foot">
+    <span class="sum" class:e={!!error}>{error}</span>
+    <button class="btn" onclick={onClose}>{$_('configure.cancel')}</button>
+    <button class="btn" onclick={runPreview} disabled={!ready}>{$_('batch.preview')}</button>
+    <button class="btn def" onclick={runApply} disabled={busy || !accountId || !shown}>
+      {#if busy}<span class="spin"></span>{/if}{$_('batch.apply')}
+    </button>
   </div>
 </Dialog>
-
-<style>
-  .warn { color: var(--ep-warning); font-size: 12px; }
-  .error { color: var(--ep-danger); font-size: 12.5px; }
-  table { border-collapse: collapse; font-size: 12.5px; }
-  th { text-align: left; padding: 3px 8px; font-size: 11px; color: var(--ep-text-muted); border-bottom: 1px solid var(--ep-border-strong); }
-  td { padding: 3px 8px; font-variant-numeric: tabular-nums; }
-</style>

@@ -8,7 +8,7 @@ use commands::accounts::{
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
 use commands::stream::{StreamState, cmd_stream_ack, cmd_stream_start, cmd_stream_stop};
 use commands::update::{cmd_apply_update, cmd_check_update};
-use commands::app::{cmd_app_version, cmd_interface_details, cmd_list_interfaces};
+use commands::app::{cmd_app_version, cmd_debug_get, cmd_debug_set, cmd_interface_details, cmd_list_interfaces};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_scan_cancel, cmd_scan_start};
 use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
 use lenscout_core::permissions::set_data_dir;
@@ -57,6 +57,8 @@ pub fn run() {
             cmd_app_version,
             cmd_list_interfaces,
             cmd_interface_details,
+            cmd_debug_get,
+            cmd_debug_set,
             cmd_scan_start,
             cmd_scan_cancel,
             cmd_open_camera_web,

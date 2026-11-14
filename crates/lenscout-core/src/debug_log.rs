@@ -36,6 +36,21 @@ pub fn enabled(env: Option<&OsStr>, data_dir: &Path) -> bool {
     env.is_some_and(|v| v == "1") || data_dir.join(SWITCH).exists()
 }
 
+/// Pose ou retire le fichier `debug` (la case « Journal de diagnostic » des
+/// Réglages). Idempotent : il n'y a rien à faire si l'état est déjà le bon.
+pub fn set_switch(data_dir: &Path, on: bool) -> std::io::Result<()> {
+    let path = data_dir.join(SWITCH);
+    if on {
+        std::fs::create_dir_all(data_dir)?;
+        File::create(path).map(drop)
+    } else {
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Fichier à taille bornée : passé `cap` octets, l'actuel devient `.1`.
 pub struct DebugLog {
     path: PathBuf,
@@ -95,6 +110,14 @@ pub fn install(data_dir: &Path) {
     let diag = Diagnostics { log: DebugLog::new(data_dir.join(FILE), MAX_BYTES), captures: data_dir.join("captures") };
     if let Ok(mut d) = DIAG.lock() {
         *d = Some(diag);
+    }
+}
+
+/// Arrête le journal (case décochée dans les Réglages). Le fichier reste ;
+/// `is_on` et `capture_dir` lisent l'état à chaque appel, l'effet est immédiat.
+pub fn uninstall() {
+    if let Ok(mut d) = DIAG.lock() {
+        *d = None;
     }
 }
 
@@ -225,6 +248,33 @@ mod tests {
         assert!(!line.contains("action=") && !line.contains("pwd=x") && !line.contains("root:pw"), "{line}");
         let p = req(Method::Get, "http://192.0.2.11/axis-cgi/param.cgi?action=list&group=Properties.System.SerialNumber", "");
         assert!(response_line(&p, &resp(200, "text/plain", b"")).contains("param.cgi?action=list&group="));
+    }
+
+    #[test]
+    fn the_switch_file_is_created_and_removed_and_decides_enabled() {
+        let dir = tmp().join("sous-dossier-absent");
+        set_switch(&dir, true).unwrap();
+        assert!(dir.join(SWITCH).is_file());
+        assert!(enabled(None, &dir));
+        // Deux fois de suite : pas d'erreur.
+        set_switch(&dir, true).unwrap();
+        set_switch(&dir, false).unwrap();
+        assert!(!dir.join(SWITCH).exists());
+        assert!(!enabled(None, &dir));
+        set_switch(&dir, false).unwrap();
+    }
+
+    #[test]
+    fn install_then_uninstall_switches_logging_at_runtime() {
+        let dir = tmp();
+        install(&dir);
+        assert!(capture_dir().is_some());
+        log("[test] une ligne");
+        assert!(std::fs::read_to_string(dir.join(FILE)).unwrap().contains("[test] une ligne"));
+        uninstall();
+        assert!(capture_dir().is_none());
+        log("[test] après arrêt");
+        assert!(!std::fs::read_to_string(dir.join(FILE)).unwrap().contains("après arrêt"));
     }
 
     #[test]

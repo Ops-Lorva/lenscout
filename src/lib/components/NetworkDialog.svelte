@@ -9,11 +9,12 @@
 
   let {
     accountId = $bindable(''),
+    subtitle = '',
     iface,
     busy,
     onSubmit,
     onClose,
-  }: { accountId?: string; iface: string; busy: boolean; onSubmit: (a: ActionDto) => void; onClose: () => void } = $props();
+  }: { accountId?: string; subtitle?: string; iface: string; busy: boolean; onSubmit: (a: ActionDto) => void; onClose: () => void } = $props();
 
   let dhcp = $state(false);
   let ip = $state('');
@@ -47,27 +48,27 @@
   }
 </script>
 
-<Dialog title={$_('configure.ip')} {onClose}>
-  <label>{$_('accounts.picker')}<AccountPicker bind:accountId /></label>
-  <label>{$_('configure.mode')}
-    <select bind:value={dhcp}>
+<Dialog title={$_('configure.ip')} {subtitle} {onClose}>
+  <div class="form">
+    <label for="ip-account">{$_('accounts.picker')}</label><AccountPicker id="ip-account" bind:accountId />
+    <label for="ip-mode">{$_('configure.mode')}</label>
+    <select id="ip-mode" bind:value={dhcp}>
       <option value={false}>{$_('configure.static')}</option>
       <option value={true}>{$_('configure.dhcp')}</option>
     </select>
-  </label>
-  {#if !dhcp}
-    <label>{$_('configure.ipaddr')}<input bind:value={ip} inputmode="decimal" autocomplete="off" /></label>
-    {#if off}<div class="warn">{$_('configure.off_subnet', { values: { iface } })}</div>{/if}
-    <label>{$_('configure.mask')}<input bind:value={mask} inputmode="decimal" autocomplete="off" /></label>
-    <label>{$_('configure.gateway')}<input bind:value={gateway} inputmode="decimal" autocomplete="off" /></label>
-    <label>{$_('configure.dns')}<input bind:value={dns} autocomplete="off" /></label>
-  {/if}
-  <div class="row">
-    <button onclick={onClose}>{$_('configure.cancel')}</button>
-    <button class="primary" onclick={submit} disabled={!ready}>{$_('configure.apply')}</button>
+    {#if !dhcp}
+      <label for="ip-ip">{$_('configure.ipaddr')}</label><input id="ip-ip" type="text" bind:value={ip} inputmode="decimal" autocomplete="off" />
+      {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
+      <label for="ip-mask">{$_('configure.mask')}</label><input id="ip-mask" type="text" bind:value={mask} inputmode="decimal" autocomplete="off" />
+      <label for="ip-gw">{$_('configure.gateway')}</label><input id="ip-gw" type="text" bind:value={gateway} inputmode="decimal" autocomplete="off" />
+      <label for="ip-dns">{$_('configure.dns')}</label><input id="ip-dns" type="text" bind:value={dns} autocomplete="off" />
+    {/if}
+  </div>
+  <div class="foot">
+    <span class="sum"></span>
+    <button class="btn" onclick={onClose}>{$_('configure.cancel')}</button>
+    <button class="btn def" onclick={submit} disabled={!ready}>
+      {#if busy}<span class="spin"></span>{/if}{$_('configure.apply')}
+    </button>
   </div>
 </Dialog>
-
-<style>
-  .warn { color: var(--ep-warning); font-size: 12px; }
-</style>

@@ -6,10 +6,13 @@
     type AccountEntry,
   } from '$lib/api/accounts';
   import { errorKey } from '$lib/api/errors';
+  import Dialog from './Dialog.svelte';
 
   let accounts = $state<AccountEntry[]>([]);
   let error = $state('');
-  // `null` : pas de formulaire ; `''` : création ; sinon l'id du compte modifié.
+  // Clé de l'erreur en cours : « Nom déjà utilisé » se place sous le champ Nom.
+  let errorCode = $state('');
+  // `null` : pas de feuille ; `''` : création ; sinon l'id du compte modifié.
   let editing = $state<string | null>(null);
   let name = $state('');
   let login = $state('');
@@ -17,7 +20,15 @@
   let confirming = $state('');
   let needPassword = $state(true);
 
-  const fail = (e: unknown) => (error = $_(`accounts.${errorKey(e)}`));
+  const nameError = $derived(errorCode === 'error.duplicate_name' ? error : '');
+  const otherError = $derived(nameError ? '' : error);
+  // Enregistrer reste grisé tant qu'un champ obligatoire est vide.
+  const ready = $derived(name.trim() !== '' && login.trim() !== '' && (!needPassword || password !== ''));
+
+  const fail = (e: unknown) => {
+    errorCode = errorKey(e);
+    error = $_(`accounts.${errorCode}`);
+  };
 
   async function refresh() {
     try {
@@ -29,6 +40,7 @@
 
   function open(a: AccountEntry | null) {
     error = '';
+    errorCode = '';
     confirming = '';
     editing = a?.id ?? '';
     needPassword = passwordRequired(a);
@@ -40,10 +52,13 @@
   function close() {
     editing = null;
     password = '';
+    error = '';
+    errorCode = '';
   }
 
   async function save() {
     error = '';
+    errorCode = '';
     try {
       if (editing) await updateAccount(editing, name, login, password === '' ? null : password);
       else await createAccount(name, login, password);
@@ -65,6 +80,7 @@
     }
     confirming = '';
     error = '';
+    errorCode = '';
     try {
       await removeAccount(a.id);
     } catch (e) {
@@ -76,41 +92,40 @@
   onMount(async () => {
     try {
       const key = noticeKey(await accountsStartup());
-      if (key) error = $_(`accounts.${key}`);
+      if (key) {
+        errorCode = key;
+        error = $_(`accounts.${key}`);
+      }
     } catch {}
     await refresh();
   });
 </script>
 
-<div class="bar">
-  <h1>{$_('common.nav.accounts')}</h1>
-  <button class="primary" onclick={() => open(null)}>{$_('accounts.add')}</button>
+<div class="tools">
+  <span class="title">{$_('common.nav.accounts')}</span>
+  <button class="btn def" onclick={() => open(null)}>{$_('accounts.add')}</button>
 </div>
 
-{#if error}<div class="error">{error}</div>{/if}
-
-{#if editing !== null}
-  <form onsubmit={(e) => { e.preventDefault(); void save(); }}>
-    <input bind:value={name} placeholder={$_('accounts.field.name')} aria-label={$_('accounts.field.name')} autocomplete="off" />
-    <input bind:value={login} placeholder={$_('accounts.field.login')} aria-label={$_('accounts.field.login')} autocomplete="off" />
-    <input type="password" bind:value={password} required={needPassword} placeholder={$_('accounts.field.password')} aria-label={$_('accounts.field.password')} autocomplete="new-password" />
-    <button class="primary" type="submit">{$_('accounts.save')}</button>
-    <button type="button" onclick={close}>{$_('accounts.cancel')}</button>
-  </form>
-{/if}
+{#if error && editing === null}<p class="err">{error}</p>{/if}
 
 <table>
   <thead>
-    <tr><th>{$_('accounts.col.name')}</th><th>{$_('accounts.col.login')}</th><th></th></tr>
+    <tr>
+      <th style="width:44%">{$_('accounts.col.name')}</th>
+      <th style="width:22%">{$_('accounts.col.login')}</th>
+      <th>{$_('accounts.field.password')}</th>
+      <th style="width:1%"></th>
+    </tr>
   </thead>
   <tbody>
     {#each accounts as a (a.id)}
       <tr>
-        <td>{a.name}{#if !a.has_secret} <span class="pill">{$_('accounts.resecret')}</span>{/if}</td>
-        <td class="mono">{a.login}</td>
-        <td class="actions">
-          <button onclick={() => open(a)}>{$_('accounts.edit')}</button>
-          <button class:danger={confirming === a.id} onclick={() => remove(a)}>
+        <td>{a.name}</td>
+        <td>{a.login}</td>
+        <td>{#if a.has_secret}••••••••{:else}<span class="warn">{$_('accounts.resecret')}</span>{/if}</td>
+        <td class="ra">
+          <button class="mini" onclick={() => open(a)}>{$_('accounts.edit')}</button>
+          <button class="mini" class:danger={confirming === a.id} onclick={() => remove(a)}>
             {confirming === a.id ? $_('accounts.confirmRemove') : $_('accounts.remove')}
           </button>
         </td>
@@ -120,40 +135,27 @@
 </table>
 {#if accounts.length === 0}<div class="none">{$_('accounts.none')}</div>{/if}
 
+{#if editing !== null}
+  <Dialog title={$_(editing ? 'accounts.edit' : 'accounts.add')} width={520} onClose={close}>
+    <form onsubmit={(e) => { e.preventDefault(); if (ready) void save(); }}>
+      <div class="form">
+        <label for="a-name">{$_('accounts.field.name')}</label>
+        <input id="a-name" type="text" bind:value={name} autocomplete="off" aria-invalid={nameError ? 'true' : undefined} />
+        {#if nameError}<span class="note bad">{nameError}</span>{/if}
+        <label for="a-login">{$_('accounts.field.login')}</label>
+        <input id="a-login" type="text" bind:value={login} autocomplete="off" />
+        <label for="a-password">{$_('accounts.field.password')}</label>
+        <input id="a-password" type="password" bind:value={password} required={needPassword} autocomplete="new-password" />
+      </div>
+      <div class="foot">
+        <span class="sum" class:e={!!otherError}>{otherError}</span>
+        <button class="btn" type="button" onclick={close}>{$_('accounts.cancel')}</button>
+        <button class="btn def" type="submit" disabled={!ready}>{$_('accounts.save')}</button>
+      </div>
+    </form>
+  </Dialog>
+{/if}
+
 <style>
-  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-  h1 { font-size: 15px; font-weight: 600; margin: 0; }
-  form { display: flex; gap: 8px; margin-bottom: 14px; }
-  form input {
-    flex: 1; min-width: 0; padding: 5px 10px; font-size: 13px;
-    background: var(--ep-bg-secondary); border: 1px solid var(--ep-border);
-    border-radius: var(--ep-radius-md); color: var(--ep-text-primary);
-  }
-  form input:focus { outline: none; border-color: var(--ep-accent); }
-  button {
-    padding: 4px 10px; font-size: 12px; cursor: pointer;
-    background: var(--ep-glass-bg-md); border: 1px solid var(--ep-glass-border);
-    border-radius: var(--ep-radius-md); color: var(--ep-text-primary);
-  }
-  button:hover { border-color: var(--ep-accent); }
-  .primary {
-    padding: 5px 14px; font-size: 13px; font-weight: 600;
-    background: var(--ep-accent-dim); border-color: var(--ep-accent-glow); color: var(--ep-accent-bright);
-  }
-  .danger { border-color: var(--ep-danger); color: var(--ep-danger); }
-  .error { color: var(--ep-danger); font-size: 12.5px; margin-bottom: 10px; }
-  table { width: 100%; border-collapse: collapse; }
-  th {
-    text-align: left; padding: 6px 10px; font-size: 11px; font-weight: 600; text-transform: uppercase;
-    color: var(--ep-text-muted); border-bottom: 1px solid var(--ep-border-strong);
-  }
-  td { padding: 7px 10px; border-bottom: 1px solid var(--ep-border); font-size: 12.5px; }
-  .pill {
-    display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
-    color: var(--ep-warning); border: 1px solid var(--ep-warning);
-  }
-  .mono { font-family: var(--ep-font-mono, monospace); font-size: 12px; }
-  .actions { text-align: right; }
-  .actions button { margin-left: 6px; }
-  .none { color: var(--ep-text-muted); font-size: 12.5px; padding: 14px 10px; }
+  form { margin: 0; }
 </style>

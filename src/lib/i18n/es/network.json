@@ -30,5 +30,6 @@
     "internal": "Error interno",
     "unknown": "Error",
     "local_network_denied": "Acceso a la red local denegado"
-  }
+  },
+  "scanning": "Buscando en {iface}, {count} cámara(s)"
 }

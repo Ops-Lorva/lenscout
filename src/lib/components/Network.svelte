@@ -2,12 +2,12 @@
   import { onDestroy, onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { _ } from 'svelte-i18n';
-  import { listInterfaces } from '$lib/api/core';
+  import { interfaceDetails, listInterfaces } from '$lib/api/core';
   import { cancelScan, openCameraWeb, startScan } from '$lib/api/discovery';
   import type { Camera } from '$lib/api/types';
   import { errorKey } from '$lib/api/errors';
   import { cameraKey, cameras, clear, clearCameras, query, selection, shouldAutoScan, upsert, visibleCameras } from '$lib/stores/cameras';
-  import { framingTarget, page } from '$lib/stores/nav';
+  import { framingTarget, page, status } from '$lib/stores/nav';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
   import { actionResults, resultFor } from '$lib/api/configure';
@@ -17,6 +17,8 @@
 
   let interfaces = $state<string[]>([]);
   let iface = $state('');
+  // Adresse de l'interface choisie, « 192.168.1.20/24 », à côté du select.
+  let ifaceAddr = $state('');
   let scanning = $state(false);
   let error = $state('');
   // Un scan annulé par le suivant peut encore livrer ses derniers événements :
@@ -25,6 +27,22 @@
 
   const shown = $derived($visibleCameras);
   const allSelected = $derived(shown.length > 0 && shown.every((c) => $selection.has(cameraKey(c))));
+
+  /** `255.255.255.0` → 24 ; masque absent ou illisible → l'adresse seule. */
+  function cidr(ip: string | null, mask: string | null): string {
+    if (!ip) return '';
+    const bits = (mask ?? '').split('.').reduce((n, x) => n + ((Number(x) >>> 0).toString(2).match(/1/g)?.length ?? 0), 0);
+    return bits > 0 ? `${ip}/${bits}` : ip;
+  }
+
+  async function loadAddr(name: string) {
+    ifaceAddr = '';
+    if (!name) return;
+    try {
+      const d = await interfaceDetails(name);
+      if (name === iface) ifaceAddr = cidr(d.ip, d.subnet);
+    } catch {}
+  }
 
   // `keepSelection` : rescan différé d'une action IP, la sélection suit les MAC.
   async function scan(keepSelection = false) {
@@ -55,6 +73,7 @@
   function onIface(e: Event) {
     iface = (e.currentTarget as HTMLSelectElement).value;
     try { localStorage.setItem(IFACE_KEY, iface); } catch {}
+    void loadAddr(iface);
     void scan();
   }
 
@@ -88,6 +107,12 @@
     page.set('framing');
   }
 
+  // La barre d'état porte la recherche en cours : interface et compte de caméras.
+  $effect(() => {
+    if (scanning) status.set({ text: $_('network.scanning', { values: { iface, count: $cameras.length } }) });
+    else status.set(null);
+  });
+
   onMount(async () => {
     try {
       interfaces = await listInterfaces();
@@ -98,6 +123,7 @@
     let saved = '';
     try { saved = localStorage.getItem(IFACE_KEY) ?? ''; } catch {}
     iface = interfaces.includes(saved) ? saved : (interfaces[0] ?? '');
+    void loadAddr(iface);
     // Retour sur la page : la liste et la sélection existantes restent ; « Rescanner » relance.
     if (shouldAutoScan(get(cameras))) void scan();
   });
@@ -114,80 +140,54 @@
   onDestroy(() => {
     rescanTimers.forEach(clearTimeout);
     if (scanning) stop();
+    status.set(null);
   });
 </script>
 
-<div class="bar">
+<div class="tools">
   <select value={iface} onchange={onIface} disabled={interfaces.length === 0} aria-label={$_('common.interface.label')}>
     {#if interfaces.length === 0}<option value="">{$_('common.interface.none')}</option>{/if}
     {#each interfaces as name}<option value={name}>{name}</option>{/each}
   </select>
+  {#if ifaceAddr}<span class="iface">{ifaceAddr}</span>{/if}
   {#if scanning}
-    <button class="primary" onclick={stop}><span class="spinner"></span>{$_('network.stop')}</button>
+    <button class="btn" onclick={stop}><span class="spin"></span>{$_('network.stop')}</button>
   {:else}
-    <button class="primary" onclick={() => scan()} disabled={!iface}>{$_('network.rescan')}</button>
+    <button class="btn def" onclick={() => scan()} disabled={!iface}>{$_('network.rescan')}</button>
   {/if}
-  <input type="search" bind:value={$query} placeholder={$_('network.search')} />
+  <input type="search" bind:value={$query} placeholder={$_('network.search')} aria-label={$_('network.search')} />
 </div>
 
-{#if error}<div class="error">{error}</div>{/if}
+{#if error}<p class="err">{error}</p>{/if}
 
 <ActionBar {iface} onDone={rescanSoon} />
 
-<table>
-  <thead>
-    <tr>
-      <th><input type="checkbox" checked={allSelected} onchange={toggleAll} aria-label={$_('network.selectAll')} /></th>
-      <th>{$_('network.col.camera')}</th>
-      <th>{$_('network.col.ip')}</th>
-      <th>{$_('network.col.mac')}</th>
-      <th>{$_('network.col.serial')}</th>
-      <th>{$_('network.col.firmware')}</th>
-      <th>{$_('network.col.state')}</th>
-      <th></th>
-      <th></th>
-    </tr>
-  </thead>
-  <tbody>
-    {#each shown as c (cameraKey(c))}
-      <CameraRow
-        camera={c}
-        result={resultFor($actionResults, c)}
-        selected={$selection.has(cameraKey(c))}
-        onToggle={() => toggle(c)}
-        onOpenWeb={() => openWeb(c)}
-        onFrame={() => frame(c)}
-      />
-    {/each}
-  </tbody>
-</table>
-{#if shown.length === 0 && !scanning}<div class="none">{$_('network.none')}</div>{/if}
-
-<style>
-  .bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
-  .bar input[type='search'] {
-    flex: 1; min-width: 0; padding: 5px 10px; font-size: 13px;
-    background: var(--ep-bg-secondary); border: 1px solid var(--ep-border);
-    border-radius: var(--ep-radius-md); color: var(--ep-text-primary);
-  }
-  .bar input[type='search']:focus { outline: none; border-color: var(--ep-accent); }
-  .primary {
-    display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; font-size: 13px; cursor: pointer;
-    background: var(--ep-accent-dim); border: 1px solid var(--ep-accent-glow);
-    border-radius: var(--ep-radius-md); color: var(--ep-accent-bright); font-weight: 600;
-  }
-  .primary:disabled { opacity: 0.55; cursor: not-allowed; }
-  .spinner {
-    width: 11px; height: 11px; border-radius: 50%;
-    border: 2px solid var(--ep-accent-glow); border-top-color: var(--ep-accent-bright);
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .error { color: var(--ep-danger); font-size: 12.5px; margin-bottom: 10px; }
-  table { width: 100%; border-collapse: collapse; }
-  th {
-    text-align: left; padding: 6px 10px; font-size: 11px; font-weight: 600; text-transform: uppercase;
-    color: var(--ep-text-muted); border-bottom: 1px solid var(--ep-border-strong);
-  }
-  .none { color: var(--ep-text-muted); font-size: 12.5px; padding: 14px 10px; }
-</style>
+<div class="scroll">
+  <table>
+    <thead>
+      <tr>
+        <th class="chk"><input type="checkbox" checked={allSelected} onchange={toggleAll} aria-label={$_('network.selectAll')} /></th>
+        <th>{$_('network.col.camera')}</th>
+        <th>{$_('network.col.ip')}</th>
+        <th>{$_('network.col.mac')}</th>
+        <th>{$_('network.col.serial')}</th>
+        <th>{$_('network.col.firmware')}</th>
+        <th>{$_('network.col.state')}</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {#each shown as c (cameraKey(c))}
+        <CameraRow
+          camera={c}
+          result={resultFor($actionResults, c)}
+          selected={$selection.has(cameraKey(c))}
+          onToggle={() => toggle(c)}
+          onOpenWeb={() => openWeb(c)}
+          onFrame={() => frame(c)}
+        />
+      {/each}
+    </tbody>
+  </table>
+  {#if shown.length === 0 && !scanning}<div class="none">{$_('network.none')}</div>{/if}
+</div>

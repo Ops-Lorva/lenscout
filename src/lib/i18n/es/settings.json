@@ -1,0 +1,15 @@
+{
+  "theme": "Tema",
+  "light": "Claro",
+  "dark": "Oscuro",
+  "system": "Sistema",
+  "language": "Idioma",
+  "diag": "Diagnóstico",
+  "diaglog": "Registro de diagnóstico",
+  "diagNote": "lenscout-debug.log, en la carpeta de datos de la aplicación",
+  "version": "Versión",
+  "error": {
+    "internal": "Error interno",
+    "unknown": "Error"
+  }
+}

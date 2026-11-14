@@ -12,11 +12,17 @@
   }: { count: number; accountId?: string; busy: boolean; onSubmit: () => void; onClose: () => void } = $props();
 </script>
 
-<Dialog title={$_('configure.activate')} {onClose}>
-  <div>{$_('configure.cameras', { values: { count } })}</div>
-  <label>{$_('accounts.picker')}<AccountPicker bind:accountId /></label>
-  <div class="row">
-    <button onclick={onClose}>{$_('configure.cancel')}</button>
-    <button class="primary" onclick={onSubmit} disabled={busy || !accountId}>{$_('configure.apply')}</button>
+<Dialog title={$_('configure.activate')} width={420} {onClose}>
+  <div class="form">
+    <span class="lbl">{$_('network.col.camera')}</span><span>{$_('configure.cameras', { values: { count } })}</span>
+    <label for="act-account">{$_('accounts.picker')}</label><AccountPicker id="act-account" bind:accountId />
+    <span class="note">{$_('configure.activate_note')}</span>
+  </div>
+  <div class="foot">
+    <span class="sum"></span>
+    <button class="btn" onclick={onClose}>{$_('configure.cancel')}</button>
+    <button class="btn def" onclick={onSubmit} disabled={busy || !accountId}>
+      {#if busy}<span class="spin"></span>{/if}{$_('configure.apply')}
+    </button>
   </div>
 </Dialog>
