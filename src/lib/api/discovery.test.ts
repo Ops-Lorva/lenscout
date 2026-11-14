@@ -2,7 +2,7 @@ import { describe, expect, it, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
-import { addressingKey, cameraName, readAddressing, shownMac } from './discovery';
+import { addressingKey, cameraName, readAddressing, shownMac, startScan } from './discovery';
 import type { Camera } from './types';
 
 const cam = (over: Partial<Camera>): Camera => ({
@@ -52,4 +52,12 @@ describe('cameraName', () => {
     expect(cameraName({ brand: 'AXIS', model: 'AXISP' })).toBe('AXIS AXISP');
     expect(cameraName({ brand: null, model: null })).toBe('—');
   });
+});
+
+test('le scan part avec le compte du réseau retenu, aucun en DHCP', async () => {
+  invoke.mockResolvedValue(undefined);
+  await startScan('eth0', 'acc-1', () => {});
+  expect(invoke).toHaveBeenLastCalledWith('cmd_scan_start', expect.objectContaining({ iface: 'eth0', accountId: 'acc-1' }));
+  await startScan('eth0', '', () => {});
+  expect(invoke).toHaveBeenLastCalledWith('cmd_scan_start', expect.objectContaining({ accountId: null }));
 });

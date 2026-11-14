@@ -268,9 +268,11 @@ export const batchFingerprint = (
  * Message d'une ligne pour l'erreur d'un aperçu : `BatchError` (objet à code)
  * ou code de commande (chaîne). Clé i18n complète et ses valeurs.
  */
-export function batchErrorMessage(e: unknown): { key: string; values: Record<string, string> } {
+export function batchErrorMessage(e: unknown): { key: string; values: Record<string, string | number> } {
   if (e && typeof e === 'object' && 'code' in e && typeof (e as { code: unknown }).code === 'string') {
-    const b = e as { code: string; ip?: string };
+    const b = e as { code: string; ip?: string; needed?: number; free?: number };
+    // Lot plus grand que les adresses libres du réseau du compte.
+    if (b.code === 'not_enough_free') return { key: 'batch.error.not_enough_free', values: { needed: b.needed ?? 0, free: b.free ?? 0 } };
     return { key: `batch.error.${b.code}`, values: b.ip ? { ip: b.ip } : {} };
   }
   return { key: `configure.${errorKey(e)}`, values: {} };

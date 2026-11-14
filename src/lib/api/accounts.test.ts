@@ -6,6 +6,7 @@ import {
   accountPassword, createAccount, joinable, netIn, passwordToSend, pcIpError, updateAccount, whyKeys,
   applyImport, defaultChoices, exportAccounts, groupPlan, importPlan, keepBothNames, noticeKey, passwordRequired,
   pickAccount, suffixedName, withExtension, type ImportPlan,
+  accountCameras, accountFill, fillLabel, forgetCamera, knownKey, networkEnds, segmentBox, type NetworkFill,
 } from './accounts';
 import { errorKey } from './errors';
 
@@ -198,4 +199,41 @@ test('mot de passe non touché : conservé (rien envoyé), modifié : envoyé', 
   expect(passwordToSend('neuf', 'secret')).toBe('neuf');
   // Compte à ressaisir : rien de prérempli, la saisie part.
   expect(passwordToSend('neuf', '')).toBe('neuf');
+});
+
+test('caméras connues : la clé est le n° de série, sinon la MAC', () => {
+  expect(knownKey({ ip: '10.0.8.20', serial: 'ACCC8E01', mac: 'AC:CC:8E:00:00:01', last_seen: 1 })).toBe('ACCC8E01');
+  expect(knownKey({ ip: '10.0.8.20', mac: 'AC:CC:8E:00:00:01', last_seen: 1 })).toBe('AC:CC:8E:00:00:01');
+});
+
+test('caméras connues : lister, mesurer, oublier passent le compte à Rust', async () => {
+  invoke.mockResolvedValueOnce([]);
+  await accountCameras('a');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_cameras', { id: 'a' });
+  invoke.mockResolvedValueOnce(null);
+  expect(await accountFill('a')).toBeNull();
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_fill', { id: 'a' });
+  invoke.mockResolvedValueOnce(undefined);
+  await forgetCamera('a', 'S1');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_forget_camera', { id: 'a', key: 'S1' });
+});
+
+const fill: NetworkFill = {
+  network: '10.0.8.0/24', size: 256, usable: 254, gateway: 1, pc: 1, excluded: 9, cameras: 37, free: 206,
+  almost_full: false, segments: [{ kind: 'gateway', first: 1, last: 1 }, { kind: 'excluded', first: 2, last: 9 }],
+};
+
+test('barre du réseau : chaque portion à sa place, à l’échelle du réseau', () => {
+  expect(segmentBox({ kind: 'excluded', first: 2, last: 9 }, 256)).toEqual({ left: 2 / 256 * 100, width: 8 / 256 * 100 });
+  expect(segmentBox({ kind: 'pc', first: 250, last: 250 }, 256)).toEqual({ left: 250 / 256 * 100, width: 1 / 256 * 100 });
+});
+
+test('légende : caméras et libres sur les adresses du réseau', () => {
+  expect(fillLabel(fill)).toEqual({ cameras: 37, free: 206, total: 243 });
+});
+
+test('bornes de la barre : adresse de réseau et diffusion', () => {
+  expect(networkEnds('10.0.8.0/24')).toEqual(['10.0.8.0', '10.0.8.255']);
+  expect(networkEnds('172.16.0.0/12')).toEqual(['172.16.0.0', '172.31.255.255']);
+  expect(networkEnds('n/a')).toBeNull();
 });

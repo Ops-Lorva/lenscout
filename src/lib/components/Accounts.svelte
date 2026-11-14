@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { _ } from 'svelte-i18n';
+  import { _, locale } from 'svelte-i18n';
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
-    accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, importPlan, netIn, noticeKey,
-    passwordRequired, passwordToSend, pcIpError, removeAccount, updateAccount, withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
+    accountCameras, accountFill, accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, fillLabel, forgetCamera,
+    importPlan, knownKey, netIn, networkEnds, noticeKey, passwordRequired, passwordToSend, pcIpError, removeAccount, segmentBox, updateAccount,
+    withExtension, type AccountEntry, type ImportPlan, type ImportSummary, type KnownCamera, type NetworkFill,
   } from '#lib/api/accounts.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { accountList, refreshAccounts } from '#lib/stores/accounts.ts';
@@ -32,6 +33,14 @@
   let exclusions = $state('');
   let confirming = $state('');
   let needPassword = $state(true);
+  // Réseau du compte modifié, tel qu'enregistré : remplissage et caméras connues.
+  let fill = $state<NetworkFill | null>(null);
+  let known = $state<KnownCamera[]>([]);
+  // Clé de la caméra dont l'oubli attend sa confirmation.
+  let forgetting = $state('');
+  const ends = $derived(fill ? networkEnds(fill.network) : null);
+  const counts = $derived(fill ? fillLabel(fill) : null);
+  const seenOn = (c: KnownCamera) => new Date(c.last_seen * 1000).toLocaleDateString($locale ?? undefined);
 
   const nameError = $derived(errorCode === 'error.duplicate_name' ? error : '');
   // Masque manquant : vu dès la saisie, ou rendu par Rust (même clé).
@@ -112,7 +121,39 @@
     pcIp = a?.pc_ip ?? '';
     gateway = a?.gateway ?? '';
     exclusions = a?.exclusions ?? '';
+    fill = null;
+    known = [];
+    forgetting = '';
     if (a?.has_secret) void reveal(a.id);
+    if (a) void loadNet(a.id);
+  }
+
+  /** Remplissage et caméras du compte ; ignoré si la fiche a changé entre-temps. Un échec laisse le bloc caché. */
+  async function loadNet(id: string) {
+    try {
+      const [f, k] = await Promise.all([accountFill(id), accountCameras(id)]);
+      if (editing !== id) return;
+      fill = f;
+      known = [...k].sort((a, b) => b.last_seen - a.last_seen);
+    } catch {}
+  }
+
+  /** Deux clics, comme Supprimer : le premier demande confirmation. */
+  async function forget(c: KnownCamera) {
+    const key = knownKey(c);
+    if (forgetting !== key) {
+      forgetting = key;
+      return;
+    }
+    forgetting = '';
+    const id = editing;
+    if (!id) return;
+    try {
+      await forgetCamera(id, key);
+    } catch (e) {
+      fail(e);
+    }
+    await loadNet(id);
   }
 
   /** Préremplit le mot de passe (masqué) ; ignoré si la fiche a changé ou a été fermée entre-temps, ou déjà saisi. */
@@ -262,6 +303,54 @@
         <label for="a-excl">{$_('accounts.field.exclusions')}</label>
         <input id="a-excl" type="text" bind:value={exclusions} placeholder="192.168.1.2-192.168.1.9, 192.168.1.100" autocomplete="off" spellcheck="false" />
       </div>
+      {#if editing && (fill || known.length > 0)}
+        <section class="subnet">
+          <div class="sh">
+            <span>{$_('accounts.net.title')}</span>
+            {#if fill?.almost_full}<span class="warn">{$_('accounts.net.almostFull')}</span>{/if}
+          </div>
+          {#if fill}
+            <div class="strip" role="img" aria-label={fill.network}>
+              {#each fill.segments as seg (`${seg.kind}-${seg.first}`)}
+                {@const b = segmentBox(seg, fill.size)}
+                <span class="k-{seg.kind}" style="left:{b.left}%;width:{b.width}%"></span>
+              {/each}
+            </div>
+            {#if ends}<div class="ends"><span>{ends[0]}</span><span>{ends[1]}</span></div>{/if}
+            <ul class="legend">
+              {#if fill.gateway}<li><i class="k-gateway"></i>{$_('accounts.net.gateway')}</li>{/if}
+              <li><i class="k-pc"></i>{$_('accounts.net.pc')}</li>
+              {#if fill.excluded}<li><i class="k-excluded"></i>{$_('accounts.net.excluded')} {fill.excluded}</li>{/if}
+              <li><i class="k-camera"></i>{$_('accounts.net.cameras')}</li>
+              {#if counts}<li class="count">{$_('accounts.net.summary', { values: counts })}</li>{/if}
+            </ul>
+          {/if}
+          {#if known.length > 0}
+            <details>
+              <summary>{$_('accounts.net.known', { values: { count: known.length } })}</summary>
+              <div class="known">
+                <table>
+                  <tbody>
+                    {#each known as c (knownKey(c))}
+                      <tr>
+                        <td class="mono">{c.ip}</td>
+                        <td class="grow" title={c.model ?? ''}>{c.model ?? ''}</td>
+                        <td class="mono dim-t" title={knownKey(c)}>{knownKey(c)}</td>
+                        <td class="dim-t">{$_('accounts.net.seen', { values: { date: seenOn(c) } })}</td>
+                        <td class="ra">
+                          <button class="mini" type="button" class:danger={forgetting === knownKey(c)} onclick={() => forget(c)}>
+                            {forgetting === knownKey(c) ? $_('accounts.net.confirmForget') : $_('accounts.net.forget')}
+                          </button>
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          {/if}
+        </section>
+      {/if}
       <div class="foot">
         <span class="sum" class:e={!!otherError}>{otherError ? $_(otherError) : ''}</span>
         <button class="btn" type="button" onclick={close}>{$_('accounts.cancel')}</button>
@@ -286,5 +375,23 @@
   }
   .eye:hover { color: var(--text); }
   .eye:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
+  /* Le réseau du compte : barre à l'échelle du réseau, libres = le fond. */
+  .subnet { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+  .subnet .sh { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+  .subnet .sh .warn { color: var(--warn); font-weight: 500; }
+  .strip { position: relative; height: 22px; border-radius: 4px; background: var(--seg); border: 1px solid var(--line); overflow: hidden; }
+  .strip span { position: absolute; top: 0; bottom: 0; min-width: 2px; }
+  .k-gateway { background: var(--text-2); }
+  .k-pc { background: var(--act); }
+  .k-camera { background: var(--ok); }
+  .k-excluded { background: repeating-linear-gradient(135deg, var(--text-2) 0 1px, transparent 1px 4px); }
+  .ends { display: flex; justify-content: space-between; color: var(--text-2); font-size: 11px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 0; padding: 0; list-style: none; color: var(--text-2); font-size: 12px; }
+  .legend li { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--line); }
+  .legend .count { margin-left: auto; color: var(--text); }
+  .subnet summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
+  .known { max-height: 180px; overflow-y: auto; margin-top: 4px; }
+  .mono { font-variant-numeric: tabular-nums; }
   .eye svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 </style>

@@ -75,5 +75,18 @@
   "doImport": "Import",
   "quoted": "“{name}”",
   "showPassword": "Show password",
-  "hidePassword": "Hide password"
+  "hidePassword": "Hide password",
+  "net": {
+    "title": "This account's network",
+    "gateway": "Gateway",
+    "pc": "PC",
+    "excluded": "Excluded",
+    "cameras": "Cameras",
+    "summary": "{cameras, plural, one {# camera} other {# cameras}} · {free} free of {total}",
+    "almostFull": "Almost full",
+    "known": "{count, plural, one {# known camera} other {# known cameras}}",
+    "forget": "Forget",
+    "confirmForget": "Confirm",
+    "seen": "seen {date}"
+  }
 }

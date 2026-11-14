@@ -75,5 +75,18 @@
   "doImport": "Importer",
   "quoted": "« {name} »",
   "showPassword": "Afficher le mot de passe",
-  "hidePassword": "Masquer le mot de passe"
+  "hidePassword": "Masquer le mot de passe",
+  "net": {
+    "title": "Le réseau de ce compte",
+    "gateway": "Passerelle",
+    "pc": "PC",
+    "excluded": "Exclues",
+    "cameras": "Caméras",
+    "summary": "{cameras, plural, one {# caméra} other {# caméras}} · {free} libres sur {total}",
+    "almostFull": "Bientôt complet",
+    "known": "{count, plural, one {# caméra connue} other {# caméras connues}}",
+    "forget": "Oublier",
+    "confirmForget": "Confirmer",
+    "seen": "vue le {date}"
+  }
 }

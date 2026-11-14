@@ -74,7 +74,7 @@
     if (keepSelection) clearCameras();
     else clear();
     try {
-      await startScan(iface, (e) => {
+      await startScan(iface, account, (e) => {
         if (mine !== run) return;
         if (e.kind === 'upsert') upsert(e.camera);
       });

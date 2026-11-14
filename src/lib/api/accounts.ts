@@ -60,6 +60,65 @@ export const accountPassword = (id: string) => invoke<string | null>('cmd_accoun
 export const passwordToSend = (current: string, prefilled: string): string | null =>
   current === '' || current === prefilled ? null : current;
 
+/** Miroir de `KnownCamera` (accounts.rs) : une caméra vue ou adressée avec le compte. */
+export interface KnownCamera {
+  ip: string;
+  serial?: string;
+  mac?: string;
+  model?: string;
+  /** Secondes depuis l'époque Unix. */
+  last_seen: number;
+}
+
+/** Miroir de `Segment` : décalages depuis l'adresse de réseau. */
+export interface FillSegment {
+  kind: 'gateway' | 'pc' | 'excluded' | 'camera';
+  first: number;
+  last: number;
+}
+
+/** Miroir de `NetworkFill` : chaque adresse d'hôte comptée une fois. */
+export interface NetworkFill {
+  network: string;
+  size: number;
+  usable: number;
+  gateway: number;
+  pc: number;
+  excluded: number;
+  cameras: number;
+  free: number;
+  /** Moins de 10 % d'adresses libres. */
+  almost_full: boolean;
+  segments: FillSegment[];
+}
+
+/** Clé d'une caméra connue, comme Rust : le n° de série, sinon la MAC. */
+export const knownKey = (c: KnownCamera): string => c.serial ?? c.mac ?? '';
+
+export const accountCameras = (id: string) => invoke<KnownCamera[]>('cmd_account_cameras', { id });
+/** `null` : compte sans IP du PC. */
+export const accountFill = (id: string) => invoke<NetworkFill | null>('cmd_account_fill', { id });
+export const forgetCamera = (id: string, key: string) => invoke<void>('cmd_account_forget_camera', { id, key });
+
+/** Place d'une portion dans la barre, en % de la taille du réseau. */
+export const segmentBox = (s: FillSegment, size: number) => ({
+  left: (s.first / size) * 100,
+  width: ((s.last - s.first + 1) / size) * 100,
+});
+
+/** Bornes de la barre (`10.0.8.0/24` → réseau et diffusion) ; `null` si illisible. */
+export function networkEnds(network: string): [string, string] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(network);
+  if (!m) return null;
+  const base = m.slice(1, 5).reduce((n, x) => n * 256 + Number(x), 0);
+  const last = base + 2 ** (32 - Number(m[5])) - 1;
+  const ip = (n: number) => [24, 16, 8, 0].map((b) => Math.floor(n / 2 ** b) % 256).join('.');
+  return [ip(base), ip(last)];
+}
+
+/** Compteurs de la légende : « 37 caméras · 206 libres sur 243 » (243 = adresses laissées aux caméras). */
+export const fillLabel = (f: NetworkFill) => ({ cameras: f.cameras, free: f.free, total: f.cameras + f.free });
+
 /** Plan d'import (miroir de `ImportPlanOut`) : aucun secret, seulement ce qui diffère. */
 export interface ImportItem {
   name: string;

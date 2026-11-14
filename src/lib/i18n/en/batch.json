@@ -18,6 +18,8 @@
     "gateway_in_range": "Gateway inside the range: {ip}",
     "ip_in_use": "Address already in use: {ip}",
     "gateway_out_of_subnet": "Gateway outside the subnet: {ip}",
-    "too_many_dns": "More than 2 DNS servers"
-  }
+    "too_many_dns": "More than 2 DNS servers",
+    "not_enough_free": "{needed} cameras for {free} free addresses"
+  },
+  "almostFull": "Account network almost full: {free} free"
 }

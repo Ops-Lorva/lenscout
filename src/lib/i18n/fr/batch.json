@@ -18,6 +18,8 @@
     "gateway_in_range": "Passerelle dans la plage : {ip}",
     "ip_in_use": "Adresse déjà utilisée : {ip}",
     "gateway_out_of_subnet": "Passerelle hors du sous-réseau : {ip}",
-    "too_many_dns": "Plus de 2 serveurs DNS"
-  }
+    "too_many_dns": "Plus de 2 serveurs DNS",
+    "not_enough_free": "{needed} caméras pour {free} adresses libres"
+  },
+  "almostFull": "Réseau du compte bientôt complet : {free} libres"
 }

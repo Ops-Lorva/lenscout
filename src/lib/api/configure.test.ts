@@ -175,6 +175,10 @@ test('lot : un message par code, l’adresse en paramètre', () => {
     values: { ip: '10.0.50.12' },
   });
   expect(batchErrorMessage({ code: 'range_overflow' })).toEqual({ key: 'batch.error.range_overflow', values: {} });
+  expect(batchErrorMessage({ code: 'not_enough_free', needed: 12, free: 3 })).toEqual({
+    key: 'batch.error.not_enough_free',
+    values: { needed: 12, free: 3 },
+  });
   expect(batchErrorMessage('preview_expired')).toEqual({ key: 'configure.error.preview_expired', values: {} });
   expect(batchErrorMessage('???')).toEqual({ key: 'configure.error.unknown', values: {} });
 });

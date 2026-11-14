@@ -4,11 +4,15 @@ import type { Addressing, Camera } from './types';
 /** Miroir de `ScanEvent` (discovery/scanner.rs). */
 export type ScanEvent = { kind: 'upsert'; camera: Camera } | { kind: 'done' };
 
-/** Rend la main à la fin du scan ; rejette si l'interface est inutilisable. */
-export function startScan(iface: string, onEvent: (e: ScanEvent) => void): Promise<void> {
+/**
+ * Rend la main à la fin du scan ; rejette si l'interface est inutilisable.
+ * `accountId` : le compte du réseau retenu (`''` = DHCP) ; les caméras vues
+ * dans son réseau entrent dans sa mémoire.
+ */
+export function startScan(iface: string, accountId: string, onEvent: (e: ScanEvent) => void): Promise<void> {
   const channel = new Channel<ScanEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>('cmd_scan_start', { iface, onEvent: channel });
+  return invoke<void>('cmd_scan_start', { iface, accountId: accountId || null, onEvent: channel });
 }
 
 export const cancelScan = () => invoke<void>('cmd_scan_cancel');

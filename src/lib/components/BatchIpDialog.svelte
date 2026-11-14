@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import type { Account } from '#lib/api/accounts.ts';
+  import { accountFill, type Account, type NetworkFill } from '#lib/api/accounts.ts';
   import { activeAddress, dnsFollowing, INITIAL_PREFILL, joined, prefillFields } from '#lib/api/net.ts';
   import { _ } from 'svelte-i18n';
   import { interfaceDetails } from '#lib/api/core.ts';
@@ -73,6 +73,16 @@
   });
   const off = $derived(outsideSubnet(start, ifaceIp, ifaceMask));
 
+  // Réseau du compte retenu presque plein : dit avant l'aperçu. Le refus d'un
+  // lot trop grand vient de Rust (`not_enough_free`), à l'aperçu.
+  let fill = $state<NetworkFill | null>(null);
+  $effect(() => {
+    const id = accountId;
+    fill = null;
+    if (!id) return;
+    accountFill(id).then((f) => { if (accountId === id) fill = f; }).catch(() => {});
+  });
+
   // La première plage assez grande pour les caméras cochées est proposée, sauf si l'IP de départ est déjà saisie.
   function proposeStart(ranges: FreeRange[]) {
     if (start.trim() !== '') return;
@@ -126,6 +136,7 @@
   <div class="form">
     <label for="b-account">{$_('accounts.picker')}</label><AccountPicker id="b-account" bind:accountId bind:account />
     <FreeIps {iface} {accountId} own={cams.map((c) => c.ip)} {ifaceIp} {ifaceMask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
+    {#if fill?.almost_full}<span class="note warn">{$_('batch.almostFull', { values: { free: fill.free } })}</span>{/if}
     <label for="b-start">{$_('batch.start')}</label><input id="b-start" type="text" bind:value={start} inputmode="decimal" autocomplete="off" />
     {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
     <label for="b-mask">{$_('configure.mask')}</label><input id="b-mask" type="text" bind:value={mask} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />
