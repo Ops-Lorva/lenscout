@@ -114,6 +114,11 @@ pub enum ActionError {
     /// Axis, ou l'adresse n'a pas d'entrée ARP. Le mot de passe ne part pas.
     #[error("MAC non Axis en couche 2")]
     MacNotAxis,
+    /// Activation à travers le routeur : la MAC que la caméra déclare (son
+    /// n° de série, relu à l'instant) n'a pas la forme d'une MAC ou n'est pas
+    /// d'un OUI Axis. Le mot de passe ne part pas.
+    #[error("MAC déclarée non Axis")]
+    DeclaredMacNotAxis,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -508,7 +513,7 @@ async fn activate_checked(ctx: &ActionContext, cam: &Camera, creds: &Credentials
         layer2_is_axis(ctx, cam).await
     };
     if !axis {
-        return Err(ActionError::MacNotAxis);
+        return Err(if routed { ActionError::DeclaredMacNotAxis } else { ActionError::MacNotAxis });
     }
     let (http, base) = (ctx.http.as_ref(), cam.base_url());
     if vapix::activation_state(http, &base).await != Activation::New {
@@ -1460,6 +1465,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&ActionError::ActivationCleartext).unwrap(), r#"{"code":"activation_cleartext"}"#);
         assert_eq!(serde_json::to_string(&ActionError::NotNew).unwrap(), r#"{"code":"not_new"}"#);
         assert_eq!(serde_json::to_string(&ActionError::MacNotAxis).unwrap(), r#"{"code":"mac_not_axis"}"#);
+        assert_eq!(serde_json::to_string(&ActionError::DeclaredMacNotAxis).unwrap(), r#"{"code":"declared_mac_not_axis"}"#);
     }
 
     fn ll_cam() -> Camera {
@@ -1671,6 +1677,7 @@ mod tests {
             ActionError::ActivationCleartext,
             ActionError::NotNew,
             ActionError::MacNotAxis,
+            ActionError::DeclaredMacNotAxis,
         ];
         for e in all {
             let json = serde_json::to_string(&e).unwrap();
@@ -1963,9 +1970,9 @@ mod tests {
         let cases: Vec<(FakeHttp, &str, ActionError)> = vec![
             (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, no_serial), SERIAL, ActionError::IdentityUnreadable),
             (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 401, ""), SERIAL, ActionError::NotNew),
-            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("ACCC8E12345")), "ACCC8E12345", ActionError::MacNotAxis),
-            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("ACCC8E12345X")), "ACCC8E12345X", ActionError::MacNotAxis),
-            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("A45E60112233")), "A45E60112233", ActionError::MacNotAxis),
+            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("ACCC8E12345")), "ACCC8E12345", ActionError::DeclaredMacNotAxis),
+            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("ACCC8E12345X")), "ACCC8E12345X", ActionError::DeclaredMacNotAxis),
+            (FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, info_with_serial("A45E60112233")), "A45E60112233", ActionError::DeclaredMacNotAxis),
         ];
         for (fake, serial, want) in cases {
             let http = Arc::new(fake.on(Method::Post, "/axis-cgi/systemready.cgi", 200, NEEDSETUP_YES).on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "Created account root."));

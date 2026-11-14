@@ -27,7 +27,8 @@ export type ActionError =
   | { code: 'account_network_active' }
   | { code: 'activation_cleartext' }
   | { code: 'not_new' }
-  | { code: 'mac_not_axis' };
+  | { code: 'mac_not_axis' }
+  | { code: 'declared_mac_not_axis' };
 
 /** Miroir de `ActionResult` ; `key` = MAC de la caméra, sinon son IP (comme `cameraKey`). */
 export interface ActionResult {

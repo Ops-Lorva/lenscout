@@ -43,7 +43,8 @@
     "account_network_active": "Hay una IP de cuenta en el equipo: vuelva a DHCP para llegar a esta cámara",
     "activation_cleartext": "HTTPS no disponible: contraseña no enviada",
     "not_new": "Cámara no nueva: volver a escanear",
-    "mac_not_axis": "La MAC vista en la red no es Axis: contraseña no enviada"
+    "mac_not_axis": "La MAC vista en la red no es Axis: contraseña no enviada",
+    "declared_mac_not_axis": "La MAC declarada por la cámara no es Axis: contraseña no enviada"
   },
   "off_subnet": "Fuera de la subred de {iface}",
   "invalid": {

@@ -32,6 +32,12 @@ describe('recherche', () => {
       expect(filterCameras(list500, q).map((c) => c.ip)).toEqual(['10.0.50.77']);
   });
 
+  test('la MAC déclarée (Axis vue à travers le routeur) se cherche comme la MAC', () => {
+    const list = [...list500, cam({ ip: '10.0.20.11', sources: ['http'], declared_mac: 'B8:A4:4F:F5:10:EF' })];
+    for (const q of ['B8:A4:4F:F5:10:EF', 'B8A44FF510EF', 'b8-a4-4f-f5-10-ef', 'b8a4.4ff5.10ef', 'F510EF'])
+      expect(filterCameras(list, q).map((c) => c.ip)).toEqual(['10.0.20.11']);
+  });
+
   test('n° de série avec ou sans tirets', () => {
     const list = [cam({ ip: '192.0.2.5', serial: 'ACCC-8E12-3456' }), cam({ ip: '192.0.2.6', serial: 'ZZZ' })];
     expect(filterCameras(list, 'accc8e123456').map((c) => c.ip)).toEqual(['192.0.2.5']);

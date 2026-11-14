@@ -9,6 +9,7 @@ export function matchesCamera(c: Camera, q: string): boolean {
   const clean = normalizeQuery(q);
   if (clean === '') return true;
   if (c.mac && normalizeQuery(c.mac).includes(clean)) return true;
+  if (c.declared_mac && normalizeQuery(c.declared_mac).includes(clean)) return true;
   if (c.serial && normalizeQuery(c.serial).includes(clean)) return true;
   // IP et modèle : requête brute (les points d'une IP comptent).
   const raw = q.trim().toLowerCase();

@@ -88,7 +88,7 @@ test('hors du sous-réseau du poste : masque appliqué aux deux adresses', () =>
 });
 
 test('les nouveaux codes ont un message', () => {
-  for (const code of ['identity_unreadable', 'camera_off_subnet', 'camera_not_seen', 'already_activated', 'network_needs_one_camera', 'activation_cleartext', 'not_new', 'mac_not_axis'] as const) {
+  for (const code of ['identity_unreadable', 'camera_off_subnet', 'camera_not_seen', 'already_activated', 'network_needs_one_camera', 'activation_cleartext', 'not_new', 'mac_not_axis', 'declared_mac_not_axis'] as const) {
     expect(resultMessage({ key: 'k', ok: false, error: { code } })).toEqual({ key: `configure.error.${code}`, values: {} });
   }
 });

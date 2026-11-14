@@ -43,7 +43,8 @@
     "account_network_active": "An account IP is set on this computer: switch back to DHCP to reach this camera",
     "activation_cleartext": "HTTPS unavailable: password not sent",
     "not_new": "Camera not new: rescan",
-    "mac_not_axis": "MAC seen on the network is not Axis: password not sent"
+    "mac_not_axis": "MAC seen on the network is not Axis: password not sent",
+    "declared_mac_not_axis": "MAC declared by the camera is not Axis: password not sent"
   },
   "off_subnet": "Outside the subnet of {iface}",
   "invalid": {
