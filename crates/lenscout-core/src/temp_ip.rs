@@ -351,9 +351,10 @@ pub(crate) fn with_reorder(mut cmds: Vec<Vec<String>>, listing: &str) -> Result<
 /// macOS : un plan networksetup → les arguments typés de l'assistant
 /// (`add <service> <ip> <masque>` / `remove`), seul programme que la règle
 /// sudoers autorise. L'assistant revalide tout et réordonne lui-même ; un
-/// autre plan est refusé ici, avant sudo. `None` : une adresse que
-/// l'assistant refuserait (ni privée ni lien local, « Se mettre dans ce
-/// réseau » d'un compte) passe par l'invite administrateur.
+/// autre plan est refusé ici, avant sudo. `None` : une adresse ou un masque
+/// que l'assistant refuserait (ni privée ni lien local, ou plus large que
+/// /16 : « Se mettre dans ce réseau » d'un compte) passe par l'invite
+/// administrateur.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn helper_args(cmds: &[Vec<String>]) -> Result<Option<Vec<String>>, TempIpError> {
     fn words(v: &[String]) -> Vec<&str> {
@@ -364,7 +365,8 @@ pub(crate) fn helper_args(cmds: &[Vec<String>]) -> Result<Option<Vec<String>>, T
         [dup, set] => match (words(dup).as_slice(), words(set).as_slice()) {
             (["-duplicatenetworkservice", src, MACOS_SERVICE], ["-setmanual", MACOS_SERVICE, ip, mask, router]) if ip == router => {
                 let local = ip.parse::<Ipv4Addr>().is_ok_and(reachable_with_temp_ip);
-                Ok(local.then(|| vec!["add".to_string(), src.to_string(), ip.to_string(), mask.to_string()]))
+                let narrow = mask.parse::<Ipv4Addr>().is_ok_and(|m| u32::from(m).leading_ones() >= 16);
+                Ok((local && narrow).then(|| vec!["add".to_string(), src.to_string(), ip.to_string(), mask.to_string()]))
             }
             _ => Err(refused()),
         },
@@ -1084,6 +1086,13 @@ mod tests {
             let public = TempIp { iface: "en0".into(), ip: ip.parse().unwrap(), mask: "255.255.255.0".parse().unwrap() };
             let ElevatedPlan::Networksetup(add) = add_plan(OsKind::Macos, &public, "Wi-Fi").unwrap() else { panic!() };
             assert_eq!(helper_args(&add).unwrap(), None, "{ip}");
+        }
+        // Masque plus large que /16 : l'assistant le refuserait, l'invite
+        // administrateur aussi ; /16 et plus étroit passent par l'assistant.
+        for (mask, helper) in [("255.0.0.0", false), ("255.254.0.0", false), ("255.255.0.0", true), ("255.255.255.252", true)] {
+            let wide = TempIp { iface: "en0".into(), ip: "10.200.0.1".parse().unwrap(), mask: mask.parse().unwrap() };
+            let ElevatedPlan::Networksetup(add) = add_plan(OsKind::Macos, &wide, "Wi-Fi").unwrap() else { panic!() };
+            assert_eq!(helper_args(&add).unwrap().is_some(), helper, "{mask}");
         }
         for bad in [
             vec![s(&["-ordernetworkservices", "Wi-Fi", "Lenscout"])],

@@ -451,6 +451,11 @@ mod tests {
     impl Helper {
         /// `fail_on` : argument dont la commande écrit « ** Error » (code 0).
         fn new(order: &str, fail_on: &str) -> Helper {
+            Helper::with_info(order, fail_on, SOURCE_INFO)
+        }
+
+        /// `info` : ce que rend `-getinfo` du service source.
+        fn with_info(order: &str, fail_on: &str, info: &str) -> Helper {
             use std::os::unix::fs::PermissionsExt;
             let dir = crate::testing::TmpDir::new("lenscout-helper");
             let log = dir.join("log");
@@ -462,7 +467,7 @@ mod tests {
                      case \"$1\" in\n\
                      -listallnetworkservices) printf 'An asterisk (*) denotes that a network service is disabled.\\nWi-Fi\\nUSB 10/100/1000 LAN\\n*Thunderbolt Bridge\\n' ;;\n\
                      -listnetworkserviceorder) printf '%s' '{order}' ;;\n\
-                     -getinfo) printf 'Manual Configuration\\nIP address: 192.168.1.10\\nSubnet mask: 255.255.255.0\\nRouter: 192.168.1.1\\n' ;;\n\
+                     -getinfo) printf '%s' '{info}' ;;\n\
                      {fail_on}) echo '** Error: refusé' ;;\n\
                      esac\nexit 0\n",
                     log = log.display()
@@ -488,6 +493,10 @@ mod tests {
             (st.status.code().unwrap_or(-1), log.lines().map(str::to_owned).collect())
         }
     }
+
+    /// Service source par défaut des tests : 192.168.1.10/24, routeur .1.
+    #[cfg(unix)]
+    const SOURCE_INFO: &str = "Manual Configuration\nIP address: 192.168.1.10\nSubnet mask: 255.255.255.0\nRouter: 192.168.1.1\n";
 
     /// Lectures sans effet du faux `networksetup`.
     #[cfg(unix)]
@@ -564,6 +573,11 @@ mod tests {
             vec!["add", "Wi-Fi", "192.168.1.1", "255.255.255.254"],
             vec!["add", "Wi-Fi", "10.1.1.1", "254.0.0.0"],
             vec!["add", "Wi-Fi", "10.1.1.1", "0.0.0.0"],
+            // Plus large que /16 : la route connectée détournerait du trafic
+            // privé routé (l'app passe alors par l'invite administrateur).
+            vec!["add", "Wi-Fi", "10.200.0.1", "255.0.0.0"],
+            vec!["add", "Wi-Fi", "10.200.0.1", "255.254.0.0"],
+            vec!["add", "Wi-Fi", "172.31.255.254", "255.240.0.0"],
             // Service source absent, désactivé, ou « Lenscout » lui-même.
             vec!["add", "Ethernet", "192.168.1.1", "255.255.255.0"],
             vec!["add", "Thunderbolt Bridge", "192.168.1.1", "255.255.255.0"],
@@ -576,7 +590,7 @@ mod tests {
             vec!["add", "Wi-Fi", "192.168.1.1", "255.255.255.0"],
             vec!["add", "Wi-Fi", "192.168.1.77", "255.255.0.0"],
             vec!["add", "Wi-Fi", "192.168.1.250", "255.255.255.0"],
-            vec!["add", "Wi-Fi", "10.9.9.1", "255.0.0.0"],
+            vec!["add", "Wi-Fi", "10.9.9.1", "255.255.0.0"],
             vec!["add", "USB 10/100/1000 LAN", "10.9.9.1", "255.255.255.0"],
         ] {
             let (code, log) = h.run(&args);
@@ -584,9 +598,28 @@ mod tests {
             assert!(log.iter().all(|l| read_only(l)), "{args:?} : {log:?}");
         }
         // Les bornes acceptées.
-        for (ip, mask) in [("10.0.0.1", "255.0.0.0"), ("172.31.255.254", "255.240.0.0"), ("192.168.0.90", "255.255.255.252")] {
+        for (ip, mask) in [("10.0.0.1", "255.255.0.0"), ("172.31.255.254", "255.255.0.0"), ("192.168.0.90", "255.255.255.252")] {
             let (code, log) = Helper::new(ORDER, "-nothing").run(&["add", "Wi-Fi", ip, mask]);
             assert_eq!(code, 0, "{ip}/{mask} : {log:?}");
+        }
+    }
+
+    /// Sans IP ni masque lisibles pour le service source (DHCP sans bail,
+    /// `-getinfo` en échec), le contrôle du sous-réseau est impossible :
+    /// l'assistant refuse.
+    #[cfg(unix)]
+    #[test]
+    fn the_helper_refuses_when_the_source_network_is_unreadable() {
+        for info in [
+            "",
+            "DHCP Configuration\nIP address: none\nSubnet mask: none\nRouter: none\n",
+            "Manual Configuration\nIP address: 192.168.1.10\n",
+            "Manual Configuration\nSubnet mask: 255.255.255.0\n",
+            "Manual Configuration\nIP address: 192.168.1.10\nSubnet mask: 255.0.255.0\n",
+        ] {
+            let (code, log) = Helper::with_info(ORDER, "-nothing", info).run(&["add", "Wi-Fi", "169.254.7.7", "255.255.0.0"]);
+            assert_ne!(code, 0, "{info:?}");
+            assert!(log.iter().all(|l| read_only(l)), "{info:?} : {log:?}");
         }
     }
 

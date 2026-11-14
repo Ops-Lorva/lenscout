@@ -8,9 +8,11 @@
 #       donne ip/masque (routeur = ip), puis le place en dernier dans l'ordre
 #       des services, recalculé ici depuis l'ordre courant : la route par
 #       défaut ne change pas. IP privée RFC 1918 ou lien local, masque
-#       contigu de /8 à /30, hors du sous-réseau courant du service source,
-#       ni son routeur ni la passerelle par défaut du poste (l'IP posée ne
-#       peut pas usurper un hôte du LAN).
+#       contigu de /16 à /30 (plus large, la route connectée détournerait du
+#       trafic privé routé : c'est l'invite administrateur), hors du
+#       sous-réseau courant du service source (illisible : refus), ni son
+#       routeur ni la passerelle par défaut du poste (l'IP posée ne peut pas
+#       usurper un hôte du LAN).
 #   remove
 #       retire le service « Lenscout ».
 #
@@ -96,7 +98,7 @@ cmd_add() {
   ip=$(ip_num "$2") || die "adresse invalide"
   mask=$(ip_num "$3") || die "masque invalide"
   prefix=$(mask_prefix "$mask") || die "masque non contigu"
-  { [ "$prefix" -ge 8 ] && [ "$prefix" -le 30 ]; } || die "masque hors /8 à /30"
+  { [ "$prefix" -ge 16 ] && [ "$prefix" -le 30 ]; } || die "masque hors /16 à /30"
   private_or_link_local "$ip" || die "adresse ni privée ni lien local"
   net=$(( ip & mask ))
   bcast=$(( net | (~mask & 0xFFFFFFFF) ))
@@ -109,12 +111,14 @@ cmd_add() {
     if [ "$line" = "$src" ]; then found=1; fi
   done <<< "$("$NS" -listallnetworkservices 2>/dev/null)"
   [ $found -eq 1 ] || die "service source inconnu"
-  # Ni le sous-réseau courant du service source, ni son routeur.
+  # Ni le sous-réseau courant du service source, ni son routeur ; sans IP
+  # ni masque lisibles, le contrôle est impossible : refus.
   local info sip smask sipn smaskn router
   info=$("$NS" -getinfo "$src" 2>/dev/null)
-  if sip=$(field "$info" 'IP address') && smask=$(field "$info" 'Subnet mask') \
+  { sip=$(field "$info" 'IP address') && smask=$(field "$info" 'Subnet mask') \
     && sipn=$(ip_num "$sip") && smaskn=$(ip_num "$smask") \
-    && [ $(( ip & smaskn )) -eq $(( sipn & smaskn )) ]; then
+    && mask_prefix "$smaskn" >/dev/null; } || die "réseau du service source illisible"
+  if [ $(( ip & smaskn )) -eq $(( sipn & smaskn )) ]; then
     die "adresse dans le sous-réseau du service source"
   fi
   if router=$(field "$info" 'Router') && [ "$router" = "$2" ]; then
