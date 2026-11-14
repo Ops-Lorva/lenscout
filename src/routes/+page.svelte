@@ -34,9 +34,9 @@
   .body { flex: 1; min-height: 0; display: flex; }
   .pane { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 16px 16px 36px; display: flex; flex-direction: column; }
   /* Même mise en page que le panneau : chaque écran y était enfant direct. */
-  /* Largeur bornée : au-delà, agrandir la fenêtre ne déplace plus rien
-     (colonnes et boutons restent où ils sont, l'espace en plus reste à droite). */
-  .page { flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; max-width: 1180px; }
+  /* Pleine largeur : les colonnes fixes ne bougent pas, seule la première
+     (le nom) prend l'espace ; les boutons restent groupés à gauche. */
+  .page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .page[hidden] { display: none; }
   /* Barre d'état : à droite de la barre latérale, par-dessus le bas du panneau. */
   .status {
