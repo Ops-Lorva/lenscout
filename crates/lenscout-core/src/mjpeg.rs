@@ -156,13 +156,22 @@ impl MjpegParser {
 /// Flux de cadrage : image réduite, pour que l'installateur oriente la
 /// caméra sans saturer le réseau.
 pub fn stream_url(cam: &Camera) -> Option<String> {
-    stream_url_for_view(cam, None)
+    stream_url_for_view(cam, None, None)
+}
+
+/// `640x360` : deux nombres de 1 à 5 chiffres. Rien d'autre n'entre dans l'URL.
+fn plain_resolution(r: &str) -> bool {
+    r.split_once('x').is_some_and(|(w, h)| {
+        [w, h].iter().all(|n| (1..=5).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 /// `stream_url` sur une vue précise d'une Axis multicapteur (`camera=N`, à
-/// partir de 1). `None` : la vue par défaut, URL inchangée. Hikvision :
-/// hors périmètre, la vue est ignorée.
-pub fn stream_url_for_view(cam: &Camera, view: Option<u32>) -> Option<String> {
+/// partir de 1), à la résolution que la vue annonce (`View::resolution` : une
+/// vue groupée n'a pas 640x360). `None` : la vue par défaut, URL inchangée ;
+/// une résolution illisible est ignorée. Hikvision : hors périmètre, la vue
+/// est ignorée.
+pub fn stream_url_for_view(cam: &Camera, view: Option<u32>, resolution: Option<&str>) -> Option<String> {
     let host = if cam.http_port == 80 {
         cam.ip.to_string()
     } else {
@@ -171,7 +180,8 @@ pub fn stream_url_for_view(cam: &Camera, view: Option<u32>) -> Option<String> {
     match cam.family {
         Family::Axis => {
             let camera = view.map(|n| format!("&camera={n}")).unwrap_or_default();
-            Some(format!("http://{host}/axis-cgi/mjpg/video.cgi?resolution=640x360&fps=10&compression=40{camera}"))
+            let res = resolution.filter(|r| plain_resolution(r)).unwrap_or("640x360");
+            Some(format!("http://{host}/axis-cgi/mjpg/video.cgi?resolution={res}&fps=10&compression=40{camera}"))
         }
         // NON VÉRIFIÉ sur une vraie caméra LTS — écrit d'après la documentation ISAPI.
         Family::Hikvision => Some(format!("http://{host}/ISAPI/Streaming/channels/102/httpPreview")),
@@ -442,18 +452,30 @@ mod tests {
 
     #[test]
     fn axis_view_goes_into_the_url_and_survives_the_resolution_fallback() {
-        let u = stream_url_for_view(&cam(Family::Axis), Some(2)).unwrap();
+        let u = stream_url_for_view(&cam(Family::Axis), Some(2), None).unwrap();
         assert_eq!(u, "http://192.0.2.11/axis-cgi/mjpg/video.cgi?resolution=640x360&fps=10&compression=40&camera=2");
         assert_eq!(
             without_resolution(&u).as_deref(),
             Some("http://192.0.2.11/axis-cgi/mjpg/video.cgi?fps=10&compression=40&camera=2")
         );
         // Sans vue choisie (une seule vue) : l'URL d'avant, sans `camera=`.
-        let plain = stream_url_for_view(&cam(Family::Axis), None).unwrap();
+        let plain = stream_url_for_view(&cam(Family::Axis), None, None).unwrap();
         assert_eq!(plain, stream_url(&cam(Family::Axis)).unwrap());
         assert!(!plain.contains("camera="));
         // Hikvision : hors périmètre, la vue est ignorée.
-        assert!(!stream_url_for_view(&cam(Family::Hikvision), Some(2)).unwrap().contains("camera="));
+        assert!(!stream_url_for_view(&cam(Family::Hikvision), Some(2), None).unwrap().contains("camera="));
+    }
+
+    #[test]
+    fn la_vue_groupee_demande_sa_propre_resolution() {
+        let u = stream_url_for_view(&cam(Family::Axis), Some(3), Some("1280x360")).unwrap();
+        assert_eq!(u, "http://192.0.2.11/axis-cgi/mjpg/video.cgi?resolution=1280x360&fps=10&compression=40&camera=3");
+        // Le repli sans résolution reste le dernier recours.
+        assert_eq!(without_resolution(&u).as_deref(), Some("http://192.0.2.11/axis-cgi/mjpg/video.cgi?fps=10&compression=40&camera=3"));
+        // Rien d'autre qu'une résolution n'entre dans l'URL.
+        for bad in ["1280x360&camera=9", "x", "640x", "123456x1", " 640x360"] {
+            assert!(stream_url_for_view(&cam(Family::Axis), Some(3), Some(bad)).unwrap().contains("resolution=640x360&"), "{bad}");
+        }
     }
 
     #[test]

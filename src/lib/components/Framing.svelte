@@ -57,7 +57,7 @@
         (buf) => {
           if (mine === generation) presenter.push(buf);
         },
-        view,
+        views.find((v) => v.n === view) ?? null,
       );
     } catch (e) {
       if (mine === generation) error = `framing.${errorKey(e)}`;

@@ -10,17 +10,23 @@ export function startStream(
   camera: Camera,
   accountId: string,
   onFrame: (buf: ArrayBuffer) => void,
-  view: number | null = null,
+  view: View | null = null,
 ): Promise<void> {
   const channel = new Channel<ArrayBuffer>();
   channel.onmessage = onFrame;
-  return invoke<void>('cmd_stream_start', { camera, accountId, view, onFrame: channel });
+  return invoke<void>('cmd_stream_start', {
+    camera, accountId, view: view?.n ?? null, resolution: view?.resolution ?? null, onFrame: channel,
+  });
 }
 
 /** Miroir de `View` (vapix.rs) : `n` = `camera=n` du flux, à partir de 1. */
 export interface View {
   n: number;
   name: string | null;
+  /** Capteur(s) de la vue (`Image.I<n-1>.Source`) : « 0 », ou « 1,0 » pour une vue groupée. */
+  source?: string | null;
+  /** Plus petite résolution annoncée pour la vue, demandée au flux. */
+  resolution?: string | null;
 }
 
 /** Vues d'une Axis multicapteur, lues par Rust avec le compte ; ailleurs, rien ne part. */

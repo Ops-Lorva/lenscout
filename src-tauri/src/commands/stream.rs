@@ -104,11 +104,11 @@ pub(crate) async fn reachable(ifaces: &[ScanInterface], seen_routed: &[Ipv4Addr]
 /// être joignable (`reachable`, calculé par l'appelant), avant toute
 /// requête. Puis l'URL du flux, sur la vue `view` d'une Axis multicapteur
 /// (`camera=N`) ; `unsupported_brand` si la marque n'en a pas.
-pub(crate) fn guarded_view_url(cam: &Camera, view: Option<u32>, reachable: bool) -> Result<String, String> {
+pub(crate) fn guarded_view_url(cam: &Camera, view: Option<u32>, resolution: Option<&str>, reachable: bool) -> Result<String, String> {
     if !reachable {
         return Err("camera_off_subnet".into());
     }
-    stream_url_for_view(cam, view).ok_or_else(|| "unsupported_brand".to_string())
+    stream_url_for_view(cam, view, resolution).ok_or_else(|| "unsupported_brand".to_string())
 }
 
 /// Vues d'une Axis, sous la même garde de sous-réseau que le flux, avant
@@ -124,7 +124,7 @@ pub(crate) async fn views_guarded(
         return Err("camera_off_subnet".into());
     }
     if cam.family != Family::Axis {
-        return Ok(vec![View { n: 1, name: None }]);
+        return Ok(vec![View { n: 1, name: None, source: None, resolution: None }]);
     }
     Ok(vapix::views(http, &cam.base_url(), &creds()?).await)
 }
@@ -225,12 +225,12 @@ pub(crate) fn start_guarded(
     run: Run,
     http: Arc<dyn CameraHttp>,
     cam: &Camera,
-    view: Option<u32>,
+    view: Option<(u32, Option<&str>)>,
     reachable: bool,
     creds: Credentials,
     send: impl FnMut(Vec<u8>) -> Result<(), ()> + Send + 'static,
 ) -> Result<tauri::async_runtime::JoinHandle<Result<(), String>>, String> {
-    match guarded_view_url(cam, view, reachable) {
+    match guarded_view_url(cam, view.map(|v| v.0), view.and_then(|v| v.1), reachable) {
         Ok(url) => Ok(spawn_stream(run, http, url, creds, send)),
         Err(e) => {
             state.release(run.id);
@@ -284,13 +284,15 @@ fn guard_interfaces_now(held: Option<TempIp>) -> Vec<ScanInterface> {
 /// en octets bruts sur le canal ; le mot de passe ne quitte jamais Rust.
 ///
 /// `view` : la vue d'une Axis multicapteur (`camera=N`, à partir de 1) ;
-/// absente, la vue par défaut.
+/// absente, la vue par défaut. `resolution` : celle que la vue annonce
+/// (`View::resolution`), vérifiée avant d'entrer dans l'URL.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_stream_start(
     camera: Camera,
     account_id: String,
     view: Option<u32>,
+    resolution: Option<String>,
     on_frame: Channel<InvokeResponseBody>,
     accounts: State<'_, Mutex<AccountBook>>,
     stream: State<'_, StreamState>,
@@ -322,7 +324,7 @@ pub async fn cmd_stream_start(
         run,
         Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT)),
         &camera,
-        view.filter(|n| *n >= 1),
+        view.filter(|n| *n >= 1).map(|n| (n, resolution.as_deref())),
         ok,
         creds,
         move |frame| on_frame.send(InvokeResponseBody::Raw(frame)).map_err(|_| ()),
@@ -366,7 +368,7 @@ mod tests {
 
     /// `guarded_view_url` sur la vue par défaut.
     fn guarded_url(cam: &Camera, ifaces: &[ScanInterface]) -> Result<String, String> {
-        guarded_view_url(cam, None, ifaces.iter().any(|i| on_subnet(i, cam.ip)))
+        guarded_view_url(cam, None, None, ifaces.iter().any(|i| on_subnet(i, cam.ip)))
     }
     use async_trait::async_trait;
     use lenscout_core::route::Route;
@@ -703,10 +705,11 @@ mod tests {
         let http = fake(0);
         let state = StreamState::default();
         let run = state.replace();
-        let h = start_guarded(&state, run, http.clone(), &cam("192.0.2.20", Family::Axis), Some(3), true, creds(), |_| Ok(()))
+        let h = start_guarded(&state, run, http.clone(), &cam("192.0.2.20", Family::Axis), Some((3, Some("1280x360"))), true, creds(), |_| Ok(()))
             .unwrap();
         let _ = h.await;
-        assert!(http.requests()[0].url.ends_with("&camera=3"), "{}", http.requests()[0].url);
+        let url = &http.requests()[0].url;
+        assert!(url.ends_with("&camera=3") && url.contains("resolution=1280x360"), "{url}");
     }
 
     #[tokio::test]

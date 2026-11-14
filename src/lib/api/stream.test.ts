@@ -81,10 +81,10 @@ const axis = {
 
 test('le flux part avec la vue choisie, sinon sans vue', async () => {
   invoke.mockResolvedValue(undefined);
-  await startStream({ ...axis, sources: [] }, 'acc', () => {}, 2);
-  expect(invoke.mock.lastCall?.[1]).toMatchObject({ accountId: 'acc', view: 2 });
+  await startStream({ ...axis, sources: [] }, 'acc', () => {}, { n: 3, name: 'Group View', source: '1,0', resolution: '1280x360' });
+  expect(invoke.mock.lastCall?.[1]).toMatchObject({ accountId: 'acc', view: 3, resolution: '1280x360' });
   await startStream({ ...axis, sources: [] }, 'acc', () => {});
-  expect(invoke.mock.lastCall?.[1].view).toBeNull();
+  expect(invoke.mock.lastCall?.[1]).toMatchObject({ view: null, resolution: null });
 });
 
 test('les vues se demandent à Rust ; une seule vue : pas de sélecteur', async () => {

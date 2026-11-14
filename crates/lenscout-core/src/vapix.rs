@@ -361,6 +361,20 @@ pub async fn factory_default(http: &dyn CameraHttp, base: &str, creds: &Credenti
 pub struct View {
     pub n: u32,
     pub name: Option<String>,
+    /// `Image.I<n-1>.Source` : le ou les capteurs de la vue (« 0 », « 1,0 »
+    /// pour une vue groupée). `None` : lue par le repli sur les compteurs.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// La plus petite de `Properties.Image.I<n-1>.Resolution` : une vue
+    /// groupée n'a pas les résolutions d'un capteur seul.
+    #[serde(default)]
+    pub resolution: Option<String>,
+}
+
+impl View {
+    fn numbered(n: u32, name: Option<String>) -> View {
+        View { n, name, source: None, resolution: None }
+    }
 }
 
 /// Plus de vues que cela : la valeur n'est pas crédible, on ne la croit pas.
@@ -388,6 +402,52 @@ pub fn view_names(body: &str) -> std::collections::HashMap<u32, String> {
         .collect()
 }
 
+/// Valeurs `root.Image.I<i>.<field>=v` d'une réponse `param.cgi`, par `i`.
+fn image_fields(body: &str, prefix: &str, field: &str) -> std::collections::BTreeMap<u32, String> {
+    body.lines()
+        .filter_map(|l| l.trim().split_once('='))
+        .filter_map(|(k, v)| {
+            let rest = k.trim_start_matches("root.").strip_prefix(prefix)?;
+            let i: u32 = rest.strip_suffix(field)?.strip_suffix('.')?.parse().ok()?;
+            Some((i, v.trim().to_string()))
+        })
+        .collect()
+}
+
+/// `1920x1080,1280x720,640x360` → la plus petite (en pixels) ; `None` si rien
+/// ne se lit.
+pub fn smallest_resolution(list: &str) -> Option<String> {
+    list.split(',')
+        .filter_map(|r| {
+            let (w, h) = r.trim().split_once('x')?;
+            let (w, h): (u32, u32) = (w.parse().ok()?, h.parse().ok()?);
+            Some((u64::from(w) * u64::from(h), format!("{w}x{h}")))
+        })
+        .min()
+        .map(|(_, r)| r)
+}
+
+/// Les vues d'après le groupe `Image` : les `Image.I<i>` à `Enabled=yes`, flux
+/// `camera=i+1`, nom `Image.I<i>.Name`, capteurs `Image.I<i>.Source` ; la
+/// résolution vient de `props` (groupe `Properties.Image`). Vide : le groupe
+/// ne dit rien.
+pub fn image_views(image: &str, props: &str) -> Vec<View> {
+    let enabled = image_fields(image, "Image.I", "Enabled");
+    let names = image_fields(image, "Image.I", "Name");
+    let sources = image_fields(image, "Image.I", "Source");
+    let resolutions = image_fields(props, "Properties.Image.I", "Resolution");
+    enabled
+        .into_iter()
+        .filter(|(i, v)| v == "yes" && *i < MAX_VIEWS)
+        .map(|(i, _)| View {
+            n: i + 1,
+            name: names.get(&i).filter(|v| !v.is_empty()).map(|v| v.chars().take(64).collect()),
+            source: sources.get(&i).filter(|v| !v.is_empty()).cloned(),
+            resolution: resolutions.get(&i).and_then(|r| smallest_resolution(r)),
+        })
+        .collect()
+}
+
 /// `param.cgi?action=list&group=<group>` avec le compte ; le corps si 2xx sans
 /// `# Error`, sinon `None`.
 async fn list_params(http: &dyn CameraHttp, base: &str, creds: &Credentials, group: &str) -> Option<String> {
@@ -410,11 +470,21 @@ async fn list_params(http: &dyn CameraHttp, base: &str, creds: &Credentials, gro
     }
 }
 
-/// Vues d'une Axis : `Properties.Image.NbrOfViews`, sinon
-/// `ImageSource.NbrOfSources`, sinon une seule. Avec plusieurs vues, leurs
-/// noms (`Image.I<n>.Name`) s'il y en a. Jamais d'erreur : sans réponse
-/// lisible, une vue, et le cadrage reste celui d'avant.
+/// Vues d'une Axis : les `Image.I<n>` activées (`image_views`), avec leur
+/// résolution. Repli, si le groupe `Image` ne donne rien :
+/// `Properties.Image.NbrOfViews`, sinon `ImageSource.NbrOfSources` (ces deux
+/// compteurs comptent les CAPTEURS : une vue groupée y manque), sinon une
+/// seule. Jamais d'erreur : sans réponse lisible, une vue, et le cadrage reste
+/// celui d'avant.
 pub async fn views(http: &dyn CameraHttp, base: &str, creds: &Credentials) -> Vec<View> {
+    let image = list_params(http, base, creds, "Image").await;
+    if let Some(image) = &image {
+        let props = list_params(http, base, creds, "Properties.Image").await.unwrap_or_default();
+        let found = image_views(image, &props);
+        if !found.is_empty() {
+            return found;
+        }
+    }
     let mut count = None;
     for (group, key) in [
         ("Properties.Image.NbrOfViews", "Properties.Image.NbrOfViews"),
@@ -426,12 +496,8 @@ pub async fn views(http: &dyn CameraHttp, base: &str, creds: &Credentials) -> Ve
         }
     }
     let count = count.unwrap_or(1);
-    let names = if count > 1 {
-        list_params(http, base, creds, "Image").await.map(|b| view_names(&b)).unwrap_or_default()
-    } else {
-        Default::default()
-    };
-    (1..=count).map(|n| View { n, name: names.get(&n).cloned() }).collect()
+    let names = image.map(|b| view_names(&b)).unwrap_or_default();
+    (1..=count).map(|n| View::numbered(n, names.get(&n).cloned())).collect()
 }
 
 pub async fn activation_state(http: &dyn CameraHttp, base: &str) -> Activation {
@@ -1135,13 +1201,48 @@ mod tests {
     const SOURCES: &str = "/axis-cgi/param.cgi?action=list&group=ImageSource.NbrOfSources";
     const NAMES: &str = "/axis-cgi/param.cgi?action=list&group=Image";
 
+    /// Réponses réelles d'une P4705-PLVE (AXIS OS 11.11) : deux capteurs,
+    /// trois vues, la troisième groupée.
+    const P4705_IMAGE: &str = "root.Image.I0.Enabled=yes\nroot.Image.I0.Name=Camera 1\nroot.Image.I0.Source=0\n\
+root.Image.I0.Appearance.Rotation=0\nroot.Image.I1.Enabled=yes\nroot.Image.I1.Name=Camera 2\nroot.Image.I1.Source=1\n\
+root.Image.I2.Enabled=yes\nroot.Image.I2.Name=Group View\nroot.Image.I2.Source=1,0\n";
+    const P4705_PROPS: &str = "root.Properties.Image.NbrOfViews=2\n\
+root.Properties.Image.I0.Resolution=1920x1080,1280x720,640x360\n\
+root.Properties.Image.I1.Resolution=1920x1080,1280x720,640x360\n\
+root.Properties.Image.I2.Resolution=3840x1080,2560x720,1280x360\n";
+    const PROPS: &str = "/axis-cgi/param.cgi?action=list&group=Properties.Image";
+
+    #[test]
+    fn les_vues_sont_les_image_i_activees_avec_leur_plus_petite_resolution() {
+        let v = image_views(P4705_IMAGE, P4705_PROPS);
+        assert_eq!(v.len(), 3, "NbrOfViews=2 compte les capteurs, pas les vues");
+        assert_eq!(v[0], View { n: 1, name: Some("Camera 1".into()), source: Some("0".into()), resolution: Some("640x360".into()) });
+        assert_eq!(v[2], View { n: 3, name: Some("Group View".into()), source: Some("1,0".into()), resolution: Some("1280x360".into()) });
+        // Une vue désactivée n'est pas proposée.
+        let off = P4705_IMAGE.replace("I1.Enabled=yes", "I1.Enabled=no");
+        assert_eq!(image_views(&off, P4705_PROPS).iter().map(|v| v.n).collect::<Vec<_>>(), vec![1, 3]);
+        assert!(image_views("", P4705_PROPS).is_empty());
+        assert_eq!(smallest_resolution("3840x1080, 2560x720,1280x360"), Some("1280x360".into()));
+        assert_eq!(smallest_resolution("x"), None);
+    }
+
+    #[tokio::test]
+    async fn views_come_from_the_image_group() {
+        let http = FakeHttp::new()
+            .on(Method::Get, PROPS, 200, P4705_PROPS)
+            .on(Method::Get, NAMES, 200, P4705_IMAGE);
+        let v = views(&http, BASE, &creds("root", "x")).await;
+        assert_eq!(v.iter().map(|v| (v.n, v.resolution.as_deref())).collect::<Vec<_>>(), vec![(1, Some("640x360")), (2, Some("640x360")), (3, Some("1280x360"))]);
+        assert!(http.requests().iter().all(|r| r.login.as_deref() == Some("root")));
+    }
+
     #[tokio::test]
     async fn views_come_from_nbrofviews_with_their_names() {
         let http = FakeHttp::new()
             .on(Method::Get, VIEWS, 200, "root.Properties.Image.NbrOfViews=3\n")
             .on(Method::Get, NAMES, 200, "root.Image.I1.Name=Quai\n");
         let v = views(&http, BASE, &creds("root", "x")).await;
-        assert_eq!(v, vec![View { n: 1, name: None }, View { n: 2, name: Some("Quai".into()) }, View { n: 3, name: None }]);
+        assert_eq!(v, vec![View::numbered(1, None), View::numbered(2, Some("Quai".into())), View::numbered(3, None)]);
         assert!(http.requests().iter().all(|r| r.login.as_deref() == Some("root")));
     }
 
@@ -1152,11 +1253,10 @@ mod tests {
             .on(Method::Get, SOURCES, 200, "root.ImageSource.NbrOfSources=2\n")
             .on(Method::Get, NAMES, 404, "");
         let v = views(&http, BASE, &creds("root", "x")).await;
-        assert_eq!(v, vec![View { n: 1, name: None }, View { n: 2, name: None }]);
-        // Rien de lisible : une vue, et pas de lecture de noms.
+        assert_eq!(v, vec![View::numbered(1, None), View::numbered(2, None)]);
+        // Rien de lisible : une vue.
         let http = FakeHttp::new().on(Method::Get, VIEWS, 401, "").on(Method::Get, SOURCES, 200, "x");
-        assert_eq!(views(&http, BASE, &creds("root", "x")).await, vec![View { n: 1, name: None }]);
-        assert!(http.requests().iter().all(|r| !r.url.ends_with("group=Image")));
+        assert_eq!(views(&http, BASE, &creds("root", "x")).await, vec![View::numbered(1, None)]);
     }
 
     #[tokio::test]
