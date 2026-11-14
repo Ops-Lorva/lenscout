@@ -351,9 +351,11 @@ pub(crate) fn with_reorder(mut cmds: Vec<Vec<String>>, listing: &str) -> Result<
 /// macOS : un plan networksetup → les arguments typés de l'assistant
 /// (`add <service> <ip> <masque>` / `remove`), seul programme que la règle
 /// sudoers autorise. L'assistant revalide tout et réordonne lui-même ; un
-/// autre plan est refusé ici, avant sudo.
+/// autre plan est refusé ici, avant sudo. `None` : une adresse que
+/// l'assistant refuserait (ni privée ni lien local, « Se mettre dans ce
+/// réseau » d'un compte) passe par l'invite administrateur.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn helper_args(cmds: &[Vec<String>]) -> Result<Vec<String>, TempIpError> {
+pub(crate) fn helper_args(cmds: &[Vec<String>]) -> Result<Option<Vec<String>>, TempIpError> {
     fn words(v: &[String]) -> Vec<&str> {
         v.iter().map(String::as_str).collect()
     }
@@ -361,12 +363,48 @@ pub(crate) fn helper_args(cmds: &[Vec<String>]) -> Result<Vec<String>, TempIpErr
     match cmds {
         [dup, set] => match (words(dup).as_slice(), words(set).as_slice()) {
             (["-duplicatenetworkservice", src, MACOS_SERVICE], ["-setmanual", MACOS_SERVICE, ip, mask, router]) if ip == router => {
-                Ok(vec!["add".to_string(), src.to_string(), ip.to_string(), mask.to_string()])
+                let local = ip.parse::<Ipv4Addr>().is_ok_and(reachable_with_temp_ip);
+                Ok(local.then(|| vec!["add".to_string(), src.to_string(), ip.to_string(), mask.to_string()]))
             }
             _ => Err(refused()),
         },
-        [rm] if words(rm) == ["-removenetworkservice", MACOS_SERVICE] => Ok(vec!["remove".to_string()]),
+        [rm] if words(rm) == ["-removenetworkservice", MACOS_SERVICE] => Ok(Some(vec!["remove".to_string()])),
         _ => Err(refused()),
+    }
+}
+
+/// macOS : l'installation de l'assistant et de la règle, une fois par
+/// session au plus si elle échoue (dossier non root…) : ensuite, l'invite
+/// administrateur seule, une par opération.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+pub(crate) struct InstallGate(std::sync::atomic::AtomicBool);
+
+#[cfg(any(target_os = "macos", test))]
+impl InstallGate {
+    /// L'assistant est-il utilisable ? En place (`installed`) : oui. Sinon une
+    /// installation (`install`, une invite), sauf si une a déjà échoué dans la
+    /// session. Invite refusée : `ElevationRefused`, rien n'est fait.
+    pub(crate) fn use_helper(
+        &self,
+        installed: impl Fn() -> bool,
+        install: impl FnOnce() -> Result<(), TempIpError>,
+    ) -> Result<bool, TempIpError> {
+        use std::sync::atomic::Ordering;
+        if installed() {
+            return Ok(true);
+        }
+        if self.0.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        match install() {
+            Ok(()) => Ok(installed()),
+            Err(TempIpError::ElevationRefused) => Err(TempIpError::ElevationRefused),
+            Err(_) => {
+                self.0.store(true, Ordering::Relaxed);
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -380,7 +418,7 @@ fn is_add(plan: &ElevatedPlan) -> bool {
 
 #[cfg(target_os = "macos")]
 mod system {
-    use super::{ElevatedPlan, TempIpError, helper_args, is_add, networksetup_shell, with_reorder};
+    use super::{ElevatedPlan, InstallGate, TempIpError, helper_args, is_add, networksetup_shell, with_reorder};
     use crate::permissions::{HELPER_PATH, applescript_shell, has_permissions, install_permissions};
     use crate::proc::sync_cmd;
 
@@ -415,27 +453,31 @@ mod system {
         };
         let removal = cmds.iter().any(|a| a.first().is_some_and(|x| x == "-removenetworkservice"));
         let gone = |err: &str| removal && err.contains("not a recognized network service");
-        // Règle ou assistant absents, ou d'une autre version : une invite pour
-        // les (re)poser ; refusée, rien n'est fait.
-        // Autre échec de l'installation : le repli osascript ci-dessous.
-        if !has_permissions() && install_permissions() == Err(TempIpError::ElevationRefused) {
-            return Err(TempIpError::ElevationRefused);
-        }
-        // L'assistant duplique, pose l'adresse et remet « Lenscout » en
-        // dernier (jamais principal) ; ordre illisible : il ne pose rien.
-        let out = sync_cmd("sudo")
-            .env("LC_ALL", "C")
-            .args(["-n", HELPER_PATH])
-            .args(helper_args(cmds)?)
-            .output()
-            .map_err(|e| TempIpError::Failed(e.to_string()))?;
-        match failed(&out) {
-            None => return Ok(()),
-            Some(err) if gone(&err) => return Ok(()),
-            // Seul « mot de passe requis » (règle absente) justifie le repli
-            // osascript.
-            Some(err) if err.contains("a password is required") => {}
-            Some(err) => return Err(TempIpError::Failed(err)),
+        // Règle ou assistant absents, d'une autre version, ou assistant
+        // remplaçable (dossier qui n'est plus à root) : une invite pour les
+        // (re)poser ; refusée, rien n'est fait. Échec de l'installation : le
+        // repli osascript ci-dessous, sans la retenter de la session.
+        // Une adresse que l'assistant refuserait va droit au repli.
+        static GATE: InstallGate = InstallGate(std::sync::atomic::AtomicBool::new(false));
+        if let Some(args) = helper_args(cmds)?
+            && GATE.use_helper(has_permissions, install_permissions)?
+        {
+            // L'assistant duplique, pose l'adresse et remet « Lenscout » en
+            // dernier (jamais principal) ; ordre illisible : il ne pose rien.
+            let out = sync_cmd("sudo")
+                .env("LC_ALL", "C")
+                .args(["-n", HELPER_PATH])
+                .args(args)
+                .output()
+                .map_err(|e| TempIpError::Failed(e.to_string()))?;
+            match failed(&out) {
+                None => return Ok(()),
+                Some(err) if gone(&err) => return Ok(()),
+                // Seul « mot de passe requis » (règle absente) justifie le
+                // repli osascript.
+                Some(err) if err.contains("a password is required") => {}
+                Some(err) => return Err(TempIpError::Failed(err)),
+            }
         }
         // Repli : networksetup lui-même, en une invite ; l'ordre est réécrit
         // ici, « Lenscout » en dernier. Ordre illisible : la pose échoue, et
@@ -1033,9 +1075,16 @@ mod tests {
         let t = tmp("en0");
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         let ElevatedPlan::Networksetup(add) = add_plan(OsKind::Macos, &t, "USB 10/100/1000 LAN").unwrap() else { panic!() };
-        assert_eq!(helper_args(&add).unwrap(), s(&["add", "USB 10/100/1000 LAN", "169.254.7.7", "255.255.0.0"]));
+        assert_eq!(helper_args(&add).unwrap(), Some(s(&["add", "USB 10/100/1000 LAN", "169.254.7.7", "255.255.0.0"])));
         let ElevatedPlan::Networksetup(rm) = remove_plan(OsKind::Macos, &t, "Ethernet").unwrap() else { panic!() };
-        assert_eq!(helper_args(&rm).unwrap(), s(&["remove"]));
+        assert_eq!(helper_args(&rm).unwrap(), Some(s(&["remove"])));
+        // « Se mettre dans ce réseau » avec une IP que l'assistant refuserait
+        // (ni privée ni lien local) : pas d'assistant, l'invite administrateur.
+        for ip in ["100.64.1.250", "203.0.113.250"] {
+            let public = TempIp { iface: "en0".into(), ip: ip.parse().unwrap(), mask: "255.255.255.0".parse().unwrap() };
+            let ElevatedPlan::Networksetup(add) = add_plan(OsKind::Macos, &public, "Wi-Fi").unwrap() else { panic!() };
+            assert_eq!(helper_args(&add).unwrap(), None, "{ip}");
+        }
         for bad in [
             vec![s(&["-ordernetworkservices", "Wi-Fi", "Lenscout"])],
             vec![s(&["-duplicatenetworkservice", "Wi-Fi", "Autre"]), s(&["-setmanual", "Autre", "1.2.3.4", "255.0.0.0", "1.2.3.4"])],
@@ -1046,6 +1095,49 @@ mod tests {
         ] {
             assert!(matches!(helper_args(&bad), Err(TempIpError::Invalid(_))), "{bad:?}");
         }
+    }
+
+    /// Assistant ou invite : une installation qui a échoué n'est pas retentée
+    /// de la session (une seule invite par opération, celle du repli).
+    #[test]
+    fn a_failed_install_is_not_retried_in_the_same_session() {
+        use std::cell::Cell;
+        let gate = InstallGate::default();
+        let calls = Cell::new(0);
+        let failing = || {
+            calls.set(calls.get() + 1);
+            Err(TempIpError::Failed("dossier non root".into()))
+        };
+        assert_eq!(gate.use_helper(|| false, failing), Ok(false));
+        assert_eq!(gate.use_helper(|| false, failing), Ok(false));
+        assert_eq!(calls.get(), 1, "une seule tentative");
+        // Déjà en place : pas d'installation.
+        let fresh = InstallGate::default();
+        assert_eq!(fresh.use_helper(|| true, || panic!("pas d'invite")), Ok(true));
+        // Refus : rendu tel quel, et retenté la fois suivante.
+        let refused = InstallGate::default();
+        assert_eq!(refused.use_helper(|| false, || Err(TempIpError::ElevationRefused)), Err(TempIpError::ElevationRefused));
+        let ok = Cell::new(false);
+        assert_eq!(refused.use_helper(|| ok.get(), || { ok.set(true); Ok(()) }), Ok(true));
+    }
+
+    /// Avant chaque `sudo -n` : l'assistant et ses dossiers n'appartiennent qu'à
+    /// root (sinon un autre programme de la session pourrait le remplacer).
+    #[cfg(unix)]
+    #[test]
+    fn helper_path_must_be_root_owned_and_not_writable_by_others() {
+        use crate::permissions::root_only;
+        use std::path::Path;
+        // Système de fichiers de l'hôte : /usr/bin/env et ses dossiers sont à root, 755.
+        assert!(root_only(&[Path::new("/usr/bin/env"), Path::new("/usr/bin"), Path::new("/usr")]));
+        // /tmp : root, mais écrivable par tous.
+        assert!(!root_only(&[Path::new("/tmp")]));
+        let d = crate::testing::TmpDir::new("lenscout-helper-owner");
+        std::fs::write(d.join("helper"), "").unwrap();
+        assert!(!root_only(&[&d.join("helper")]), "fichier de l'utilisateur");
+        assert!(!root_only(&[&d.join("absent")]));
+        std::os::unix::fs::symlink("/usr/bin/env", d.join("lien")).unwrap();
+        assert!(!root_only(&[&d.join("lien")]), "lien symbolique");
     }
 
     #[test]

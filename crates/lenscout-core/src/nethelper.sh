@@ -8,7 +8,9 @@
 #       donne ip/masque (routeur = ip), puis le place en dernier dans l'ordre
 #       des services, recalculé ici depuis l'ordre courant : la route par
 #       défaut ne change pas. IP privée RFC 1918 ou lien local, masque
-#       contigu de /8 à /30.
+#       contigu de /8 à /30, hors du sous-réseau courant du service source,
+#       ni son routeur ni la passerelle par défaut du poste (l'IP posée ne
+#       peut pas usurper un hôte du LAN).
 #   remove
 #       retire le service « Lenscout ».
 #
@@ -18,6 +20,7 @@ set -f
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export LC_ALL=C
 NS='@NETWORKSETUP@'
+ROUTE='@ROUTE@'
 SVC=Lenscout
 
 die() {
@@ -76,6 +79,17 @@ trim() {
   printf '%s' "$s"
 }
 
+# Valeur du champ « $2: » dans le texte $1.
+field() {
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      "$2: "*) printf '%s' "${line#"$2: "}"; return 0 ;;
+    esac
+  done <<< "$1"
+  return 1
+}
+
 cmd_add() {
   [ $# -eq 3 ] || die "usage : add <service> <ip> <masque>"
   local src=$1 ip mask prefix net bcast line name found=0
@@ -95,6 +109,24 @@ cmd_add() {
     if [ "$line" = "$src" ]; then found=1; fi
   done <<< "$("$NS" -listallnetworkservices 2>/dev/null)"
   [ $found -eq 1 ] || die "service source inconnu"
+  # Ni le sous-réseau courant du service source, ni son routeur.
+  local info sip smask sipn smaskn router
+  info=$("$NS" -getinfo "$src" 2>/dev/null)
+  if sip=$(field "$info" 'IP address') && smask=$(field "$info" 'Subnet mask') \
+    && sipn=$(ip_num "$sip") && smaskn=$(ip_num "$smask") \
+    && [ $(( ip & smaskn )) -eq $(( sipn & smaskn )) ]; then
+    die "adresse dans le sous-réseau du service source"
+  fi
+  if router=$(field "$info" 'Router') && [ "$router" = "$2" ]; then
+    die "routeur du service source"
+  fi
+  # Ni la passerelle par défaut du poste.
+  while IFS= read -r line; do
+    line=$(trim "$line")
+    case "$line" in
+      "gateway: "*) if [ "${line#gateway: }" = "$2" ]; then die "passerelle par défaut du poste"; fi ;;
+    esac
+  done <<< "$("$ROUTE" -n get default 2>/dev/null)"
   # Ordre courant, lu avant la pose : « (1) Wi-Fi », « (*) … » = désactivé.
   # Bash 3.2 sous `set -u` : un tableau vide se compte à part.
   local order=() count=0

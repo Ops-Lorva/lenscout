@@ -44,16 +44,29 @@ pub(crate) const HELPER_PATH: &str = "/usr/local/libexec/lenscout-nethelper";
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub(crate) const NETWORKSETUP: &str = "/usr/sbin/networksetup";
 
-/// Texte de l'assistant, `networksetup` à `networksetup` (les tests passent un faux).
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
-pub(crate) fn nethelper_script(networksetup: &str) -> String {
-    include_str!("nethelper.sh").replace("@NETWORKSETUP@", networksetup)
+pub(crate) const ROUTE: &str = "/sbin/route";
+
+/// Texte de l'assistant, avec les chemins de `networksetup` et `route` (les
+/// tests passent des faux).
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn nethelper_script(networksetup: &str, route: &str) -> String {
+    include_str!("nethelper.sh").replace("@NETWORKSETUP@", networksetup).replace("@ROUTE@", route)
+}
+
+/// Contrôle shell : `/usr/local` et `/usr/local/libexec` appartiennent à root
+/// et ne sont modifiables ni par le groupe ni par les autres.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn root_dirs_check(stat: &str) -> String {
+    format!(
+        "for d in /usr/local /usr/local/libexec; do case \"$({stat} -f '%Su %Lp' $d)\" in 'root '*[0145][0145]) ;; *) exit 1 ;; esac; done"
+    )
 }
 
 /// Ce que le marqueur atteste : version, règle et assistant.
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub(crate) fn install_id(rule: &str) -> String {
-    format!("v{RULE_VERSION}\n{rule}\n{}", nethelper_script(NETWORKSETUP))
+    format!("v{RULE_VERSION}\n{rule}\n{}", nethelper_script(NETWORKSETUP, ROUTE))
 }
 
 /// Règle sudoers de `user`. Le nom est validé (`^[a-z_][a-z0-9_.-]*$`)
@@ -133,6 +146,10 @@ pub(crate) fn write_file_shell(content: &str, path: &str) -> String {
 
 /// Script shell (lancé en root) qui pose l'assistant puis la règle.
 ///
+/// Avant tout, l'ancienne règle (v1, jokers sur `networksetup`) est retirée :
+/// même si la suite échoue, elle ne survit pas ; l'app passe alors par
+/// l'invite administrateur.
+///
 /// L'assistant d'abord : `/usr/local` et `/usr/local/libexec` doivent
 /// appartenir à root et n'être modifiables ni par le groupe ni par les autres
 /// (un Homebrew d'Intel les donne à l'utilisateur : qui pourrait renommer le
@@ -147,10 +164,10 @@ pub(crate) fn write_file_shell(content: &str, path: &str) -> String {
 pub(crate) fn install_shell(rule: &str, path: &str) -> String {
     let tmp = format!("{path}.tmp");
     let htmp = format!("{HELPER_PATH}.tmp");
-    let helper = write_file_shell(&nethelper_script(NETWORKSETUP), &htmp);
+    let helper = write_file_shell(&nethelper_script(NETWORKSETUP, ROUTE), &htmp);
+    let dirs = root_dirs_check("/usr/bin/stat");
     format!(
-        "umask 022 && /bin/mkdir -p /usr/local/libexec && \
-         for d in /usr/local /usr/local/libexec; do case \"$(/usr/bin/stat -f '%Su %Lp' $d)\" in 'root '*[0145][0145]) ;; *) exit 1 ;; esac; done && \
+        "rm -f {path} && umask 022 && /bin/mkdir -p /usr/local/libexec && {dirs} && \
          {helper} && chown root:wheel {htmp} && chmod 755 {htmp} && mv -f {htmp} {HELPER_PATH} && \
          umask 077 && printf '%s\\n' '{rule}' > {tmp} && chown root:wheel {tmp} && chmod 440 {tmp} && /usr/sbin/visudo -cf {tmp} && mv -f {tmp} {path} || {{ rm -f {htmp} {tmp}; exit 1; }}"
     )
@@ -175,13 +192,29 @@ fn expected_rule() -> Option<String> {
     sudoers_rule(&current_user()?).ok()
 }
 
-/// La règle attendue est-elle en place ? Toujours vrai hors macOS.
+/// Chaque chemin appartient à root (uid 0), n'est pas un lien symbolique, et
+/// n'est modifiable ni par le groupe ni par les autres (`lstat`).
+#[cfg(unix)]
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn root_only(paths: &[&Path]) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    paths.iter().all(|p| {
+        std::fs::symlink_metadata(p)
+            .is_ok_and(|m| !m.file_type().is_symlink() && m.uid() == 0 && m.mode() & 0o022 == 0)
+    })
+}
+
+/// La règle attendue est-elle en place, avec un assistant que seul root peut
+/// remplacer (vérifié à chaque appel : un dossier peut changer de
+/// propriétaire après l'installation) ? Toujours vrai hors macOS.
 pub fn has_permissions() -> bool {
     #[cfg(target_os = "macos")]
     {
         match (expected_rule(), marker_path()) {
             (Some(rule), Some(marker)) => {
-                Path::new(HELPER_PATH).exists() && rule_installed(Path::new(SUDOERS_PATH), &marker, &install_id(&rule))
+                let helper = Path::new(HELPER_PATH);
+                root_only(&[helper, Path::new("/usr/local/libexec"), Path::new("/usr/local")])
+                    && rule_installed(Path::new(SUDOERS_PATH), &marker, &install_id(&rule))
             }
             _ => false,
         }
@@ -268,7 +301,7 @@ mod tests {
         assert!(!rule_installed(&sudoers, &marker, &id));
         assert!(id.starts_with(&format!("v{RULE_VERSION}\n")), "{id}");
         const { assert!(RULE_VERSION >= 2) };
-        assert!(id.contains(&nethelper_script(NETWORKSETUP)), "l'assistant fait partie de l'installation");
+        assert!(id.contains(&nethelper_script(NETWORKSETUP, ROUTE)), "l'assistant fait partie de l'installation");
         write_marker(&marker, &id).unwrap();
         assert!(rule_installed(&sudoers, &marker, &id));
     }
@@ -337,16 +370,53 @@ mod tests {
         assert!(std::process::Command::new("/bin/sh").args(["-n", "-c", &sh]).status().unwrap().success(), "{sh}");
     }
 
+    /// La règle à jokers d'avant part en premier, sous la même invite : même
+    /// si la suite échoue (dossier non root), elle ne survit pas.
+    #[test]
+    fn install_script_removes_the_previous_rule_before_anything_else() {
+        let sh = install_shell(&sudoers_rule("alice").unwrap(), "/etc/sudoers.d/lenscout");
+        let rm = sh.find("rm -f /etc/sudoers.d/lenscout &&").unwrap_or_else(|| panic!("{sh}"));
+        assert!(rm < sh.find("mkdir").unwrap() && rm < sh.find("stat -f").unwrap(), "{sh}");
+    }
+
+    /// Le motif des droits de `/usr/local` et `/usr/local/libexec`, avec un
+    /// faux `stat` : propriétaire root, ni groupe ni autres en écriture.
+    #[cfg(unix)]
+    #[test]
+    fn the_directory_check_accepts_only_root_owned_non_writable_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch();
+        let stat = d.join("stat");
+        std::fs::write(&stat, format!("#!/bin/bash\ncat '{}'/mode-\"$(basename \"$3\")\"\n", d.display())).unwrap();
+        std::fs::set_permissions(&stat, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let check = root_dirs_check(&stat.to_string_lossy());
+        for (local, libexec, ok) in [
+            ("root 755", "root 755", true),
+            ("root 1755", "root 700", true),
+            ("root 755", "root 775", false),
+            ("root 757", "root 755", false),
+            ("root 777", "root 755", false),
+            ("alice 755", "root 755", false),
+            ("root 755", "admin 755", false),
+            ("rootkit 755", "root 755", false),
+        ] {
+            std::fs::write(d.join("mode-local"), local).unwrap();
+            std::fs::write(d.join("mode-libexec"), libexec).unwrap();
+            let st = std::process::Command::new("/bin/sh").args(["-c", &check]).status().unwrap();
+            assert_eq!(st.success(), ok, "{local} / {libexec}");
+        }
+    }
+
     /// Le texte de l'assistant traverse le shell intact (guillemets, `$`, `\`).
     #[cfg(unix)]
     #[test]
     fn the_helper_text_is_written_byte_for_byte_by_the_shell() {
         let d = scratch();
         let out = d.join("helper");
-        let sh = write_file_shell(&nethelper_script(NETWORKSETUP), &out.to_string_lossy());
+        let sh = write_file_shell(&nethelper_script(NETWORKSETUP, ROUTE), &out.to_string_lossy());
         let st = std::process::Command::new("/bin/sh").args(["-c", &sh]).status().unwrap();
         assert!(st.success());
-        assert_eq!(std::fs::read_to_string(&out).unwrap(), format!("{}\n", nethelper_script(NETWORKSETUP)));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), format!("{}\n", nethelper_script(NETWORKSETUP, ROUTE)));
     }
 
     #[test]
@@ -392,6 +462,7 @@ mod tests {
                      case \"$1\" in\n\
                      -listallnetworkservices) printf 'An asterisk (*) denotes that a network service is disabled.\\nWi-Fi\\nUSB 10/100/1000 LAN\\n*Thunderbolt Bridge\\n' ;;\n\
                      -listnetworkserviceorder) printf '%s' '{order}' ;;\n\
+                     -getinfo) printf 'Manual Configuration\\nIP address: 192.168.1.10\\nSubnet mask: 255.255.255.0\\nRouter: 192.168.1.1\\n' ;;\n\
                      {fail_on}) echo '** Error: refusé' ;;\n\
                      esac\nexit 0\n",
                     log = log.display()
@@ -399,7 +470,15 @@ mod tests {
             )
             .unwrap();
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-            std::fs::write(dir.join("helper"), nethelper_script(&stub.to_string_lossy())).unwrap();
+            // Route par défaut du poste : 10.9.9.1.
+            let route = dir.join("route");
+            std::fs::write(
+                &route,
+                "#!/bin/bash\nprintf '   route to: default\\ndestination: default\\n    gateway: 10.9.9.1\\n  interface: en0\\n'\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&route, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(dir.join("helper"), nethelper_script(&stub.to_string_lossy(), &route.to_string_lossy())).unwrap();
             Helper { dir }
         }
 
@@ -408,6 +487,12 @@ mod tests {
             let log = std::fs::read_to_string(self.dir.join("log")).unwrap_or_default();
             (st.status.code().unwrap_or(-1), log.lines().map(str::to_owned).collect())
         }
+    }
+
+    /// Lectures sans effet du faux `networksetup`.
+    #[cfg(unix)]
+    fn read_only(line: &str) -> bool {
+        line.starts_with("-list") || line.starts_with("-getinfo")
     }
 
     #[cfg(unix)]
@@ -421,11 +506,11 @@ mod tests {
     #[test]
     fn the_helper_is_valid_bash() {
         let d = scratch();
-        std::fs::write(d.join("helper"), nethelper_script(NETWORKSETUP)).unwrap();
+        std::fs::write(d.join("helper"), nethelper_script(NETWORKSETUP, ROUTE)).unwrap();
         let st = std::process::Command::new("bash").arg("-n").arg(d.join("helper")).status().unwrap();
         assert!(st.success());
-        assert!(nethelper_script(NETWORKSETUP).starts_with("#!/bin/bash\n"));
-        assert!(nethelper_script(NETWORKSETUP).contains("NS='/usr/sbin/networksetup'"));
+        assert!(nethelper_script(NETWORKSETUP, ROUTE).starts_with("#!/bin/bash\n"));
+        assert!(nethelper_script(NETWORKSETUP, ROUTE).contains("NS='/usr/sbin/networksetup'"));
     }
 
     /// Même service dupliqué, même adresse (routeur = elle-même), puis l'ordre
@@ -437,7 +522,7 @@ mod tests {
         let h = Helper::new(ORDER, "-nothing");
         let (code, log) = h.run(&["add", "USB 10/100/1000 LAN", "169.254.7.7", "255.255.0.0"]);
         assert_eq!(code, 0, "{log:?}");
-        let writes: Vec<&String> = log.iter().filter(|l| !l.starts_with("-list")).collect();
+        let writes: Vec<&String> = log.iter().filter(|l| !read_only(l)).collect();
         assert_eq!(
             writes,
             [
@@ -446,7 +531,7 @@ mod tests {
                 "-ordernetworkservices|Wi-Fi|Thunderbolt Bridge|USB 10/100/1000 LAN|Lenscout|",
             ]
         );
-        let (code, log) = h.run(&["add", "Wi-Fi", "192.168.1.250", "255.255.255.0"]);
+        let (code, log) = h.run(&["add", "Wi-Fi", "192.168.5.250", "255.255.255.0"]);
         assert_eq!(code, 0, "{log:?}");
         let (code, log) = Helper::new(ORDER, "-nothing").run(&["remove"]);
         assert_eq!((code, log), (0, vec!["-removenetworkservice|Lenscout|".to_string()]));
@@ -486,10 +571,17 @@ mod tests {
             vec!["add", "Lenscout", "192.168.1.1", "255.255.255.0"],
             vec!["add", "-listallnetworkservices", "192.168.1.1", "255.255.255.0"],
             vec!["add", "", "192.168.1.1", "255.255.255.0"],
+            // Le sous-réseau courant du service source (192.168.1.10/24), son
+            // routeur, la route par défaut du poste.
+            vec!["add", "Wi-Fi", "192.168.1.1", "255.255.255.0"],
+            vec!["add", "Wi-Fi", "192.168.1.77", "255.255.0.0"],
+            vec!["add", "Wi-Fi", "192.168.1.250", "255.255.255.0"],
+            vec!["add", "Wi-Fi", "10.9.9.1", "255.0.0.0"],
+            vec!["add", "USB 10/100/1000 LAN", "10.9.9.1", "255.255.255.0"],
         ] {
             let (code, log) = h.run(&args);
             assert_ne!(code, 0, "{args:?}");
-            assert!(log.iter().all(|l| l.starts_with("-list")), "{args:?} : {log:?}");
+            assert!(log.iter().all(|l| read_only(l)), "{args:?} : {log:?}");
         }
         // Les bornes acceptées.
         for (ip, mask) in [("10.0.0.1", "255.0.0.0"), ("172.31.255.254", "255.240.0.0"), ("192.168.0.90", "255.255.255.252")] {
@@ -508,7 +600,7 @@ mod tests {
         assert!(!log.iter().any(|l| l.starts_with("-ordernetworkservices")), "{log:?}");
         let (code, log) = Helper::new("rien de lisible\n", "-nothing").run(&["add", "Wi-Fi", "169.254.7.7", "255.255.0.0"]);
         assert_ne!(code, 0);
-        assert!(log.iter().all(|l| l.starts_with("-list")), "{log:?}");
+        assert!(log.iter().all(|l| read_only(l)), "{log:?}");
     }
 
     #[test]
