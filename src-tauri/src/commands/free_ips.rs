@@ -155,7 +155,7 @@ mod tests {
     }
 
     fn seen(iface: &str, ips: &[&str]) -> SeenSnapshot {
-        SeenSnapshot { iface: Some(iface.into()), ips: ips.iter().map(|s| s.parse().unwrap()).collect(), sadp_macs: vec![], new_keys: vec![] }
+        SeenSnapshot { iface: Some(iface.into()), ips: ips.iter().map(|s| s.parse().unwrap()).collect(), sadp_macs: vec![], states: vec![] }
     }
 
     #[test]

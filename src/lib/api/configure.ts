@@ -55,9 +55,13 @@ const ACTIONABLE: readonly Family[] = ['axis'];
 export const canAct = (cams: Camera[]): boolean =>
   cams.length > 0 && cams.every((c) => ACTIONABLE.includes(c.family));
 
-/** Activer : au moins une caméra lue neuve au scan (Rust refuse les autres : `not_new`). */
+/**
+ * Activer : au moins une caméra qui n'est pas lue activée. Une caméra
+ * inconnue au scan (hors sous-réseau) est relue par Rust au moment de
+ * l'action ; une caméra activée est refusée (`not_new`).
+ */
 export const canActivate = (cams: Camera[]): boolean =>
-  canAct(cams) && cams.some((c) => c.activation === 'new');
+  canAct(cams) && cams.some((c) => c.activation !== 'activated');
 
 const ipNum = (ip: string): number | null => {
   const p = ip.trim().split('.');
@@ -160,6 +164,14 @@ export const applyAction = (cameras: Camera[], accountId: string, action: Action
   cameras.length === 0
     ? Promise.reject('no_cameras')
     : invoke<ActionResult[]>('cmd_apply_action', { cameras, accountId, action, iface });
+
+/** Après une action : les caméras dont l'envoi en clair attend une confirmation (activation seulement). */
+export const pendingAfterRun = (action: ActionDto, results: ActionResult[], targets: Camera[]): Camera[] =>
+  action.kind === 'activate' ? cleartextPending(results, targets) : [];
+
+/** Une confirmation traitée retire sa seule caméra de l'attente ; vide, le dialogue se ferme. */
+export const pendingAfterConfirm = (pending: Camera[], done: Camera): Camera[] =>
+  pending.filter((c) => cameraKey(c) !== cameraKey(done));
 
 /**
  * Envoi du mot de passe en http clair confirmé par le technicien pour CETTE

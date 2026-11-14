@@ -245,11 +245,12 @@ pub async fn device_info(http: &dyn CameraHttp, base: &str) -> Result<DeviceInfo
 
 /// N° de série par `param.cgi` (repli d'AXIS OS < 8.40, sans
 /// `basicdeviceinfo.cgi`) : `root.Properties.System.SerialNumber=…`. Anonyme
-/// d'abord, puis avec le compte sur un 401. La query ne porte aucun secret.
+/// d'abord, puis avec le compte sur un 401 ; sans compte (`None`), le refus
+/// est rendu tel quel (`Net(Auth)`). La query ne porte aucun secret.
 pub async fn serial_from_params(
     http: &dyn CameraHttp,
     base: &str,
-    creds: &Credentials,
+    creds: Option<&Credentials>,
 ) -> Result<String, VapixError> {
     let req = || HttpRequest {
         method: Method::Get,
@@ -259,7 +260,10 @@ pub async fn serial_from_params(
     };
     let resp = match http.send(req(), None).await {
         Ok(r) if r.status != 401 => r,
-        Ok(_) | Err(NetError::Auth) => http.send(req(), Some(creds)).await?,
+        Ok(_) | Err(NetError::Auth) => match creds {
+            Some(c) => http.send(req(), Some(c)).await?,
+            None => return Err(NetError::Auth.into()),
+        },
         Err(e) => return Err(e.into()),
     };
     require_success(&resp)?;

@@ -42,7 +42,7 @@
     "keyring": "Trousseau inaccessible",
     "account_network_active": "IP d'un compte posée sur le poste : revenir sur DHCP pour joindre cette caméra",
     "activation_cleartext": "HTTPS indisponible : mot de passe non envoyé",
-    "not_new": "Pas lue neuve au scan : rescanner",
+    "not_new": "Caméra pas neuve : rescanner",
     "mac_not_axis": "MAC vue sur le réseau non Axis : mot de passe non envoyé"
   },
   "off_subnet": "Hors du sous-réseau de {iface}",

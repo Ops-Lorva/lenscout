@@ -119,6 +119,15 @@ pub struct ActionResult {
     pub error: Option<ActionError>,
 }
 
+/// Ce que le dernier scan a lu d'une ligne : sa clé (MAC, sinon IP, comme
+/// `ActionResult::key`), son adresse, son état d'activation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeenState {
+    pub key: String,
+    pub ip: Ipv4Addr,
+    pub activation: Activation,
+}
+
 pub struct ActionContext {
     pub http: Arc<dyn CameraHttp>,
     pub iface: ScanInterface,
@@ -146,9 +155,9 @@ pub struct ActionContext {
     /// Une IP de compte est posée (« Se mettre dans ce réseau ») : elle
     /// tient le verrou de l'IP temporaire.
     pub account_network: bool,
-    /// Clés de ligne (MAC, sinon IP, comme `ActionResult::key`) que le dernier
-    /// scan a lues neuves, tenues par Rust : seules elles peuvent être activées.
-    pub seen_new: Vec<String>,
+    /// État d'activation de chaque ligne au dernier scan (`seen_iface`),
+    /// tenu par Rust : le front ne peut pas en inventer.
+    pub seen_states: Vec<SeenState>,
     /// Table ARP : la MAC de couche 2 d'une caméra avant l'envoi d'un mot de
     /// passe d'activation.
     pub neighbours: Arc<dyn Neighbours>,
@@ -181,9 +190,14 @@ fn is_activation(action: &Action) -> bool {
     matches!(action, Action::Activate | Action::ActivateCleartext)
 }
 
-/// Neuve pour le front ET pour le dernier scan tenu par Rust.
-fn read_as_new(ctx: &ActionContext, cam: &Camera) -> bool {
-    cam.activation == Activation::New && ctx.seen_new.contains(&row_key(cam))
+/// État de la ligne lu par le dernier scan, fait sur CETTE interface, à
+/// CETTE adresse ; `None` si le scan ne l'a pas vue ainsi.
+fn scan_state(ctx: &ActionContext, cam: &Camera) -> Option<Activation> {
+    if ctx.seen_iface.as_deref() != Some(ctx.iface.name.as_str()) {
+        return None;
+    }
+    let key = row_key(cam);
+    ctx.seen_states.iter().find(|s| s.key == key && s.ip == cam.ip).map(|s| s.activation)
 }
 
 /// La MAC de couche 2 de la caméra (pas celle qu'elle annonce) est d'un OUI
@@ -203,11 +217,15 @@ async fn layer2_is_axis(ctx: &ActionContext, cam: &Camera) -> bool {
 ///
 /// AXIS OS < 8.40 n'a pas `basicdeviceinfo.cgi` (404) : le n° de série se lit
 /// alors dans `param.cgi` (`creds` seulement si la lecture anonyme est fermée).
-pub async fn verify_identity(ctx: &ActionContext, cam: &Camera, creds: &Credentials) -> Result<(), ActionError> {
+///
+/// `creds` à `None` (activation) : rien du compte ne part, et un refus
+/// d'authentification dit que la caméra a déjà un compte : `not_new`.
+pub async fn verify_identity(ctx: &ActionContext, cam: &Camera, creds: Option<&Credentials>) -> Result<(), ActionError> {
     if cam.family != Family::Axis {
         return Err(ActionError::Unsupported);
     }
     let unreadable = |e: VapixError| match e {
+        VapixError::Net(NetError::Auth | NetError::Status(401 | 403)) if creds.is_none() => ActionError::NotNew,
         VapixError::Parse(_)
         | VapixError::Rejected(_)
         | VapixError::Invalid(_)
@@ -292,25 +310,24 @@ async fn apply_checked(
 ) -> Result<(), ActionError> {
     match cam.family {
         Family::Axis => {}
-        Family::Hikvision => {
-            if is_activation(action) && !read_as_new(ctx, cam) {
-                return Err(ActionError::NotNew);
-            }
-            return apply_sadp(ctx, cam, creds, action).await;
-        }
+        Family::Hikvision => return apply_sadp(ctx, cam, creds, action).await,
         Family::Other => return Err(ActionError::Unsupported),
     }
-    if is_activation(action) && !read_as_new(ctx, cam) {
-        return Err(ActionError::NotNew);
-    }
-    if on_subnet(&ctx.iface, cam.ip) {
-        return verify_and_write(ctx, cam, creds, action).await;
-    }
-    if !off_subnet_allowed(ctx, cam.ip) {
+    let on = on_subnet(&ctx.iface, cam.ip);
+    if !on && !off_subnet_allowed(ctx, cam.ip) {
         return Err(ActionError::CameraOffSubnet);
     }
-    if ctx.account_network {
+    if !on && ctx.account_network {
         return Err(ActionError::AccountNetworkActive);
+    }
+    // Lue activée, ou jamais vue à cette adresse : refusé avant toute requête
+    // et toute invite. Inconnue (caméra hors sous-réseau que le scan n'a pas
+    // pu interroger) : l'état est relu au moment de l'action.
+    if is_activation(action) && !matches!(scan_state(ctx, cam), Some(Activation::New | Activation::Unknown)) {
+        return Err(ActionError::NotNew);
+    }
+    if on {
+        return verify_and_write(ctx, cam, creds, action).await;
     }
     let avoid: Vec<Ipv4Addr> = ctx.seen.iter().chain(&ctx.in_use).copied().collect();
     let temp = pick_temp_ip(&ctx.iface.name, cam.ip, &avoid, rand::random())
@@ -359,6 +376,10 @@ async fn apply_sadp(
     if !heard {
         return Err(ActionError::CameraNotSeen);
     }
+    // SADP dit l'état lui-même : seule une ligne lue neuve s'active.
+    if is_activation(action) && scan_state(ctx, cam) != Some(Activation::New) {
+        return Err(ActionError::NotNew);
+    }
     let uuid = uuid::Uuid::new_v4();
     let msg = match action {
         Action::Activate | Action::ActivateCleartext => sadp::build_activate(uuid, &mac, &creds.password),
@@ -376,23 +397,42 @@ async fn verify_and_write(
     creds: &Credentials,
     action: &Action,
 ) -> Result<(), ActionError> {
-    verify_identity(ctx, cam, creds).await?;
-    // Juste avant le mot de passe : la couche 2 dit-elle Axis ?
-    if is_activation(action) && !layer2_is_axis(ctx, cam).await {
+    let cleartext = match action {
+        Action::Activate => false,
+        Action::ActivateCleartext => true,
+        _ => {
+            verify_identity(ctx, cam, Some(creds)).await?;
+            let (http, base) = (ctx.http.as_ref(), cam.base_url());
+            let done = match action {
+                Action::Network(net) => vapix::set_network(http, &base, creds, net).await,
+                Action::Time(t) => vapix::set_time(http, &base, creds, t).await,
+                Action::Activate | Action::ActivateCleartext => return Err(ActionError::Unsupported),
+            };
+            return done.map_err(|e| from_vapix(e, cam.ip));
+        }
+    };
+    activate_checked(ctx, cam, creds, cleartext).await
+}
+
+/// Activation : rien du compte ne part avant que tout soit vérifié.
+/// 1. identité, lue sans compte (une caméra neuve n'en a aucun : un refus
+///    dit qu'elle n'est pas neuve) ;
+/// 2. MAC de couche 2 d'un OUI Axis ;
+/// 3. état « neuve » relu à l'instant, sans compte (`needsetup=yes`) ;
+/// 4. alors seulement le mot de passe.
+async fn activate_checked(ctx: &ActionContext, cam: &Camera, creds: &Credentials, cleartext: bool) -> Result<(), ActionError> {
+    verify_identity(ctx, cam, None).await?;
+    if !layer2_is_axis(ctx, cam).await {
         return Err(ActionError::MacNotAxis);
     }
-    let http = ctx.http.as_ref();
-    let base = cam.base_url();
-    let done = match action {
-        Action::Activate => vapix::activate(http, &base, creds, false).await,
-        Action::ActivateCleartext => vapix::activate(http, &base, creds, true).await,
-        Action::Network(net) => vapix::set_network(http, &base, creds, net).await,
-        Action::Time(t) => vapix::set_time(http, &base, creds, t).await,
-    };
-    done.map_err(|e| match (action, from_vapix(e, cam.ip)) {
+    let (http, base) = (ctx.http.as_ref(), cam.base_url());
+    if vapix::activation_state(http, &base).await != Activation::New {
+        return Err(ActionError::NotNew);
+    }
+    vapix::activate(http, &base, creds, cleartext).await.map_err(|e| match from_vapix(e, cam.ip) {
         // Une caméra qui a déjà un compte refuse la création du premier (401).
-        (Action::Activate | Action::ActivateCleartext, ActionError::AuthFailed) => ActionError::AlreadyActivated,
-        (_, err) => err,
+        ActionError::AuthFailed => ActionError::AlreadyActivated,
+        err => err,
     })
 }
 
@@ -405,7 +445,9 @@ pub async fn apply_all(
     creds: &Credentials,
     action: &Action,
 ) -> Vec<ActionResult> {
-    if matches!(action, Action::Network(_)) && cams.len() > 1 {
+    // Le changement d'IP, comme l'envoi en clair (confirmé caméra par
+    // caméra), ne vise qu'une caméra.
+    if matches!(action, Action::Network(_) | Action::ActivateCleartext) && cams.len() > 1 {
         return cams
             .iter()
             .map(|c| result(c, Err(ActionError::NetworkNeedsOneCamera)))
@@ -509,11 +551,25 @@ mod tests {
             in_use: vec![],
             other_ifaces: vec![],
             account_network: false,
-            seen_new: vec![MAC.into(), "192.0.2.11".into()],
+            seen_states: scan_states(Activation::New),
             neighbours: Arc::new(FakeNeighbours::any(MAC)),
         };
         TestCtx { c, _journal: journal }
     }
+
+    /// Ce que le dernier scan (sur `eth0`) a lu pour la MAC de test, aux
+    /// adresses des tests, et pour la ligne sans MAC en 192.0.2.11.
+    fn scan_states(activation: Activation) -> Vec<SeenState> {
+        let mut out: Vec<SeenState> = ["192.0.2.11", "192.0.2.12", "192.0.2.200", "169.254.10.20", "192.168.0.90", "192.168.0.91"]
+            .iter()
+            .map(|ip| SeenState { key: MAC.into(), ip: ip.parse().unwrap(), activation })
+            .collect();
+        out.push(SeenState { key: "192.0.2.11".into(), ip: "192.0.2.11".parse().unwrap(), activation });
+        out
+    }
+
+    const NEEDSETUP_YES: &str = r#"{"apiVersion":"1.1","data":{"needsetup":"yes","systemready":"yes"}}"#;
+    const NEEDSETUP_NO: &str = r#"{"apiVersion":"1.1","data":{"needsetup":"no","systemready":"yes"}}"#;
 
     /// Le contexte d'un test ; le dossier du journal part avec lui.
     struct TestCtx {
@@ -538,17 +594,18 @@ mod tests {
     fn axis_ok() -> FakeHttp {
         FakeHttp::new()
             .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, INFO.to_vec())
+            .on(Method::Post, "/axis-cgi/systemready.cgi", 200, NEEDSETUP_YES)
             .on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "Created account root.")
             .on(Method::Post, "/axis-cgi/param.cgi", 200, "OK")
             .on(Method::Post, "/axis-cgi/time.cgi", 200, r#"{"data":{}}"#)
             .on(Method::Post, "/axis-cgi/ntp.cgi", 200, r#"{"data":{}}"#)
     }
 
-    /// Les requêtes qui modifient la caméra (tout sauf la lecture d'identité).
+    /// Les requêtes qui modifient la caméra (tout sauf les lectures d'identité et d'état).
     fn writes(http: &FakeHttp) -> Vec<String> {
         http.requests()
             .into_iter()
-            .filter(|r| !r.url.ends_with("/axis-cgi/basicdeviceinfo.cgi"))
+            .filter(|r| !r.url.ends_with("/axis-cgi/basicdeviceinfo.cgi") && !r.url.ends_with("/axis-cgi/systemready.cgi"))
             .map(|r| r.url)
             .collect()
     }
@@ -667,7 +724,7 @@ mod tests {
             |_| Err(NetError::Auth),
         ] {
             let http = Arc::new(Scripted::new(reply));
-            let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+            let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &time()).await;
             assert_eq!(r.error, Some(ActionError::IdentityUnreadable));
             // Sur 404, la lecture de repli (param.cgi, AXIS OS < 8.40) part aussi.
             let urls = http.urls.lock().unwrap().clone();
@@ -751,7 +808,7 @@ mod tests {
                     reply(200, "OK")
                 }
             }));
-            let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+            let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &static_net()).await;
             assert!(r.ok, "{:?}", r.error);
             let seen = http.seen();
             assert_eq!(seen[1], (SERIAL_PARAM.to_string(), false));
@@ -829,6 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn activate_on_an_activated_camera_says_so() {
+        // Relue au moment de l'action : elle a déjà un compte (refus partout).
         let http = Arc::new(Scripted::new(|req| {
             if req.url.ends_with("basicdeviceinfo.cgi") {
                 Ok(HttpResponse { status: 200, headers: vec![], body: INFO.to_vec() })
@@ -837,6 +895,19 @@ mod tests {
             }
         }));
         let r = apply(&ctx(http.clone()), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::NotNew));
+        assert!(!http.urls.lock().unwrap().iter().any(|u| u.starts_with("https://")), "aucun mot de passe");
+        // Lue neuve, puis le premier compte refusé (401) : déjà activée entre-temps.
+        let raced = Arc::new(Scripted::new(|req| {
+            if req.url.ends_with("basicdeviceinfo.cgi") {
+                Ok(HttpResponse { status: 200, headers: vec![], body: INFO.to_vec() })
+            } else if req.url.ends_with("systemready.cgi") {
+                Ok(HttpResponse { status: 200, headers: vec![], body: NEEDSETUP_YES.as_bytes().to_vec() })
+            } else {
+                Err(NetError::Auth)
+            }
+        }));
+        let r = apply(&ctx(raced), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
         assert_eq!(r.error, Some(ActionError::AlreadyActivated));
         // Un refus d'authentification d'une autre action reste AuthFailed.
         let r = apply(&ctx(http), &cam("192.0.2.11", Family::Axis), &creds(), &time()).await;
@@ -855,8 +926,10 @@ mod tests {
             order,
             [
                 "http://192.0.2.12/axis-cgi/basicdeviceinfo.cgi",
+                "http://192.0.2.12/axis-cgi/systemready.cgi",
                 "https://192.0.2.12/axis-cgi/pwdgrp.cgi",
                 "http://192.0.2.11/axis-cgi/basicdeviceinfo.cgi",
+                "http://192.0.2.11/axis-cgi/systemready.cgi",
                 "https://192.0.2.11/axis-cgi/pwdgrp.cgi",
             ]
         );
@@ -1028,35 +1101,111 @@ mod tests {
         let http = Arc::new(
             FakeHttp::new()
                 .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, INFO.to_vec())
+                .on(Method::Post, "/axis-cgi/systemready.cgi", 200, NEEDSETUP_YES)
                 .on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "Error: invalid password."),
         );
         let r = apply(&ctx(http), &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
         assert_eq!(r.error, Some(ActionError::Rejected { detail: "Error: invalid password.".into() }));
     }
 
-    /// Seule une caméra que le dernier scan a lue neuve (côté Rust) reçoit
-    /// « Activer » ; l'état envoyé par le front ne suffit pas.
+    /// L'état lu au scan, tenu par Rust, sur CETTE interface et à CETTE
+    /// adresse : « activée » ou absent → refusé avant toute requête. Le front
+    /// ne peut rien y changer.
     #[tokio::test]
-    async fn activate_is_refused_unless_the_scan_read_the_camera_as_new() {
+    async fn activate_is_refused_when_the_scan_read_it_activated_or_never_saw_it() {
         let http = Arc::new(axis_ok());
-        for state in [Activation::Activated, Activation::Unknown] {
-            let mut c = cam("192.0.2.11", Family::Axis);
-            c.activation = state;
+        let mut activated = ctx(http.clone());
+        activated.seen_states = scan_states(Activation::Activated);
+        let mut empty = ctx(http.clone());
+        empty.seen_states.clear();
+        let mut other_iface = ctx(http.clone());
+        other_iface.seen_iface = Some("wlan0".into());
+        for c in [&activated, &empty, &other_iface] {
             for action in [Action::Activate, Action::ActivateCleartext] {
-                let r = apply(&ctx(http.clone()), &c, &creds(), &action).await;
-                assert_eq!(r.error, Some(ActionError::NotNew), "{state:?}");
+                let r = apply(c, &cam("192.0.2.11", Family::Axis), &creds(), &action).await;
+                assert_eq!(r.error, Some(ActionError::NotNew));
             }
         }
-        // Le front dit « neuve », le scan ne l'a pas lue ainsi.
-        let mut c = ctx(http.clone());
-        c.seen_new.clear();
-        let r = apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+        // La MAC d'une caméra neuve associée par le front à une autre adresse.
+        let r = apply(&ctx(http.clone()), &cam("192.0.2.77", Family::Axis), &creds(), &Action::Activate).await;
         assert_eq!(r.error, Some(ActionError::NotNew));
         assert!(http.requests().is_empty());
         // Les autres actions ne changent pas.
-        let mut unknown = cam("192.0.2.11", Family::Axis);
-        unknown.activation = Activation::Unknown;
-        assert!(apply(&c, &unknown, &creds(), &time()).await.ok);
+        assert!(apply(&activated, &cam("192.0.2.11", Family::Axis), &creds(), &time()).await.ok);
+    }
+
+    /// État inconnu au scan (Axis neuve hors du sous-réseau, joignable par
+    /// l'IP temporaire seulement) : relu au moment de l'action, sans compte,
+    /// après le contrôle MAC ; le mot de passe ne part que si `needsetup=yes`.
+    #[tokio::test]
+    async fn unknown_at_scan_is_activated_only_if_the_camera_says_new_now() {
+        for (body, expected) in [(NEEDSETUP_YES, None), (NEEDSETUP_NO, Some(ActionError::NotNew))] {
+            let http = Arc::new(
+                FakeHttp::new()
+                    .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, INFO.to_vec())
+                    .on(Method::Post, "/axis-cgi/systemready.cgi", 200, body)
+                    .on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "Created account root."),
+            );
+            let mut c = ctx(http.clone());
+            c.seen_states = scan_states(Activation::Unknown);
+            let mut front = cam("192.0.2.11", Family::Axis);
+            front.activation = Activation::Unknown;
+            let r = apply(&c, &front, &creds(), &Action::Activate).await;
+            assert_eq!(r.error, expected);
+            let urls: Vec<String> = http.requests().into_iter().map(|r| r.url).collect();
+            assert_eq!(urls.iter().any(|u| u.ends_with("pwdgrp.cgi")), expected.is_none(), "{urls:?}");
+            assert!(http.requests().iter().all(|r| r.login.is_none()), "aucune requête avec le compte");
+        }
+        // Un état illisible au moment de l'action ne vaut pas « neuve ».
+        let http = Arc::new(FakeHttp::new().on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, INFO.to_vec()));
+        let mut c = ctx(http.clone());
+        c.seen_states = scan_states(Activation::Unknown);
+        let r = apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &Action::Activate).await;
+        assert_eq!(r.error, Some(ActionError::NotNew));
+    }
+
+    /// Faux appareil à MAC non Axis qui imite une Axis < 8.40 : 404 sur
+    /// basicdeviceinfo, puis 401 Digest sur param.cgi. Rien du compte ne lui
+    /// est envoyé, pas même une réponse Digest.
+    #[tokio::test]
+    async fn activation_never_sends_the_account_before_the_mac_check() {
+        for anonymous_serial in [false, true] {
+            thread_local! { static SERIAL_OK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+            SERIAL_OK.with(|s| s.set(anonymous_serial));
+            let http = Arc::new(WithLogin::new(|req, with_login| {
+                if req.url.ends_with("basicdeviceinfo.cgi") {
+                    reply(404, "")
+                } else if req.url.contains("action=list") && (with_login || SERIAL_OK.with(|s| s.get())) {
+                    reply(200, "root.Properties.System.SerialNumber=ACCC8E123456")
+                } else if req.url.contains("action=list") {
+                    Ok(HttpResponse { status: 401, headers: vec![("WWW-Authenticate".into(), "Digest realm=\"x\", nonce=\"n\"".into())], body: vec![] })
+                } else {
+                    reply(200, "Created account root.")
+                }
+            }));
+            let mut c = ctx(http.clone());
+            c.neighbours = Arc::new(FakeNeighbours::table(&[("192.0.2.11", "A4:5E:60:11:22:33")]));
+            for action in [Action::Activate, Action::ActivateCleartext] {
+                let r = apply(&c, &cam("192.0.2.11", Family::Axis), &creds(), &action).await;
+                let want = if anonymous_serial { ActionError::MacNotAxis } else { ActionError::NotNew };
+                assert_eq!(r.error, Some(want));
+            }
+            let seen = http.seen();
+            assert!(seen.iter().all(|(_, with_login)| !with_login), "{seen:?}");
+            assert!(!seen.iter().any(|(p, _)| p.contains("pwdgrp") || p.contains("systemready")), "{seen:?}");
+        }
+    }
+
+    /// L'envoi en clair se confirme caméra par caméra : sur une liste, rien ne part.
+    #[tokio::test]
+    async fn cleartext_activation_on_several_cameras_sends_nothing() {
+        let http = Arc::new(axis_ok());
+        let cams = [cam("192.0.2.11", Family::Axis), cam("192.0.2.12", Family::Axis)];
+        let out = apply_all(&ctx(http.clone()), &cams, &creds(), &Action::ActivateCleartext).await;
+        assert!(out.iter().all(|r| r.error == Some(ActionError::NetworkNeedsOneCamera)), "{out:?}");
+        assert!(http.requests().is_empty());
+        let one = apply_all(&ctx(http.clone()), &cams[..1], &creds(), &Action::ActivateCleartext).await;
+        assert!(one[0].ok, "{one:?}");
     }
 
     /// Le mot de passe ne part que si la MAC vue en couche 2 (table ARP) est
@@ -1187,9 +1336,13 @@ mod tests {
         let urls: Vec<String> = http.inner.requests().into_iter().map(|r| r.url).collect();
         assert_eq!(
             urls,
-            ["http://169.254.10.20/axis-cgi/basicdeviceinfo.cgi", "https://169.254.10.20/axis-cgi/pwdgrp.cgi"]
+            [
+                "http://169.254.10.20/axis-cgi/basicdeviceinfo.cgi",
+                "http://169.254.10.20/axis-cgi/systemready.cgi",
+                "https://169.254.10.20/axis-cgi/pwdgrp.cgi"
+            ]
         );
-        assert_eq!(*http.plans_at.lock().unwrap(), vec![1, 1]);
+        assert_eq!(*http.plans_at.lock().unwrap(), vec![1, 1, 1]);
         let plans = elev.plans();
         assert_eq!(plans.len(), 2);
         assert_ne!(plans[0], plans[1], "un ajout puis un retrait");

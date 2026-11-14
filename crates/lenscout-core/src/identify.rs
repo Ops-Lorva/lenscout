@@ -69,7 +69,7 @@ pub async fn identify(http: &dyn CameraHttp, ip: Ipv4Addr, creds: &Credentials) 
         Err(VapixError::Net(e)) if net_error(&e) == Some(IdentifyError::Unreachable) => {
             return Err(IdentifyError::Unreachable);
         }
-        Err(VapixError::Net(NetError::Status(404))) => match vapix::serial_from_params(http, &base, creds).await {
+        Err(VapixError::Net(NetError::Status(404))) => match vapix::serial_from_params(http, &base, Some(creds)).await {
             Ok(serial) => {
                 cam.serial = Some(serial);
                 return Ok(cam);

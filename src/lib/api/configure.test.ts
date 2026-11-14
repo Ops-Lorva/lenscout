@@ -4,7 +4,7 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import { get } from 'svelte/store';
 import type { Camera } from './types';
-import { activateCleartext, cleartextPending, mergeResults, actionResults, applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
+import { activateCleartext, cleartextPending, pendingAfterConfirm, pendingAfterRun, mergeResults, actionResults, applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
 
 const cam = (family: Camera['family'], ip = '10.0.50.11'): Camera => ({
   ip, mac: null, family, brand: null, model: null, serial: null, firmware: null,
@@ -68,12 +68,12 @@ test('fuseaux : jamais vide, fuseau du poste s’il est listé', () => {
   expect(defaultTimeZone([])).toBe('UTC');
 });
 
-test('« Activer » grisé sans aucune caméra lue neuve au scan', () => {
+test('« Activer » grisé seulement si toutes les caméras sont lues activées', () => {
   const done = (ip: string): Camera => ({ ...cam('axis', ip), activation: 'activated' });
   expect(canActivate([done('10.0.50.11'), done('10.0.50.12')])).toBe(false);
   expect(canActivate([done('10.0.50.11'), cam('axis', '10.0.50.12')])).toBe(true);
-  // Rust refuse d'activer un état inconnu (`not_new`).
-  expect(canActivate([{ ...cam('axis'), activation: 'unknown' }])).toBe(false);
+  // Inconnue (hors sous-réseau au scan) : Rust relit l'état au moment de l'action.
+  expect(canActivate([{ ...cam('axis'), activation: 'unknown' }])).toBe(true);
   expect(canActivate([])).toBe(false);
   expect(canActivate([cam('other')])).toBe(false);
 });
@@ -104,6 +104,21 @@ test('https injoignable : les caméras à confirmer, une par une', () => {
   ];
   expect(cleartextPending(results, [a, b, c])).toEqual([a, c]);
   expect(cleartextPending([], [a])).toEqual([]);
+});
+
+test('dialogue d’activation : il reste ouvert tant qu’une caméra attend sa confirmation', () => {
+  const a = { ...cam('axis', '10.0.50.11'), mac: 'AC:CC:8E:00:00:01' };
+  const b = { ...cam('axis', '10.0.50.12'), mac: 'AC:CC:8E:00:00:02' };
+  const wait = (key: string) => ({ key, ok: false, error: { code: 'activation_cleartext' as const } });
+  const ok = (key: string) => ({ key, ok: true, error: null });
+  // Activation : seules les caméras en attente restent, le dialogue avec elles.
+  expect(pendingAfterRun({ kind: 'activate' }, [wait(a.mac), ok(b.mac)], [a, b])).toEqual([a]);
+  expect(pendingAfterRun({ kind: 'activate' }, [ok(a.mac), ok(b.mac)], [a, b])).toEqual([]);
+  // Une autre action ne demande jamais de confirmation.
+  expect(pendingAfterRun({ kind: 'network_dhcp' }, [wait(a.mac)], [a])).toEqual([]);
+  // Une confirmation retire sa seule caméra, quel que soit son résultat.
+  expect(pendingAfterConfirm([a, b], a)).toEqual([b]);
+  expect(pendingAfterConfirm([b], b)).toEqual([]);
 });
 
 test('envoi en clair confirmé : une seule caméra, le drapeau pour elle seule', async () => {

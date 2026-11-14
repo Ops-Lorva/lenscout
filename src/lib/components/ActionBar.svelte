@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { activateCleartext, applyAction, canActivate, cleartextPending, dialogAfterSelection, canAct, canChangeIp, canBatchIp, clearResults, mergeResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
+  import { activateCleartext, applyAction, canActivate, pendingAfterConfirm, pendingAfterRun, dialogAfterSelection, canAct, canChangeIp, canBatchIp, clearResults, mergeResults, setResults, type ActionDto, type ActionResult } from '#lib/api/configure.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { cameraKey, cameras, selectedCameras } from '#lib/stores/cameras.ts';
@@ -61,7 +61,7 @@
     try {
       const results = await applyAction(targets, accountId, action, iface);
       setResults(results);
-      pending = action.kind === 'activate' ? cleartextPending(results, targets) : [];
+      pending = pendingAfterRun(action, results, targets);
       pendingAccount = accountId;
       if (pending.length === 0) open = null;
       if (action.kind === 'network_dhcp' || action.kind === 'network_static') onDone();
@@ -79,7 +79,7 @@
     error = '';
     try {
       mergeResults(await activateCleartext(cam, pendingAccount, iface));
-      pending = pending.filter((c) => c !== cam);
+      pending = pendingAfterConfirm(pending, cam);
       if (pending.length === 0) open = null;
     } catch (e) {
       closeDialog();

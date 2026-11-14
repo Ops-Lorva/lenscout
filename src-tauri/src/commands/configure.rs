@@ -156,7 +156,7 @@ async fn build_context(
         in_use,
         other_ifaces,
         account_network,
-        seen_new: seen.new_keys,
+        seen_states: seen.states,
         neighbours: Arc::new(SystemNeighbours),
     })
 }
