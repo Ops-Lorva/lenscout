@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Camera } from './types';
 import {
-  canApply, cells, conflictMessage, isBlocking, movedIps, opRequest, opsFingerprint, runSteps, summarize,
-  type OpRow, type OpsPreview, type StepResult,
+  canApply, cells, conflictMessage, credsRequest, credSummarize, isBlocking, isCredResult, movedIps, opRequest, opsFingerprint,
+  runSteps, summarize,
+  type CredResult, type OpRow, type OpsPreview, type StepResult,
 } from './ops';
 
 const row = (over: Partial<OpRow> = {}): OpRow => ({
@@ -26,17 +27,14 @@ describe('opérations', () => {
     expect(isBlocking({ code: 'ip_in_use', ip: '10.0.50.12', mac: null })).toBe(true);
   });
 
-  it('Appliquer exige un plan gardé, sans conflit bloquant, et le nombre de caméras tapé', () => {
+  it('Appliquer exige un plan gardé, sans conflit bloquant, rien en cours', () => {
     const p = preview(Array.from({ length: 37 }, () => row()));
-    expect(canApply(p, '37', false)).toBe(true);
-    expect(canApply(p, ' 37 ', false)).toBe(true);
-    expect(canApply(p, '36', false)).toBe(false);
-    expect(canApply(p, '', false)).toBe(false);
-    expect(canApply(p, '37', true)).toBe(false);
-    expect(canApply(null, '37', false)).toBe(false);
-    expect(canApply(preview([row()], null), '1', false)).toBe(false);
-    expect(canApply(preview([row({ conflicts: [{ code: 'unreadable' }] })]), '1', false)).toBe(false);
-    expect(canApply(preview([row({ conflicts: [{ code: 'outside_account', network: 'x' }] })]), '1', false)).toBe(true);
+    expect(canApply(p, false)).toBe(true);
+    expect(canApply(p, true)).toBe(false);
+    expect(canApply(null, false)).toBe(false);
+    expect(canApply(preview([row()], null), false)).toBe(false);
+    expect(canApply(preview([row({ conflicts: [{ code: 'unreadable' }] })]), false)).toBe(false);
+    expect(canApply(preview([row({ conflicts: [{ code: 'outside_account', network: 'x' }] })]), false)).toBe(true);
   });
 
   it('chaque conflit a son message et ses valeurs', () => {
@@ -118,5 +116,37 @@ describe('opérations', () => {
   it('nouvelle IP par clé, pour les seules lignes réussies d’un changement d’adresse', () => {
     const rows = [row({ key: 'A', after: { ip: '10.0.50.40', mask: 'm', gateway: null, dns: [] } }), row({ key: 'B' }), row({ key: 'C', after: null })];
     expect(movedIps(rows, [ok('A'), ko('B'), ok('C')])).toEqual({ A: '10.0.50.40' });
+  });
+
+  it('« changer les identifiants » : l’aperçu ne porte pas de secret, les secrets partent à part', () => {
+    const f = { kind: 'change_credentials' as const, start: '', mask: '', gateway: '', dns: '', ntp: '', timezone: 'UTC' };
+    expect(opRequest(f)).toEqual({ kind: 'change_credentials' });
+    const req = credsRequest(' root ', 'N3w', [{ login: ' installer ', password: 'old' }, { login: '', password: '' }]);
+    expect(req).toEqual({ kind: 'change_credentials', new_login: 'root', new_password: 'N3w', candidates: [{ login: 'installer', password: 'old' }] });
+    // Un champ d’identifiant qui change invalide l’aperçu via l’empreinte (sans secret dedans).
+    const cams = [{ mac: 'A', ip: '10.0.50.11' }] as Camera[];
+    const base = opsFingerprint(cams, f, 'eth0', 'acc', '1');
+    expect(opsFingerprint(cams, f, 'eth0', 'acc', '1')).toBe(base);
+    expect(opsFingerprint(cams, f, 'eth0', 'acc', '2')).not.toBe(base);
+    expect(base.includes('N3w')).toBe(false);
+  });
+
+  it('un résultat d’identifiants se distingue d’un pas réseau, et le rapport les compte', () => {
+    const posed = (key: string, login: string): CredResult => ({ key, code: 'posed', login });
+    expect(isCredResult(posed('a', 'root'))).toBe(true);
+    expect(isCredResult(ok('b'))).toBe(false);
+    const results: (CredResult | undefined)[] = [
+      posed('a', 'root'),
+      { key: 'b', code: 'already_up_to_date' },
+      { key: 'c', code: 'no_credential' },
+      { key: 'd', code: 'stopped_by_guard' },
+      { key: 'e', code: 'unsupported' },
+      { key: 'f', code: 'unreachable' },
+      { key: 'g', code: 'rejected', detail: '# Error' },
+      undefined,
+    ];
+    expect(credSummarize(results, 9)).toEqual({
+      posed: 1, alreadyUpToDate: 1, noCredential: 1, stopped: 1, unsupported: 1, unreachable: 1, rejected: 1, skipped: 2,
+    });
   });
 });

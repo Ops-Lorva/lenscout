@@ -12,7 +12,12 @@ use lenscout_core::actions::Action;
 use lenscout_core::batch::BatchRequest;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::model::Camera;
-use lenscout_core::ops::{KeepRequest, OpRow, Readback, StepResult, apply_step, plan_keep, plan_renumber, plan_time, read_before, row_action};
+use lenscout_core::ops::{
+    CredGuard, CredResult, KeepRequest, OpRow, Readback, StepResult, apply_step, change_credentials_step, plan_change_credentials,
+    plan_keep, plan_renumber, plan_time, read_before, row_action,
+};
+use lenscout_core::secret::Secret;
+use lenscout_core::transport::Credentials;
 use lenscout_core::vapix::NetworkSettings;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -28,6 +33,10 @@ const READ_PARALLEL: usize = 8;
 const READBACK: Readback = Readback { first: Duration::from_secs(3), tries: 4, pause: Duration::from_secs(2) };
 /// Délai d'une requête de relecture : la caméra est sur le réseau proche.
 const READBACK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Garde anti-verrouillage de « Changer les identifiants » : les Axis récentes
+/// bloquent un compte après ~5 échecs rapprochés. Délai entre deux essais sur
+/// une caméra, et arrêt après ce nombre d'échecs 401. // À VÉRIFIER sur vraie Axis
+const CRED_GUARD: CredGuard = CredGuard { delay: Duration::from_secs(1), max_failures: 4 };
 
 /// Ce que le front peut demander : des adresses déjà typées. `keep_ip` : un
 /// champ `null` est inchangé.
@@ -51,13 +60,51 @@ pub enum OpRequestDto {
         ntp_servers: Vec<String>,
         timezone: String,
     },
+    /// Changer les identifiants : le nouvel identifiant visé, et une liste de
+    /// couples à essayer. Les mots de passe (`Secret`) ne sont jamais
+    /// resérialisés : ils ne vivent qu'en mémoire, le temps de l'opération.
+    ChangeCredentials {
+        new_login: String,
+        new_password: Secret,
+        #[serde(default)]
+        candidates: Vec<CredentialPairDto>,
+    },
+}
+
+/// Un couple identifiant / mot de passe à essayer. `Secret` : jamais écrit sur
+/// disque ni dans le trousseau, jamais resérialisé.
+#[derive(Deserialize, Debug)]
+pub struct CredentialPairDto {
+    pub login: String,
+    pub password: Secret,
+}
+
+impl From<CredentialPairDto> for Credentials {
+    fn from(d: CredentialPairDto) -> Self {
+        Credentials { login: d.login, password: d.password }
+    }
+}
+
+/// Le plan gardé d'une opération, selon sa nature : des actions réseau/heure
+/// (une par caméra), ou le changement d'identifiants (nouvel identifiant visé
+/// et couples à essayer, communs à toutes les caméras).
+enum Plan {
+    Actions(Vec<Action>),
+    Credentials { new: Credentials, candidates: Vec<Credentials> },
+}
+
+/// Une ligne prise (`claim`) : son action réseau/heure, ou le plan
+/// d'identifiants à lui appliquer.
+enum Claimed {
+    Action { cam: Camera, action: Action, planned: Vec<Ipv4Addr> },
+    Credentials { cam: Camera, new: Credentials, candidates: Vec<Credentials> },
 }
 
 /// Une opération validée, telle que Rust l'a calculée : c'est elle, et elle
 /// seule, que `cmd_ops_step` applique, une ligne à la fois et une seule fois.
 struct StoredOp {
     cameras: Vec<Camera>,
-    actions: Vec<Action>,
+    plan: Plan,
     done: Vec<bool>,
     iface: String,
     /// Dernier usage : l'opération expire après `PREVIEW_TTL` sans pas (une
@@ -69,13 +116,16 @@ impl StoredOp {
     /// Les IP fixes du plan : l'IP temporaire d'une caméra hors sous-réseau ne
     /// doit pas heurter celle d'une caméra déjà déplacée.
     fn planned_ips(&self) -> Vec<Ipv4Addr> {
-        self.actions
-            .iter()
-            .filter_map(|a| match a {
-                Action::Network(NetworkSettings::Static { ip, .. }) => Some(*ip),
-                _ => None,
-            })
-            .collect()
+        match &self.plan {
+            Plan::Actions(actions) => actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Network(NetworkSettings::Static { ip, .. }) => Some(*ip),
+                    _ => None,
+                })
+                .collect(),
+            Plan::Credentials { .. } => vec![],
+        }
     }
 }
 
@@ -114,7 +164,7 @@ impl OpsStore {
         iface: &str,
         scan_iface: Option<&str>,
         now: Instant,
-    ) -> Result<(Camera, Action, Vec<Ipv4Addr>), String> {
+    ) -> Result<Claimed, String> {
         let mut m = self.0.lock().unwrap();
         let op = m.get_mut(id).ok_or("preview_unknown")?;
         if now.saturating_duration_since(op.touched) > PREVIEW_TTL || op.iface != iface || scan_iface != Some(op.iface.as_str()) {
@@ -126,7 +176,11 @@ impl OpsStore {
         }
         op.done[index] = true;
         op.touched = now;
-        let out = (op.cameras[index].clone(), op.actions[index].clone(), op.planned_ips());
+        let cam = op.cameras[index].clone();
+        let out = match &op.plan {
+            Plan::Actions(actions) => Claimed::Action { cam, action: actions[index].clone(), planned: op.planned_ips() },
+            Plan::Credentials { new, candidates } => Claimed::Credentials { cam, new: new.clone(), candidates: candidates.clone() },
+        };
         if op.done.iter().all(|d| *d) {
             m.remove(id);
         }
@@ -178,29 +232,46 @@ pub async fn cmd_ops_preview(
     let ctx = build_context(iface.clone(), &selection, &scan, &journal.0, &join).await.map_err(code)?;
     let own: Vec<Ipv4Addr> = selection.iter().map(|c| c.ip).collect();
     let fill = fill_for(&accounts, Some(&account_id), &own);
-    let (rows, time) = match req {
+    // Chaque branche rend l'aperçu et, s'il n'est pas bloqué, le plan à garder.
+    let (rows, plan): (Vec<OpRow>, Option<Plan>) = match req {
         OpRequestDto::Time { ntp_servers, timezone } => {
             let Action::Time(t) = to_action(ActionDto::Time { ntp_servers, timezone }).map_err(code)? else {
                 return Err(code("bad_action".into()));
             };
-            (plan_time(&selection)?, Some(t))
+            let rows = plan_time(&selection)?;
+            let plan = actions_of(&rows, Some(&t)).map(Plan::Actions);
+            (rows, plan)
         }
         OpRequestDto::KeepIp { mask, gateway, dns } => {
             let req = KeepRequest { mask, gateway, dns };
             let before = read_before(&ctx, &selection, &creds, READ_PARALLEL).await;
-            (plan_keep(&selection, &before, &req, fill.as_ref())?, None)
+            let rows = plan_keep(&selection, &before, &req, fill.as_ref())?;
+            let plan = actions_of(&rows, None).map(Plan::Actions);
+            (rows, plan)
         }
         OpRequestDto::Renumber { start, mask, gateway, dns } => {
             let req = BatchRequest { start, mask, gateway, dns };
             let (primary, host) = host_addresses(iface, &join).await.map_err(code)?;
             let excluded = reserved_for(&accounts, Some(&account_id), &own);
             let before = read_before(&ctx, &selection, &creds, READ_PARALLEL).await;
-            (plan_renumber(&selection, &before, &req, &others, &[primary, host.ip], &excluded, fill.as_ref())?, None)
+            let rows = plan_renumber(&selection, &before, &req, &others, &[primary, host.ip], &excluded, fill.as_ref())?;
+            let plan = actions_of(&rows, None).map(Plan::Actions);
+            (rows, plan)
+        }
+        OpRequestDto::ChangeCredentials { new_login, new_password, candidates } => {
+            // L'aperçu N'ESSAIE AUCUN identifiant (pour ne pas doubler le risque
+            // de blocage) : il n'annonce que l'intention, le test se fait à
+            // l'application. Les mots de passe ne vivent que dans le plan gardé.
+            let rows = plan_change_credentials(&selection)?;
+            let new = Credentials { login: new_login, password: new_password };
+            let candidates: Vec<Credentials> = candidates.into_iter().map(Into::into).collect();
+            let plan = (!rows.iter().any(OpRow::blocked)).then_some(Plan::Credentials { new, candidates });
+            (rows, plan)
         }
     };
-    let id = actions_of(&rows, time.as_ref()).map(|actions| {
-        let done = vec![false; actions.len()];
-        store.put(StoredOp { cameras: selection, actions, done, iface: ctx.iface.name.clone(), touched: Instant::now() })
+    let id = plan.map(|plan| {
+        let done = vec![false; rows.len()];
+        store.put(StoredOp { cameras: selection, plan, done, iface: ctx.iface.name.clone(), touched: Instant::now() })
     });
     Ok(OpsPreview { id, rows })
 }
@@ -226,7 +297,11 @@ pub async fn cmd_ops_step(
     let cam = store.camera_of(&op_id, index)?;
     let creds = credentials_for(&accounts, &account_id)?;
     let mut ctx = build_context(iface, std::slice::from_ref(&cam), &scan, &journal.0, &join).await?;
-    let (cam, action, planned) = store.claim(&op_id, index, &ctx.iface.name, scan.seen().iface.as_deref(), Instant::now())?;
+    let Claimed::Action { cam, action, planned } = store.claim(&op_id, index, &ctx.iface.name, scan.seen().iface.as_deref(), Instant::now())?
+    else {
+        // Opération de changement d'identifiants : ce n'est pas la bonne commande.
+        return Err("bad_action".into());
+    };
     ctx.in_use.extend(planned);
     let check = ReqwestCameraHttp::new(READBACK_TIMEOUT);
     let step = apply_step(&ctx, &cam, &creds, &action, &check, READBACK).await;
@@ -234,6 +309,38 @@ pub async fn cmd_ops_step(
         remember_cameras(&accounts, &account_id, vec![KnownCamera::of(&cam, *ip, unix_now())], false);
     }
     Ok(step)
+}
+
+/// Applique la ligne `index` d'une opération « Changer les identifiants » :
+/// essaie le nouvel identifiant visé, puis le compte, puis les couples de la
+/// liste (garde anti-verrouillage), et pose le nouvel identifiant au premier
+/// qui authentifie. Le rapport ne porte jamais de mot de passe. Erreurs comme
+/// `cmd_ops_step` ; `bad_action` si l'opération n'est pas un changement
+/// d'identifiants.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_ops_creds_step(
+    op_id: String,
+    index: usize,
+    account_id: String,
+    iface: String,
+    store: State<'_, OpsStore>,
+    accounts: State<'_, Mutex<AccountBook>>,
+    scan: State<'_, ScanState>,
+    journal: State<'_, TempIpJournal>,
+    join: State<'_, super::join::JoinState>,
+) -> Result<CredResult, String> {
+    let cam = store.camera_of(&op_id, index)?;
+    // Le compte sélectionné sert d'identifiant à essayer (en premier après le
+    // nouvel identifiant visé) ; s'il n'a pas de secret, on s'en passe.
+    let account = credentials_for(&accounts, &account_id).ok();
+    let ctx = build_context(iface, std::slice::from_ref(&cam), &scan, &journal.0, &join).await?;
+    let Claimed::Credentials { cam, new, candidates } =
+        store.claim(&op_id, index, &ctx.iface.name, scan.seen().iface.as_deref(), Instant::now())?
+    else {
+        return Err("bad_action".into());
+    };
+    Ok(change_credentials_step(&ctx, &cam, account.as_ref(), &candidates, &new, CRED_GUARD).await)
 }
 
 /// Arrêt ou abandon : l'opération est oubliée, ses lignes restantes ne
@@ -273,10 +380,18 @@ mod tests {
     fn stored(now: Instant) -> StoredOp {
         StoredOp {
             cameras: vec![camera(11), camera(12)],
-            actions: vec![to("10.0.50.21"), to("10.0.50.22")],
+            plan: Plan::Actions(vec![to("10.0.50.21"), to("10.0.50.22")]),
             done: vec![false, false],
             iface: "eth0".into(),
             touched: now,
+        }
+    }
+
+    /// L'action d'une ligne prise ; échoue si c'est un plan d'identifiants.
+    fn action_of(claimed: Claimed) -> (Camera, Action, Vec<Ipv4Addr>) {
+        match claimed {
+            Claimed::Action { cam, action, planned } => (cam, action, planned),
+            Claimed::Credentials { .. } => panic!("plan d'identifiants inattendu"),
         }
     }
 
@@ -285,7 +400,7 @@ mod tests {
         let store = OpsStore::default();
         let now = Instant::now();
         let id = store.put(stored(now));
-        let (cam, action, planned) = store.claim(&id, 1, "eth0", Some("eth0"), now).unwrap();
+        let (cam, action, planned) = action_of(store.claim(&id, 1, "eth0", Some("eth0"), now).unwrap());
         assert_eq!((cam.ip.to_string(), action), ("10.0.50.12".to_string(), to("10.0.50.22")));
         assert_eq!(planned.len(), 2);
         assert_eq!(store.claim(&id, 1, "eth0", Some("eth0"), now).err().as_deref(), Some("bad_action"));
@@ -341,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn les_trois_operations_se_lisent() {
+    fn les_operations_se_lisent() {
         let keep: OpRequestDto = serde_json::from_str(r#"{"kind":"keep_ip","mask":"255.255.254.0","gateway":null,"dns":null}"#).unwrap();
         assert!(matches!(keep, OpRequestDto::KeepIp { mask: Some(_), gateway: None, dns: None }));
         let ren: OpRequestDto =
@@ -350,5 +465,44 @@ mod tests {
         let time: OpRequestDto = serde_json::from_str(r#"{"kind":"time","timezone":"Europe/Paris"}"#).unwrap();
         assert!(matches!(time, OpRequestDto::Time { .. }));
         assert!(serde_json::from_str::<OpRequestDto>(r#"{"kind":"keep_ip","mask":"pas-une-ip"}"#).is_err());
+        // Changer les identifiants : nouvel identifiant visé + couples à essayer.
+        let creds: OpRequestDto = serde_json::from_str(
+            r#"{"kind":"change_credentials","new_login":"root","new_password":"N3w","candidates":[{"login":"installer","password":"old"}]}"#,
+        )
+        .unwrap();
+        let OpRequestDto::ChangeCredentials { new_login, new_password, candidates } = creds else { panic!() };
+        assert_eq!((new_login.as_str(), new_password.expose()), ("root", "N3w"));
+        assert_eq!((candidates[0].login.as_str(), candidates[0].password.expose()), ("installer", "old"));
+        // La liste des couples est facultative.
+        assert!(serde_json::from_str::<OpRequestDto>(r#"{"kind":"change_credentials","new_login":"root","new_password":"x"}"#).is_ok());
+    }
+
+    /// Une opération « changer les identifiants » se garde comme un plan
+    /// d'identifiants, et `cmd_ops_step` (action) la refuse.
+    #[test]
+    fn une_operation_d_identifiants_se_prend_comme_telle() {
+        let store = OpsStore::default();
+        let now = Instant::now();
+        let op = StoredOp {
+            cameras: vec![camera(11)],
+            plan: Plan::Credentials {
+                new: Credentials { login: "root".into(), password: Secret::new("N3w".into()) },
+                candidates: vec![Credentials { login: "installer".into(), password: Secret::new("old".into()) }],
+            },
+            done: vec![false],
+            iface: "eth0".into(),
+            touched: now,
+        };
+        let id = store.put(op);
+        // Pas d'IP fixe dans ce plan : rien à réserver.
+        let claimed = store.claim(&id, 0, "eth0", Some("eth0"), now).unwrap();
+        match claimed {
+            Claimed::Credentials { cam, new, candidates } => {
+                assert_eq!(cam.ip.to_string(), "10.0.50.11");
+                assert_eq!(new.login, "root");
+                assert_eq!(candidates.len(), 1);
+            }
+            Claimed::Action { .. } => panic!("plan d'identifiants attendu"),
+        }
     }
 }

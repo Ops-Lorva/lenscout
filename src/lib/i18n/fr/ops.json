@@ -2,7 +2,8 @@
   "kind": {
     "keep_ip": "Garder les IP",
     "renumber": "Renuméroter",
-    "time": "Mettre l'heure"
+    "time": "Mettre l'heure",
+    "change_credentials": "Changer les identifiants"
   },
   "step": {
     "choose": "Choisir",
@@ -23,17 +24,35 @@
   },
   "preview": "Aperçu",
   "blocked": "{count, plural, one {# ligne bloque} other {# lignes bloquent}} : décochez ou corrigez",
-  "confirm": "Tapez {count} pour confirmer",
+  "willApply": "{count, plural, one {Appliquer à # caméra} other {Appliquer à # caméras}}",
+  "confirmApply": "Confirmer",
+  "confirmHint": "Cliquez à nouveau pour confirmer",
   "apply": "Appliquer",
   "stop": "Arrêter",
   "stopping": "Arrêt après la caméra en cours",
   "progress": "{done} / {total}",
   "report": "{ok, plural, one {# réussie} other {# réussies}} · {failed, plural, one {# échouée} other {# échouées}} · {unreachable, plural, one {# injoignable} other {# injoignables}} après changement",
+  "credReport": "{posed} posées · {alreadyUpToDate} déjà à jour · {noCredential} sans identifiant · {stopped} arrêtées (garde-fou) · {unsupported} non gérées · {unreachable} injoignables · {rejected} refusées",
   "skipped": "{count, plural, one {# non faite} other {# non faites}}",
   "state": {
     "ok": "OK",
     "unreachable": "Injoignable à la nouvelle adresse",
     "running": "En cours"
+  },
+  "cred": {
+    "newLogin": "Nouvel utilisateur",
+    "newPassword": "Nouveau mot de passe",
+    "tryHint": "Mots de passe actuels à essayer (jamais enregistrés)",
+    "login": "Utilisateur",
+    "password": "Mot de passe",
+    "addPair": "Ajouter un couple",
+    "removePair": "Retirer",
+    "toTry": "À essayer",
+    "posed": "Posé (via {login})",
+    "already": "Déjà à jour",
+    "none": "Aucun identifiant trouvé",
+    "stopped": "Arrêté (risque de blocage)",
+    "unreachable": "Injoignable"
   },
   "conflict": {
     "unsupported": "Marque non prise en charge",

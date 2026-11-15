@@ -9,8 +9,9 @@
   import { firstFit, type FreeRange } from '#lib/api/freeIps.ts';
   import { activeAddress, dnsFollowing, INITIAL_PREFILL, joined, prefillFields } from '#lib/api/net.ts';
   import {
-    canApply, cells, conflictMessage, isBlocking, movedIps, opRequest, opsClose, opsFingerprint, opsPreview, opsStep, runSteps, summarize,
-    type OpFields, type OpKind, type OpRow, type OpsPreview, type StepResult,
+    canApply, cells, conflictMessage, credsRequest, credSummarize, isBlocking, isCredResult, movedIps, opRequest, opsClose,
+    opsCredsStep, opsFingerprint, opsPreview, opsStep, runSteps, summarize,
+    type AnyResult, type CredResult, type OpFields, type OpKind, type OpRequest, type OpRow, type OpsPreview, type StepResult,
   } from '#lib/api/ops.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { cameraKey, cameras, markAddressing, selection } from '#lib/stores/cameras.ts';
@@ -21,7 +22,7 @@
   // Flux sur une page : choisir (caméras cochées, partagées avec Réseau, et
   // l'opération), aperçu calculé par Rust, confirmation par le nombre de
   // caméras tapé, application caméra par caméra avec Arrêter, puis rapport.
-  const KINDS: OpKind[] = ['keep_ip', 'renumber', 'time'];
+  const KINDS: OpKind[] = ['keep_ip', 'renumber', 'time', 'change_credentials'];
   const zones = timeZones();
 
   let kind = $state<OpKind>('keep_ip');
@@ -35,14 +36,31 @@
   let account = $state<Account | null>(null);
   let busy = $state(false);
   let error = $state<{ key: string; values?: Record<string, string | number> } | null>(null);
-  let typed = $state('');
+
+  // « Changer les identifiants » : le nouvel identifiant visé et les couples à
+  // essayer. Ces mots de passe ne vivent qu'ici, en mémoire : jamais
+  // enregistrés, effacés à la fin et en quittant l'écran. `credsVersion`
+  // invalide l'aperçu dès qu'un champ change, sans mettre de secret dans
+  // l'empreinte.
+  let newLogin = $state('');
+  let newPassword = $state('');
+  let pairs = $state<{ login: string; password: string }[]>([]);
+  let credsVersion = $state(0);
+  const bump = () => (credsVersion += 1);
+  const addPair = () => (pairs = [...pairs, { login: '', password: '' }]);
+  const removePair = (i: number) => { pairs = pairs.filter((_, j) => j !== i); bump(); };
+  function clearCredentials() {
+    newPassword = '';
+    pairs = [];
+    bump();
+  }
 
   const iface = $derived($scanIface);
   // Ordre affiché de Réseau (IP croissante) : celui du plan.
   const targets = $derived($cameras.filter((c) => $selection.has(cameraKey(c))));
   const others = $derived($cameras.filter((c) => !$selection.has(cameraKey(c))));
   const fields = $derived<OpFields>({ kind, start, mask, gateway, dns, ntp, timezone });
-  const fingerprint = $derived(opsFingerprint(targets, fields, iface, accountId));
+  const fingerprint = $derived(opsFingerprint(targets, fields, iface, accountId, kind === 'change_credentials' ? String(credsVersion) : ''));
 
   // L'aperçu garde l'empreinte de ce qui l'a produit et les caméras visées.
   let preview = $state<{ data: OpsPreview; fingerprint: string; cams: Camera[]; kind: OpKind } | null>(null);
@@ -50,12 +68,19 @@
   const blocked = $derived(shown ? shown.data.rows.filter((r) => r.conflicts.some(isBlocking)).length : 0);
 
   // Une application en cours ou finie : figée, un rescan de Réseau ne la retire pas.
-  let run = $state<{ id: string; rows: OpRow[]; cams: Camera[]; kind: OpKind; results: (StepResult | undefined)[]; current: number; stopping: boolean; done: boolean } | null>(null);
+  let run = $state<{ id: string; rows: OpRow[]; cams: Camera[]; kind: OpKind; results: (AnyResult | undefined)[]; current: number; stopping: boolean; done: boolean } | null>(null);
   let stopFlag = false;
+  // Confirmation en deux clics (comme Supprimer dans Comptes) : le premier clic
+  // arme, le second applique.
+  let confirming = $state(false);
   const running = $derived(!!run && !run.done);
-  const table = $derived(run ?? (shown ? { rows: shown.data.rows, cams: shown.cams, kind: shown.kind, results: [] as (StepResult | undefined)[], current: -1 } : null));
-  const report = $derived(run?.done ? summarize(run.results, run.rows.length) : null);
-  const applyOk = $derived(canApply(shown?.data ?? null, typed, running));
+  const table = $derived(run ?? (shown ? { rows: shown.data.rows, cams: shown.cams, kind: shown.kind, results: [] as (AnyResult | undefined)[], current: -1 } : null));
+  const report = $derived(
+    !run?.done ? null : run.kind === 'change_credentials' ? credSummarize(run.results as (CredResult | undefined)[], run.rows.length) : summarize(run.results as (StepResult | undefined)[], run.rows.length),
+  );
+  const applyOk = $derived(canApply(shown?.data ?? null, running));
+  // Colonnes réseau seulement pour « garder les IP » et « renuméroter ».
+  const hasNetCols = (k: OpKind) => k === 'keep_ip' || k === 'renumber';
 
   // Raccourci de Réseau (« IP en lot ») : l'opération demandée, la sélection est déjà partagée.
   $effect(() => {
@@ -103,10 +128,14 @@
     kind = k;
     run = null;
     error = null;
+    confirming = false;
     // Les champs d'une opération ne valent pas pour l'autre : vide = inchangé, pour garder les IP.
     start = mask = gateway = dns = '';
     touched.mask = touched.gateway = false;
     dnsTouched = false;
+    // Les identifiants ne traînent pas d'une opération à l'autre.
+    clearCredentials();
+    newLogin = '';
   }
 
   let fill = $state<NetworkFill | null>(null);
@@ -145,12 +174,15 @@
     error = null;
     preview = null;
     run = null;
-    typed = '';
+    confirming = false;
     const fp = fingerprint;
     const cams = targets;
     const k = kind;
+    // Les secrets partent à part : l'aperçu n'essaie rien, mais le plan gardé
+    // par Rust doit recevoir le nouvel identifiant et les couples à essayer.
+    const req: OpRequest = k === 'change_credentials' ? credsRequest(newLogin, newPassword, pairs) : (opRequest(fields) as OpRequest);
     try {
-      const data = await opsPreview(cams, others, opRequest(fields), iface, accountId);
+      const data = await opsPreview(cams, others, req, iface, accountId);
       preview = { data, fingerprint: fp, cams, kind: k };
     } catch (e) {
       error = batchErrorMessage(e);
@@ -159,23 +191,36 @@
     }
   }
 
+  // Deux clics : le premier arme, le second applique.
+  function confirmApply() {
+    if (!applyOk) return;
+    if (!confirming) {
+      confirming = true;
+      return;
+    }
+    confirming = false;
+    void apply();
+  }
+
   async function apply() {
     if (!shown?.data.id || !applyOk) return;
     const id = shown.data.id;
     const forAccount = accountId;
     const via = iface;
-    run = { id, rows: shown.data.rows, cams: shown.cams, kind: shown.kind, results: [], current: -1, stopping: false, done: false };
+    const k = shown.kind;
+    run = { id, rows: shown.data.rows, cams: shown.cams, kind: k, results: [], current: -1, stopping: false, done: false };
     preview = null;
-    typed = '';
     error = null;
     stopFlag = false;
     const r = run;
+    const step = (i: number): Promise<AnyResult> =>
+      k === 'change_credentials' ? opsCredsStep(id, i, forAccount, via) : opsStep(id, i, forAccount, via);
     try {
       await runSteps(
         r.rows.length,
         (i) => {
           r.current = i;
-          return opsStep(id, i, forAccount, via);
+          return step(i);
         },
         () => stopFlag,
         (i, res) => (r.results[i] = res),
@@ -190,13 +235,19 @@
     }
   }
 
-  // Pastilles de Réseau, adressage posé, mémoire du compte (Rust) ; puis rescan de Réseau.
+  // Pastilles de Réseau, adressage posé, mémoire du compte (Rust) ; puis rescan
+  // de Réseau. « Changer les identifiants » ne touche pas l'adressage ; ses
+  // mots de passe sont effacés à la fin.
   function finish(r: NonNullable<typeof run>) {
-    const done = r.results.filter((x): x is StepResult => !!x);
+    if (r.kind === 'change_credentials') {
+      clearCredentials();
+      return;
+    }
+    const done = r.results.filter((x): x is StepResult => !!x && !isCredResult(x));
     clearResults();
     setResults(done);
     if (r.kind !== 'time' && done.some((x) => x.ok)) {
-      markAddressing(done, 'static', movedIps(r.rows, r.results));
+      markAddressing(done, 'static', movedIps(r.rows, r.results as (StepResult | undefined)[]));
       ipsChanged.update((n) => n + 1);
     }
   }
@@ -206,9 +257,15 @@
     if (run) run.stopping = true;
   }
 
-  function stateOf(i: number): { text: string; cls: string } {
+  function stateOf(i: number, r: OpRow): { text: string; cls: string } {
     const res = table?.results[i];
-    if (!res) return { text: table?.current === i ? $_('ops.state.running') : '', cls: '' };
+    if (!res) {
+      if (table?.current === i) return { text: $_('ops.state.running'), cls: '' };
+      // Avant l'application, « changer les identifiants » annonce son intention.
+      if (table?.kind === 'change_credentials' && !r.conflicts.some(isBlocking)) return { text: $_('ops.cred.toTry'), cls: 'dim-t' };
+      return { text: '', cls: '' };
+    }
+    if (isCredResult(res)) return credState(res);
     if (!res.ok) {
       const m = resultMessage(res);
       return { text: m ? $_(m.key, { values: m.values }) : '', cls: 'bad' };
@@ -216,13 +273,34 @@
     return res.reachable === false ? { text: $_('ops.state.unreachable'), cls: 'warn' } : { text: $_('ops.state.ok'), cls: 'ok' };
   }
 
+  // Sortie d'une caméra pour « changer les identifiants ». Le rapport ne montre
+  // que l'utilisateur qui a marché, jamais le mot de passe.
+  function credState(res: CredResult): { text: string; cls: string } {
+    switch (res.code) {
+      case 'posed': return { text: $_('ops.cred.posed', { values: { login: res.login } }), cls: 'ok' };
+      case 'already_up_to_date': return { text: $_('ops.cred.already'), cls: 'ok' };
+      case 'no_credential': return { text: $_('ops.cred.none'), cls: 'bad' };
+      case 'stopped_by_guard': return { text: $_('ops.cred.stopped'), cls: 'warn' };
+      case 'unsupported': return { text: $_('ops.conflict.unsupported'), cls: 'bad' };
+      case 'unreachable': return { text: $_('ops.cred.unreachable'), cls: 'bad' };
+      case 'rejected': return { text: res.detail, cls: 'bad' };
+    }
+  }
+
   const ready = $derived(
-    !busy && !running && !!iface && !!accountId && targets.length > 0 && (kind !== 'renumber' || (start.trim() !== '' && mask.trim() !== '')),
+    !busy && !running && !!iface && !!accountId && targets.length > 0 &&
+      (kind === 'renumber'
+        ? start.trim() !== '' && mask.trim() !== ''
+        : kind === 'change_credentials'
+          ? newLogin.trim() !== '' && newPassword !== ''
+          : true),
   );
 
   onMount(() => () => {
-    // L'écran reste monté ; si jamais il part, plus rien ne doit suivre.
+    // L'écran reste monté ; si jamais il part, plus rien ne doit suivre, et les
+    // mots de passe essayés ne restent pas en mémoire.
     stopFlag = true;
+    clearCredentials();
   });
 </script>
 
@@ -248,15 +326,31 @@
       {#if fill?.almost_full}<span class="note warn">{$_('batch.almostFull', { values: { free: fill.free } })}</span>{/if}
       <label for="o-start">{$_('batch.start')}</label><input id="o-start" type="text" bind:value={start} inputmode="decimal" autocomplete="off" />
     {/if}
-    {#if kind !== 'time'}
+    {#if hasNetCols(kind)}
       {@const ph = kind === 'keep_ip' ? $_('ops.unchanged') : ''}
       <label for="o-mask">{$_('configure.mask')}</label><input id="o-mask" type="text" bind:value={mask} placeholder={ph} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />
       <label for="o-gw">{$_('configure.gateway')}</label><input id="o-gw" type="text" bind:value={gateway} placeholder={ph} oninput={() => (touched.gateway = true)} inputmode="decimal" autocomplete="off" />
       <label for="o-dns">{$_('configure.dns')}</label><input id="o-dns" class="m" type="text" bind:value={dns} placeholder={ph} oninput={() => (dnsTouched = true)} autocomplete="off" />
-    {:else}
+    {:else if kind === 'time'}
       <label for="o-ntp">{$_('configure.ntp')}</label><input id="o-ntp" class="m" type="text" bind:value={ntp} autocomplete="off" spellcheck="false" />
       <label for="o-tz">{$_('configure.timezone')}</label>
       <select id="o-tz" bind:value={timezone}>{#each zones as z}<option value={z}>{z}</option>{/each}</select>
+    {:else}
+      <label for="o-nl">{$_('ops.cred.newLogin')}</label>
+      <input id="o-nl" type="text" bind:value={newLogin} oninput={bump} autocomplete="off" spellcheck="false" />
+      <label for="o-np">{$_('ops.cred.newPassword')}</label>
+      <input id="o-np" type="password" bind:value={newPassword} oninput={bump} autocomplete="new-password" />
+      <span class="note">{$_('ops.cred.tryHint')}</span>
+      <div class="pairs">
+        {#each pairs as p, i (i)}
+          <div class="pair">
+            <input type="text" placeholder={$_('ops.cred.login')} bind:value={p.login} oninput={bump} autocomplete="off" spellcheck="false" />
+            <input type="password" placeholder={$_('ops.cred.password')} bind:value={p.password} oninput={bump} autocomplete="off" />
+            <button class="mini" type="button" onclick={() => removePair(i)}>{$_('ops.cred.removePair')}</button>
+          </div>
+        {/each}
+        <button class="mini" type="button" onclick={addPair}>{$_('ops.cred.addPair')}</button>
+      </div>
     {/if}
   </div>
   <div class="scroll ptable list">
@@ -301,7 +395,7 @@
           <tr>
             <th>{$_('ops.col.camera')}</th>
             <th>{$_('ops.col.ip')}</th>
-            {#if table.kind !== 'time'}
+            {#if hasNetCols(table.kind)}
               <th>{$_('ops.col.mask')}</th>
               <th>{$_('ops.col.gateway')}</th>
               <th>{$_('ops.col.dns')}</th>
@@ -312,10 +406,10 @@
         <tbody>
           {#each table.rows as r, i (r.key)}
             {@const cl = cells(r)}
-            {@const st = stateOf(i)}
+            {@const st = stateOf(i, r)}
             <tr class:cur={table.current === i}>
               <td class="grow" title={cameraName(table.cams[i])}>{cameraName(table.cams[i])}</td>
-              {#each table.kind === 'time' ? [cl.ip] : [cl.ip, cl.mask, cl.gateway, cl.dns] as c}
+              {#each hasNetCols(table.kind) ? [cl.ip, cl.mask, cl.gateway, cl.dns] : [cl.ip] as c}
                 <td class="mono">
                   {#if c.changed}<span class="dim-t">{c.before ?? '?'}</span> → <b>{c.after || '—'}</b>{:else}{c.before ?? ''}{/if}
                 </td>
@@ -341,9 +435,11 @@
   <section class="step">
     <h4><b>3</b>{$_('ops.step.confirm')}</h4>
     <div class="confirm">
-      <label for="o-typed">{$_('ops.confirm', { values: { count: shown.data.rows.length } })}</label>
-      <input id="o-typed" type="text" bind:value={typed} inputmode="numeric" autocomplete="off" />
-      <button class="btn def" onclick={apply} disabled={!applyOk}>{$_('ops.apply')}</button>
+      <span>{$_('ops.willApply', { values: { count: shown.data.rows.length } })}</span>
+      <button class="btn def" class:danger={confirming} onclick={confirmApply} disabled={!applyOk}>
+        {confirming ? $_('ops.confirmApply') : $_('ops.apply')}
+      </button>
+      {#if confirming}<span class="dim-t">{$_('ops.confirmHint')}</span>{/if}
     </div>
   </section>
 {/if}
@@ -358,7 +454,11 @@
         <button class="btn" onclick={stop} disabled={run.stopping}>{$_('ops.stop')}</button>
         {#if run.stopping}<span class="dim-t">{$_('ops.stopping')}</span>{/if}
       {:else if report}
-        <span>{$_('ops.report', { values: report })}</span>
+        {#if run.kind === 'change_credentials'}
+          <span>{$_('ops.credReport', { values: report })}</span>
+        {:else}
+          <span>{$_('ops.report', { values: report })}</span>
+        {/if}
         {#if report.skipped > 0}<span class="dim-t">{$_('ops.skipped', { values: { count: report.skipped } })}</span>{/if}
       {/if}
     </div>
@@ -383,7 +483,9 @@
   .cf.bad { color: var(--err); }
   tr.cur td { background: var(--sel); }
   .confirm { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }
-  .confirm label { color: var(--text-2); }
-  .confirm input { width: 80px; }
   .res { max-width: none; }
+  /* Couples à essayer : une liste en colonne 2 du formulaire. */
+  .pairs { grid-column: 2; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+  .pair { display: flex; gap: 8px; width: 100%; }
+  .pair input { flex: 1; }
 </style>

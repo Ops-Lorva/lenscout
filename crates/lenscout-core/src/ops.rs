@@ -14,7 +14,7 @@ use crate::actions::{Action, ActionContext, ActionResult, apply};
 use crate::batch::{BatchError, BatchRequest, check_room, plan_rows, usable_mask};
 use crate::model::{Camera, Family};
 use crate::transport::{CameraHttp, Credentials, NetError};
-use crate::vapix::{self, NetConfig, NetworkSettings, VapixError};
+use crate::vapix::{self, AuthOutcome, NetConfig, NetworkSettings, VapixError};
 
 /// Ce qu'une ligne recevra : l'IP fixe et ses réglages.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -358,6 +358,165 @@ pub async fn apply_step(
     StepResult { result, reachable }
 }
 
+/// Garde anti-verrouillage de « Changer les identifiants » : les Axis récents
+/// bloquent un compte après ~5 échecs rapprochés. `delay` espace deux essais
+/// sur une même caméra ; `max_failures` arrête les essais après ce nombre
+/// d'échecs d'authentification (401), même s'il reste des couples à essayer.
+#[derive(Debug, Clone, Copy)]
+pub struct CredGuard {
+    pub delay: Duration,
+    pub max_failures: u32,
+}
+
+/// Sort d'une caméra pour « Changer les identifiants ». Le rapport ne montre
+/// que l'utilisateur qui a marché (`Posed`), jamais un mot de passe. `detail`
+/// de `Rejected` ne vient que de la caméra.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum CredOutcome {
+    /// Nouvel identifiant posé, après authentification par l'utilisateur `login`.
+    Posed { login: String },
+    /// Le nouvel identifiant visé fonctionne déjà : rien n'est posé.
+    AlreadyUpToDate,
+    /// Aucun des identifiants essayés n'a authentifié : rien n'est posé.
+    NoCredential,
+    /// Arrêté par le garde-fou après le nombre max d'échecs (risque de blocage).
+    StoppedByGuard,
+    /// Marque non gérée (Hikvision / autre) : aucun essai.
+    Unsupported,
+    /// Caméra injoignable (réseau, hors sous-réseau, identité non confirmée) :
+    /// rien n'est posé, rien n'a consommé le compteur d'échecs.
+    Unreachable,
+    /// Authentifié, mais la caméra a refusé le changement (`detail` = son texte).
+    Rejected { detail: String },
+}
+
+/// Résultat d'une ligne de « Changer les identifiants » (clé = MAC, sinon IP).
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CredResult {
+    pub key: String,
+    #[serde(flatten)]
+    pub outcome: CredOutcome,
+}
+
+/// Plan de « Changer les identifiants » : Axis seulement, identité vérifiable
+/// (sans quoi on ne saurait pas confirmer la caméra avant d'y envoyer des mots
+/// de passe). Comme « Mettre l'heure », l'aperçu n'écrit rien et surtout
+/// n'essaie AUCUN identifiant : tout essai se fait à l'application, une seule
+/// fois, pour ne pas doubler le risque de blocage.
+pub fn plan_change_credentials(selection: &[Camera]) -> Result<Vec<OpRow>, BatchError> {
+    if selection.is_empty() {
+        return Err(BatchError::NoSelection);
+    }
+    Ok(selection
+        .iter()
+        .map(|cam| {
+            let mut conflicts = Vec::new();
+            if !writable(cam) {
+                conflicts.push(Conflict::Unsupported);
+            }
+            if !has_identity(cam) {
+                conflicts.push(Conflict::MissingIdentity);
+            }
+            OpRow { key: crate::actions::row_key(cam), ip: cam.ip, before: None, after: None, conflicts }
+        })
+        .collect())
+}
+
+/// Deux identifiants (login + mot de passe) sont-ils les mêmes ? Comparaison
+/// en mémoire, jamais journalisée.
+fn same_cred(a: &Credentials, b: &Credentials) -> bool {
+    a.login == b.login && a.password.expose() == b.password.expose()
+}
+
+/// Ordre des identifiants à essayer : le compte sélectionné d'abord, puis les
+/// couples de la liste, dans l'ordre donné. Les doublons et tout couple égal
+/// au nouvel identifiant visé (déjà essayé en premier) sont retirés : un essai
+/// de moins, c'est un pas de moins vers le blocage.
+fn cred_order(account: Option<&Credentials>, list: &[Credentials], new: &Credentials) -> Vec<Credentials> {
+    let mut out: Vec<Credentials> = Vec::new();
+    for c in account.into_iter().chain(list.iter()) {
+        if !same_cred(c, new) && !out.iter().any(|o| same_cred(o, c)) {
+            out.push(c.clone());
+        }
+    }
+    out
+}
+
+/// Change l'identifiant d'une caméra. Dans l'ordre : le nouvel identifiant visé
+/// (déjà à jour → skip), puis le compte sélectionné, puis les couples de la
+/// liste ; au premier qui authentifie, pose le nouvel identifiant. Aucun mot de
+/// passe n'est envoyé avant que l'identité de la caméra ne soit confirmée.
+///
+/// La caméra doit être jointe sans IP temporaire (sous-réseau ou routeur) ;
+/// sinon `Unreachable`. Entre deux essais, `guard.delay` ; après
+/// `guard.max_failures` échecs 401 (et s'il reste des couples), `StoppedByGuard`.
+/// Une erreur réseau rend `Unreachable` sans compter d'échec.
+pub async fn change_credentials_step(
+    ctx: &ActionContext,
+    cam: &Camera,
+    account: Option<&Credentials>,
+    candidates: &[Credentials],
+    new: &Credentials,
+    guard: CredGuard,
+) -> CredResult {
+    CredResult { key: crate::actions::row_key(cam), outcome: change_credentials_inner(ctx, cam, account, candidates, new, guard).await }
+}
+
+async fn change_credentials_inner(
+    ctx: &ActionContext,
+    cam: &Camera,
+    account: Option<&Credentials>,
+    candidates: &[Credentials],
+    new: &Credentials,
+    guard: CredGuard,
+) -> CredOutcome {
+    if cam.family != Family::Axis {
+        return CredOutcome::Unsupported;
+    }
+    // Jointe sans IP temporaire, et identité confirmée AVANT tout mot de passe :
+    // on ne diffuse pas une liste de mots de passe vers un appareil inattendu.
+    if !crate::actions::direct(ctx, cam.ip).await {
+        return CredOutcome::Unreachable;
+    }
+    if crate::actions::verify_identity(ctx, cam, None).await.is_err() {
+        return CredOutcome::Unreachable;
+    }
+    let http = ctx.http.as_ref();
+    let base = cam.base_url();
+    // 1. Le nouvel identifiant visé marche-t-il déjà ?
+    match vapix::try_auth(http, &base, new).await {
+        AuthOutcome::Ok => return CredOutcome::AlreadyUpToDate,
+        AuthOutcome::Unreachable => return CredOutcome::Unreachable,
+        AuthOutcome::Denied => {}
+    }
+    // 2. Le compte, puis la liste, dans l'ordre, dédoublonnés.
+    let order = cred_order(account, candidates, new);
+    let mut failures = 0u32;
+    for (i, cred) in order.iter().enumerate() {
+        tokio::time::sleep(guard.delay).await;
+        match vapix::try_auth(http, &base, cred).await {
+            AuthOutcome::Ok => {
+                return match vapix::set_credentials(http, &base, cred, new).await {
+                    Ok(()) => CredOutcome::Posed { login: cred.login.clone() },
+                    Err(VapixError::Rejected(detail)) => CredOutcome::Rejected { detail },
+                    // Écriture sans réponse : la caméra ne change pas d'adresse,
+                    // on ne prétend pas avoir posé l'identifiant.
+                    Err(_) => CredOutcome::Unreachable,
+                };
+            }
+            AuthOutcome::Denied => {
+                failures += 1;
+                if failures >= guard.max_failures && i + 1 < order.len() {
+                    return CredOutcome::StoppedByGuard;
+                }
+            }
+            AuthOutcome::Unreachable => return CredOutcome::Unreachable,
+        }
+    }
+    CredOutcome::NoCredential
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,5 +806,160 @@ mod tests {
         let with_account: Vec<String> = http.requests().into_iter().filter(|r| r.login.is_some()).map(|r| r.url).collect();
         assert_eq!(with_account.len(), 1);
         assert!(with_account[0].starts_with("http://192.0.2.11/axis-cgi/param.cgi?action=list"));
+    }
+
+    // --- Changer les identifiants ---
+
+    use std::sync::Mutex;
+
+    /// Caméra Axis dont l'authentification dépend du mot de passe : seuls les
+    /// mots de passe de `accept` passent (200) sur la sonde `pwdgrp.cgi?action=get`,
+    /// les autres rendent 401. `basicdeviceinfo.cgi` donne le n° de série
+    /// (identité). `set_ok` : la pose de l'identifiant réussit ou non.
+    struct CredHttp {
+        accept: Vec<&'static str>,
+        set_ok: bool,
+        posts: Mutex<usize>,
+    }
+
+    impl CredHttp {
+        fn new(accept: &[&'static str]) -> Self {
+            CredHttp { accept: accept.to_vec(), set_ok: true, posts: Mutex::new(0) }
+        }
+        fn sets(&self) -> usize {
+            *self.posts.lock().unwrap()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CameraHttp for CredHttp {
+        async fn send(&self, req: crate::transport::HttpRequest, creds: Option<&Credentials>) -> Result<crate::transport::HttpResponse, NetError> {
+            use crate::transport::HttpResponse;
+            let ok = |body: &[u8]| Ok(HttpResponse { status: 200, headers: vec![], body: body.to_vec() });
+            if req.url.ends_with("/axis-cgi/basicdeviceinfo.cgi") {
+                return ok(INFO);
+            }
+            if req.url.contains("/axis-cgi/pwdgrp.cgi") {
+                return match req.method {
+                    // La pose de l'identifiant (POST) : réussit si `set_ok`.
+                    Method::Post => {
+                        *self.posts.lock().unwrap() += 1;
+                        if self.set_ok { ok(b"OK") } else { ok(b"# Error: password policy") }
+                    }
+                    // La sonde (GET action=get) : 200 si le mot de passe passe.
+                    _ => {
+                        let pw = creds.map(|c| c.password.expose()).unwrap_or("");
+                        if self.accept.iter().any(|a| *a == pw) { ok(b"admin=\"root\"") } else { Ok(HttpResponse { status: 401, headers: vec![], body: vec![] }) }
+                    }
+                };
+            }
+            Err(NetError::Unreachable(format!("route inconnue : {}", req.url)))
+        }
+        async fn stream(&self, _r: crate::transport::HttpRequest, _c: Option<&Credentials>) -> Result<(crate::transport::HttpResponse, crate::transport::ByteStream), NetError> {
+            unimplemented!()
+        }
+    }
+
+    const GUARD: CredGuard = CredGuard { delay: Duration::ZERO, max_failures: 4 };
+
+    fn cred(login: &str, pw: &str) -> Credentials {
+        Credentials { login: login.into(), password: Secret::new(pw.into()) }
+    }
+
+    #[test]
+    fn the_credentials_plan_is_axis_with_an_identity() {
+        let mut hik = axis(11);
+        hik.family = Family::Hikvision;
+        let mut bare = axis(12);
+        (bare.mac, bare.serial) = (None, None);
+        let rows = plan_change_credentials(&[axis(13), hik, bare]).unwrap();
+        assert!(rows[0].conflicts.is_empty() && rows[0].after.is_none() && rows[0].before.is_none());
+        assert_eq!(rows[1].conflicts, [Conflict::Unsupported]);
+        assert_eq!(rows[2].conflicts, [Conflict::MissingIdentity]);
+        assert_eq!(plan_change_credentials(&[]), Err(BatchError::NoSelection));
+    }
+
+    #[test]
+    fn the_try_order_puts_the_account_first_dedups_and_skips_the_new_one() {
+        let new = cred("root", "new");
+        let account = cred("root", "a");
+        let list = [cred("root", "a"), cred("installer", "b"), cred("root", "new"), cred("installer", "b")];
+        let order = cred_order(Some(&account), &list, &new);
+        let shown: Vec<(&str, &str)> = order.iter().map(|c| (c.login.as_str(), c.password.expose())).collect();
+        assert_eq!(shown, [("root", "a"), ("installer", "b")]);
+        // Sans compte : seulement la liste.
+        assert_eq!(cred_order(None, &[cred("x", "y")], &new).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_new_credential_already_in_place_is_a_skip() {
+        let http = Arc::new(CredHttp::new(&["new"]));
+        let c = ctx(http.clone());
+        let r = change_credentials_step(&c, &known(SERIAL), Some(&cred("root", "acc")), &[cred("x", "y")], &cred("root", "new"), GUARD).await;
+        assert_eq!(r.outcome, CredOutcome::AlreadyUpToDate);
+        assert_eq!(http.sets(), 0, "rien n'est posé");
+        assert_eq!(r.key, "AC:CC:8E:00:00:0B");
+    }
+
+    #[tokio::test]
+    async fn the_account_then_the_list_credential_sets_the_new_one() {
+        // Le compte marche : posé, authentifié par le compte.
+        let http = Arc::new(CredHttp::new(&["acc"]));
+        let c = ctx(http.clone());
+        let r = change_credentials_step(&c, &known(SERIAL), Some(&cred("root", "acc")), &[], &cred("root", "new"), GUARD).await;
+        assert_eq!(r.outcome, CredOutcome::Posed { login: "root".into() });
+        assert_eq!(http.sets(), 1);
+        // Le compte échoue, un couple de la liste marche : posé par ce couple.
+        let http = Arc::new(CredHttp::new(&["old2"]));
+        let c = ctx(http.clone());
+        let list = [cred("installer", "old1"), cred("tech", "old2")];
+        let r = change_credentials_step(&c, &known(SERIAL), Some(&cred("root", "acc")), &list, &cred("root", "new"), GUARD).await;
+        assert_eq!(r.outcome, CredOutcome::Posed { login: "tech".into() });
+    }
+
+    #[tokio::test]
+    async fn no_credential_found_posts_nothing() {
+        let http = Arc::new(CredHttp::new(&["none-match"]));
+        let c = ctx(http.clone());
+        let list = [cred("a", "1"), cred("b", "2")];
+        let r = change_credentials_step(&c, &known(SERIAL), Some(&cred("root", "acc")), &list, &cred("root", "new"), GUARD).await;
+        assert_eq!(r.outcome, CredOutcome::NoCredential);
+        assert_eq!(http.sets(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_guard_stops_after_the_max_failures_when_couples_remain() {
+        let http = Arc::new(CredHttp::new(&["never"]));
+        let c = ctx(http.clone());
+        let guard = CredGuard { delay: Duration::ZERO, max_failures: 2 };
+        let list = [cred("a", "1"), cred("b", "2"), cred("c", "3"), cred("d", "4")];
+        let r = change_credentials_step(&c, &known(SERIAL), None, &list, &cred("root", "new"), guard).await;
+        assert_eq!(r.outcome, CredOutcome::StoppedByGuard);
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_brand_or_an_unreachable_camera_posts_nothing() {
+        let http = Arc::new(CredHttp::new(&["acc"]));
+        let c = ctx(http.clone());
+        let mut hik = known(SERIAL);
+        hik.family = Family::Hikvision;
+        let r = change_credentials_step(&c, &hik, None, &[], &cred("root", "new"), GUARD).await;
+        assert_eq!(r.outcome, CredOutcome::Unsupported);
+        // Hors sous-réseau, sans IP temporaire : injoignable, aucun mot de passe.
+        let mut far = known(SERIAL);
+        far.ip = ip("10.9.9.9");
+        let r = change_credentials_step(&c, &far, None, &[cred("a", "1")], &cred("root", "new"), GUARD).await;
+        assert_eq!(r.outcome, CredOutcome::Unreachable);
+        assert_eq!(http.sets(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_report_never_shows_a_password() {
+        let http = Arc::new(CredHttp::new(&["s3cr3t-match"]));
+        let c = ctx(http.clone());
+        let r = change_credentials_step(&c, &known(SERIAL), Some(&cred("root", "s3cr3t-match")), &[], &cred("root", "new"), GUARD).await;
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("s3cr3t-match") && !json.contains("new"));
+        assert!(json.contains("\"code\":\"posed\"") && json.contains("\"login\":\"root\""));
     }
 }

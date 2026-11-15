@@ -599,15 +599,9 @@ pub async fn activate(
     allow_cleartext: bool,
 ) -> Result<(), VapixError> {
     let login = &account.login;
-    if login.is_empty() || login.len() > 14 || !login.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        // 1 à 14 lettres ou chiffres.
-        return Err(VapixError::Invalid("bad_login"));
-    }
     let pwd = account.password.expose();
-    if pwd.is_empty() || pwd.len() > 64 {
-        // 1 à 64 caractères.
-        return Err(VapixError::Invalid("bad_password"));
-    }
+    // 1 à 14 lettres ou chiffres ; mot de passe de 1 à 64 caractères.
+    validate_account_credentials(login, pwd)?;
     // Les `:` de `sgrp` restent littéraux, comme dans les exemples de la doc.
     let body = format!(
         "action=add&user={}&pwd={}&grp=root&sgrp=admin:operator:viewer:ptz",
@@ -772,6 +766,84 @@ pub async fn set_time(
     )
 }
 
+/// Résultat d'un essai d'identifiant (`try_auth`) : `Ok` = il passe,
+/// `Denied` = refusé (401/403), `Unreachable` = rien conclu (réseau ou statut
+/// inattendu). Seul `Denied` compte comme un échec de mot de passe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthOutcome {
+    Ok,
+    Denied,
+    Unreachable,
+}
+
+/// Teste un identifiant sur une Axis sans rien modifier : un GET authentifié
+/// sur `pwdgrp.cgi?action=get`, lisible par les seuls administrateurs (donc
+/// confirme aussi le droit de changer un mot de passe). Le mot de passe part
+/// en Digest, jamais dans l'URL ni un journal ; cette fonction n'en journalise
+/// aucun et ne rend jamais d'erreur portant un secret.
+pub async fn try_auth(http: &dyn CameraHttp, base: &str, creds: &Credentials) -> AuthOutcome {
+    let req = HttpRequest {
+        method: Method::Get,
+        url: url(base, "/axis-cgi/pwdgrp.cgi?action=get"),
+        body: None,
+        content_type: None,
+    };
+    match http.send(req, Some(creds)).await {
+        Ok(resp) if (200..300).contains(&resp.status) => AuthOutcome::Ok,
+        Ok(resp) if resp.status == 401 || resp.status == 403 => AuthOutcome::Denied,
+        Ok(_) => AuthOutcome::Unreachable,
+        Err(NetError::Auth | NetError::Status(401 | 403)) => AuthOutcome::Denied,
+        Err(_) => AuthOutcome::Unreachable,
+    }
+}
+
+/// Bornes d'un compte Axis : login de 1 à 14 lettres ou chiffres, mot de passe
+/// de 1 à 64 caractères. Refus local, avant tout envoi.
+fn validate_account_credentials(login: &str, pwd: &str) -> Result<(), VapixError> {
+    if login.is_empty() || login.len() > 14 || !login.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(VapixError::Invalid("bad_login"));
+    }
+    if pwd.is_empty() || pwd.len() > 64 {
+        return Err(VapixError::Invalid("bad_password"));
+    }
+    Ok(())
+}
+
+/// Pose l'identifiant visé sur une Axis, authentifié par `auth` (un compte
+/// dont `try_auth` a confirmé les droits d'administration). Met à jour le mot
+/// de passe de `new.login` s'il existe, sinon crée l'utilisateur
+/// administrateur (`action=add`, `grp`/`sgrp` comme le premier compte). Le mot
+/// de passe part dans le corps (POST), jamais dans l'URL ni un journal.
+///
+/// Contrairement à `set_network`, une coupure réseau n'est jamais prise pour
+/// un succès : la caméra ne change pas d'adresse, un silence est une vraie
+/// erreur.
+pub async fn set_credentials(
+    http: &dyn CameraHttp,
+    base: &str,
+    auth: &Credentials,
+    new: &Credentials,
+) -> Result<(), VapixError> {
+    let (login, pwd) = (new.login.as_str(), new.password.expose());
+    validate_account_credentials(login, pwd)?;
+    let update = format!("action=update&user={}&pwd={}", form_encode(login), form_encode(pwd));
+    let resp = http.send(post(base, "/axis-cgi/pwdgrp.cgi", FORM, update), Some(auth)).await?;
+    match require_text_ok(&resp) {
+        Ok(()) => Ok(()),
+        // L'utilisateur n'existe pas (ou refus de la mise à jour) : on le crée
+        // administrateur. Un échec réseau (pas un `Rejected`) remonte tel quel.
+        Err(VapixError::Rejected(_)) => {
+            let add = format!(
+                "action=add&user={}&pwd={}&grp=root&sgrp=admin:operator:viewer:ptz",
+                form_encode(login),
+                form_encode(pwd)
+            );
+            require_text_ok(&http.send(post(base, "/axis-cgi/pwdgrp.cgi", FORM, add), Some(auth)).await?)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,6 +890,32 @@ mod tests {
             _r: HttpRequest,
             _c: Option<&Credentials>,
         ) -> Result<(HttpResponse, ByteStream), NetError> {
+            unimplemented!()
+        }
+    }
+
+    /// Caméra scriptée par le CORPS de la requête (pour distinguer `update` de
+    /// `add` sur le même CGI), qui garde les corps envoyés.
+    struct ByBody(fn(&str) -> Result<HttpResponse, NetError>);
+
+    impl ByBody {
+        fn bodies(&self) -> Vec<String> {
+            BODIES.with(|b| b.borrow().clone())
+        }
+    }
+
+    thread_local! {
+        static BODIES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[async_trait]
+    impl CameraHttp for ByBody {
+        async fn send(&self, r: HttpRequest, _c: Option<&Credentials>) -> Result<HttpResponse, NetError> {
+            let body = String::from_utf8_lossy(&r.body.unwrap_or_default()).into_owned();
+            BODIES.with(|b| b.borrow_mut().push(body.clone()));
+            (self.0)(&body)
+        }
+        async fn stream(&self, _r: HttpRequest, _c: Option<&Credentials>) -> Result<(HttpResponse, ByteStream), NetError> {
             unimplemented!()
         }
     }
@@ -1595,5 +1693,85 @@ root.Properties.Image.I2.Resolution=3840x1080,2560x720,1280x360\n";
             .await
             .unwrap();
         assert_eq!(http.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn try_auth_maps_the_camera_reply_without_leaking_the_password() {
+        // Un GET authentifié : 2xx = l'identifiant passe (et a les droits admin).
+        let ok = FakeHttp::new().on(Method::Get, "/axis-cgi/pwdgrp.cgi", 200, "admin=\"root\"\n");
+        assert_eq!(try_auth(&ok, BASE, &creds("root", "S3cr3t")).await, AuthOutcome::Ok);
+        let req = &ok.requests()[0];
+        assert_eq!(req.url, "http://192.0.2.11/axis-cgi/pwdgrp.cgi?action=get");
+        assert!(!req.url.contains("S3cr3t"));
+        assert_eq!(req.login.as_deref(), Some("root"));
+        // 401 / 403 : mauvais identifiant.
+        for status in [401, 403] {
+            let denied = FakeHttp::new().on(Method::Get, "/axis-cgi/pwdgrp.cgi", status, "");
+            assert_eq!(try_auth(&denied, BASE, &creds("root", "x")).await, AuthOutcome::Denied);
+        }
+        // Le vrai client rend `Auth` sur un digest refusé.
+        assert_eq!(try_auth(&Always(Err(|| NetError::Auth)), BASE, &creds("root", "x")).await, AuthOutcome::Denied);
+        // Erreur réseau ou statut inattendu : rien n'est conclu (ne compte pas comme un échec).
+        assert_eq!(try_auth(&Always(Err(|| NetError::Timeout)), BASE, &creds("root", "x")).await, AuthOutcome::Unreachable);
+        let weird = FakeHttp::new().on(Method::Get, "/axis-cgi/pwdgrp.cgi", 500, "");
+        assert_eq!(try_auth(&weird, BASE, &creds("root", "x")).await, AuthOutcome::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn set_credentials_updates_the_user_password_in_the_body() {
+        let http = FakeHttp::new().on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "OK");
+        set_credentials(&http, BASE, &creds("root", "old"), &creds("root", "N3w-Pass"))
+            .await
+            .unwrap();
+        // Une seule requête : l'utilisateur existe, pas de création.
+        assert_eq!(http.requests().len(), 1);
+        let req = &http.requests()[0];
+        let body = body_of(req);
+        assert!(body.contains("action=update"), "{body}");
+        assert!(body.contains("user=root"), "{body}");
+        assert!(body.contains("pwd=N3w-Pass"), "{body}");
+        assert_eq!(req.url, "http://192.0.2.11/axis-cgi/pwdgrp.cgi");
+        assert!(!req.url.contains("N3w-Pass"));
+        // Authentifié par le compte qui a marché.
+        assert_eq!(req.login.as_deref(), Some("root"));
+    }
+
+    #[tokio::test]
+    async fn set_credentials_creates_the_user_when_update_fails() {
+        // `update` refusé (utilisateur absent) : repli sur `add` administrateur.
+        let http = ByBody(|body| {
+            if body.contains("action=update") {
+                Ok(HttpResponse { status: 200, headers: vec![], body: b"# Error: user does not exist".to_vec() })
+            } else {
+                Ok(HttpResponse { status: 200, headers: vec![], body: b"Created account.".to_vec() })
+            }
+        });
+        set_credentials(&http, BASE, &creds("root", "old"), &creds("tech", "N3w-Pass")).await.unwrap();
+        let bodies = http.bodies();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0].contains("action=update"));
+        assert!(bodies[1].contains("action=add&user=tech"), "{}", bodies[1]);
+        assert!(bodies[1].contains("grp=root&sgrp=admin:operator:viewer:ptz"));
+        assert!(bodies[1].contains("pwd=N3w-Pass"));
+    }
+
+    #[tokio::test]
+    async fn set_credentials_special_chars_are_encoded_and_bad_values_rejected_without_sending() {
+        let http = FakeHttp::new().on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "OK");
+        set_credentials(&http, BASE, &creds("root", "old"), &creds("root", "a&b=c")).await.unwrap();
+        assert!(body_of(&http.requests()[0]).contains("pwd=a%26b%3Dc"));
+        // Login / mot de passe hors bornes : refus avant tout envoi.
+        let http = FakeHttp::new().on(Method::Post, "/axis-cgi/pwdgrp.cgi", 200, "OK");
+        assert!(matches!(set_credentials(&http, BASE, &creds("root", "old"), &creds("a&b", "x")).await, Err(VapixError::Invalid("bad_login"))));
+        assert!(matches!(set_credentials(&http, BASE, &creds("root", "old"), &creds("root", "")).await, Err(VapixError::Invalid("bad_password"))));
+        assert!(http.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_credentials_network_cut_is_never_a_success() {
+        // La caméra ne change pas d'adresse : une coupure est une vraie erreur.
+        for cut in [|| NetError::Timeout, || NetError::Io("reset".into()), || NetError::Unreachable("x".into())] {
+            assert!(set_credentials(&Always(Err(cut)), BASE, &creds("root", "old"), &creds("root", "N3w")).await.is_err());
+        }
     }
 }

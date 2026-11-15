@@ -2,7 +2,8 @@
   "kind": {
     "keep_ip": "Mantener las IP",
     "renumber": "Renumerar",
-    "time": "Poner la hora"
+    "time": "Poner la hora",
+    "change_credentials": "Cambiar las credenciales"
   },
   "step": {
     "choose": "Elegir",
@@ -23,17 +24,35 @@
   },
   "preview": "Vista previa",
   "blocked": "{count, plural, one {# fila bloquea} other {# filas bloquean}}: desmarque o corrija",
-  "confirm": "Escriba {count} para confirmar",
+  "willApply": "{count, plural, one {Aplicar a # cámara} other {Aplicar a # cámaras}}",
+  "confirmApply": "Confirmar",
+  "confirmHint": "Haga clic de nuevo para confirmar",
   "apply": "Aplicar",
   "stop": "Detener",
   "stopping": "Se detiene tras la cámara en curso",
   "progress": "{done} / {total}",
   "report": "{ok, plural, one {# correcta} other {# correctas}} · {failed, plural, one {# fallida} other {# fallidas}} · {unreachable, plural, one {# inalcanzable} other {# inalcanzables}} tras el cambio",
+  "credReport": "{posed} aplicadas · {alreadyUpToDate} ya al día · {noCredential} sin credencial · {stopped} detenidas (protección) · {unsupported} no compatibles · {unreachable} inalcanzables · {rejected} rechazadas",
   "skipped": "{count, plural, one {# sin hacer} other {# sin hacer}}",
   "state": {
     "ok": "OK",
     "unreachable": "Inalcanzable en la nueva dirección",
     "running": "En curso"
+  },
+  "cred": {
+    "newLogin": "Nuevo usuario",
+    "newPassword": "Nueva contraseña",
+    "tryHint": "Contraseñas actuales a probar (nunca se guardan)",
+    "login": "Usuario",
+    "password": "Contraseña",
+    "addPair": "Añadir un par",
+    "removePair": "Quitar",
+    "toTry": "Por probar",
+    "posed": "Aplicada (vía {login})",
+    "already": "Ya al día",
+    "none": "Ninguna credencial encontrada",
+    "stopped": "Detenida (riesgo de bloqueo)",
+    "unreachable": "Inalcanzable"
   },
   "conflict": {
     "unsupported": "Marca no compatible",

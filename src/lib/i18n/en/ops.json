@@ -2,7 +2,8 @@
   "kind": {
     "keep_ip": "Keep IPs",
     "renumber": "Renumber",
-    "time": "Set time"
+    "time": "Set time",
+    "change_credentials": "Change credentials"
   },
   "step": {
     "choose": "Choose",
@@ -23,17 +24,35 @@
   },
   "preview": "Preview",
   "blocked": "{count, plural, one {# row blocks} other {# rows block}}: uncheck or fix",
-  "confirm": "Type {count} to confirm",
+  "willApply": "{count, plural, one {Apply to # camera} other {Apply to # cameras}}",
+  "confirmApply": "Confirm",
+  "confirmHint": "Click again to confirm",
   "apply": "Apply",
   "stop": "Stop",
   "stopping": "Stopping after the current camera",
   "progress": "{done} / {total}",
   "report": "{ok} succeeded · {failed} failed · {unreachable} unreachable after change",
+  "credReport": "{posed} set · {alreadyUpToDate} already current · {noCredential} no credential · {stopped} stopped (guard) · {unsupported} unsupported · {unreachable} unreachable · {rejected} refused",
   "skipped": "{count, plural, one {# not done} other {# not done}}",
   "state": {
     "ok": "OK",
     "unreachable": "Unreachable at the new address",
     "running": "Running"
+  },
+  "cred": {
+    "newLogin": "New user",
+    "newPassword": "New password",
+    "tryHint": "Current passwords to try (never saved)",
+    "login": "User",
+    "password": "Password",
+    "addPair": "Add a pair",
+    "removePair": "Remove",
+    "toTry": "To try",
+    "posed": "Set (via {login})",
+    "already": "Already current",
+    "none": "No credential found",
+    "stopped": "Stopped (lockout risk)",
+    "unreachable": "Unreachable"
   },
   "conflict": {
     "unsupported": "Brand not supported",
