@@ -88,6 +88,15 @@
     "known": "{count, plural, one {# caméra connue} other {# caméras connues}}",
     "forget": "Oublier",
     "confirmForget": "Confirmer",
-    "seen": "vue le {date}"
+    "seen": "vue le {date}",
+    "expand": "Agrandir la liste",
+    "close": "Fermer",
+    "colIp": "IP",
+    "colId": "Identité",
+    "colType": "Type",
+    "colModel": "Modèle",
+    "colSeen": "Vue le",
+    "mac": "MAC",
+    "serial": "Série"
   }
 }

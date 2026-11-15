@@ -11,6 +11,7 @@
   import { accountList, refreshAccounts } from '#lib/stores/accounts.ts';
   import { clearStatusIf, page, status, type Status } from '#lib/stores/nav.ts';
   import ImportSheet from './ImportSheet.svelte';
+  import Dialog from './Dialog.svelte';
 
   // Liste partagée avec les sélecteurs des autres écrans.
   const accounts = $derived<AccountEntry[]>($accountList ?? []);
@@ -37,9 +38,13 @@
   let known = $state<KnownCamera[]>([]);
   // Clé de la caméra dont l'oubli attend sa confirmation.
   let forgetting = $state('');
+  // Liste des caméras connues ouverte en grand, pour tout voir à l'aise.
+  let expanded = $state(false);
   const ends = $derived(fill ? networkEnds(fill.network) : null);
   const counts = $derived(fill ? fillLabel(fill) : null);
   const seenOn = (c: KnownCamera) => new Date(c.last_seen * 1000).toLocaleDateString($locale ?? undefined);
+  // Type d'identité affiché : numéro de série sinon adresse MAC, comme `knownKey`.
+  const idType = (c: KnownCamera) => $_(c.serial ? 'accounts.net.serial' : 'accounts.net.mac');
 
   const nameError = $derived(errorCode === 'error.duplicate_name' ? error : '');
   // Masque manquant : vu dès la saisie, ou rendu par Rust (même clé).
@@ -140,6 +145,7 @@
     fill = null;
     known = [];
     forgetting = '';
+    expanded = false;
     if (a?.has_secret) void reveal(a.id);
     if (a) void loadNet(a.id);
   }
@@ -189,6 +195,7 @@
     password = '';
     prefilled = '';
     showPassword = false;
+    expanded = false;
     error = '';
     errorCode = '';
   }
@@ -345,7 +352,15 @@
           {/if}
           {#if known.length > 0}
             <details>
-              <summary>{$_('accounts.net.known', { values: { count: known.length } })}</summary>
+              <summary>
+                <span>{$_('accounts.net.known', { values: { count: known.length } })}</span>
+                <button class="expand" type="button" aria-label={$_('accounts.net.expand')} title={$_('accounts.net.expand')}
+                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); expanded = true; }}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4" />
+                  </svg>
+                </button>
+              </summary>
               <div class="known">
                 <table>
                   <tbody>
@@ -381,6 +396,45 @@
 
 {#if importing}
   <ImportSheet path={importing.path} plan={importing.plan} existing={accounts.map((a) => a.name)} onClose={() => (importing = null)} onDone={imported} />
+{/if}
+
+{#if expanded && editing}
+  <Dialog title={$_('accounts.net.known', { values: { count: known.length } })} subtitle={name.trim()} width={720} onClose={() => (expanded = false)}>
+    <div class="bigknown">
+      <table>
+        <thead>
+          <tr>
+            <th>{$_('accounts.net.colIp')}</th>
+            <th>{$_('accounts.net.colId')}</th>
+            <th>{$_('accounts.net.colType')}</th>
+            <th class="grow">{$_('accounts.net.colModel')}</th>
+            <th>{$_('accounts.net.colSeen')}</th>
+            <th class="acts"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each known as c (knownKey(c))}
+            <tr>
+              <td class="mono">{c.ip}</td>
+              <td class="mono dim-t" title={knownKey(c)}>{knownKey(c)}</td>
+              <td class="dim-t">{idType(c)}</td>
+              <td class="grow" title={c.model ?? ''}>{c.model ?? ''}</td>
+              <td class="dim-t">{seenOn(c)}</td>
+              <td class="ra">
+                <button class="mini" type="button" class:danger={forgetting === knownKey(c)} onclick={() => forget(c)}>
+                  {forgetting === knownKey(c) ? $_('accounts.net.confirmForget') : $_('accounts.net.forget')}
+                </button>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+    <div class="foot">
+      <span class="sum"></span>
+      <button class="btn def" type="button" onclick={() => (expanded = false)}>{$_('accounts.net.close')}</button>
+    </div>
+  </Dialog>
 {/if}
 
 <style>
@@ -425,8 +479,23 @@
   .legend i { width: 12px; height: 12px; border-radius: 2px; }
   .legend .count { margin-left: auto; color: var(--text-2); }
   .subnet summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
+  /* Titre « N caméras connues » et bouton Agrandir sur la même ligne. */
+  .subnet summary { display: flex; align-items: center; gap: 8px; }
+  .subnet summary > span { flex: 1; }
+  .expand {
+    flex: none; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 5px;
+    background: transparent; color: var(--text-2); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .expand:hover { color: var(--text); }
+  .expand:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
+  .expand svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
   .known { max-height: 180px; overflow-y: auto; margin-top: 4px; }
   .known td { height: 36px; }
   .known tbody tr:last-child td { border-bottom: 0; }
+  /* Liste en grand : toute la largeur de la feuille, hauteur plafonnée et défilante. */
+  .bigknown { max-height: 60vh; overflow-y: auto; }
+  .bigknown td { height: 36px; }
+  .bigknown tbody tr:last-child td { border-bottom: 0; }
   .eye svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 </style>
