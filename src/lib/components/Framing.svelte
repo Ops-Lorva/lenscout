@@ -127,13 +127,16 @@
   }
 
   // Caméra ou compte prêts : le flux démarre tout seul (plus de bouton Lecture).
-  // Changer de cible coupe d'abord le flux de la précédente.
+  // Changer de cible coupe d'abord le flux de la précédente. Une caméra encore
+  // à trancher (family « other », cf. l'effet de ré-identification) n'a pas
+  // d'URL de flux : on attend qu'elle soit relue en Axis, qui repose la cible
+  // et redéclenche cet effet — évite un bref « unsupported_brand ».
   $effect(() => {
     void cam; void accountId;
     untrack(() => {
       suspended = false;
       void stop();
-      if (!paused) void play();
+      if (!paused && !(cam && needsIdentify(cam))) void play();
     });
   });
 
