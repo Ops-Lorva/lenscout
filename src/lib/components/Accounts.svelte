@@ -385,12 +385,13 @@
 
 <style>
   /* Le tableau à gauche, le panneau d'édition ancré à droite (comme la maquette). */
-  .cols { display: flex; align-items: flex-start; gap: 16px; padding: 0 24px; }
+  /* Le panneau prend toute la hauteur disponible, le tableau à côté. */
+  .cols { display: flex; align-items: stretch; gap: 16px; padding: 0 24px; min-height: calc(100vh - 150px); }
   .list { flex: 1; min-width: 0; }
   /* Le tableau garde ses gouttières via le conteneur, pas via .page. */
   .list table td:first-child, .list table th:first-child { padding-left: 0; }
   .list table td:last-child, .list table th:last-child { padding-right: 0; }
-  .editpanel { flex: none; width: 360px; align-self: stretch; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--win); position: sticky; top: 12px; max-height: calc(100vh - 120px); overflow: auto; }
+  .editpanel { flex: none; width: 360px; display: flex; flex-direction: column; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--win); overflow: auto; }
   .editpanel .phead h2 { margin: 0 0 14px; font-size: 16px; font-weight: 600; color: var(--text); }
   form { margin: 0; }
   /* Boutons groupés à côté du titre : ils ne suivent pas le bord de la fenêtre. */
