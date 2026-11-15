@@ -1,7 +1,7 @@
 import { derived, writable, type Readable } from 'svelte/store';
 import type { Addressing, Camera } from '#lib/api/types.ts';
 import { filterCameras } from '#lib/search.ts';
-import { cameraName, shownMac } from '#lib/api/discovery.ts';
+import { cameraBrand, cameraName, shownMac } from '#lib/api/discovery.ts';
 
 /** Clé d'une caméra : son MAC, sinon son IP (une caméra garde son MAC si elle change d'IP). */
 export const cameraKey = (c: Camera): string => c.mac ?? c.ip;
@@ -34,7 +34,7 @@ export type CameraFilter = 'all' | 'new' | 'activated';
 export const filter = writable<CameraFilter>('all');
 
 /** Colonnes de données triables du tableau Réseau. */
-export type SortColumn = 'camera' | 'ip' | 'mac' | 'serial' | 'firmware' | 'addressing' | 'state';
+export type SortColumn = 'camera' | 'brand' | 'ip' | 'mac' | 'serial' | 'firmware' | 'addressing' | 'state';
 export type SortDir = 'asc' | 'desc';
 export interface Sort {
   col: SortColumn;
@@ -67,6 +67,8 @@ function sortValue(c: Camera, col: SortColumn): number | string | null {
       return ipValue(c.ip);
     case 'camera':
       return c.brand || c.model ? cameraName(c) : null;
+    case 'brand':
+      return cameraBrand(c);
     case 'mac':
       return shownMac(c).mac;
     case 'serial':

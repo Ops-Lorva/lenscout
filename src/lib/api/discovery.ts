@@ -45,6 +45,19 @@ export function cameraName(c: Pick<Camera, 'brand' | 'model'>): string {
   return [brand, model].filter(Boolean).join(' ') || '—';
 }
 
+/**
+ * Marque affichée dans la colonne « Marque » : la marque brute lue sur
+ * l'appareil quand elle existe (« LTS », OEM Hikvision, reste distinct de
+ * « Hikvision »), sinon un libellé dérivé de la famille. `null` = marque
+ * inconnue, rangée en fin de tri comme les autres valeurs absentes.
+ */
+export function cameraBrand(c: Pick<Camera, 'family' | 'brand'>): string | null {
+  if (c.brand && c.brand.trim()) return c.brand;
+  if (c.family === 'axis') return 'Axis';
+  if (c.family === 'hikvision') return 'Hikvision';
+  return null;
+}
+
 export function shownMac(c: Camera): { mac: string | null; declared: boolean } {
   if (c.mac) return { mac: c.mac, declared: false };
   return c.declared_mac ? { mac: c.declared_mac, declared: true } : { mac: null, declared: false };

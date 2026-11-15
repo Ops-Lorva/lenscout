@@ -2,7 +2,7 @@ import { describe, expect, it, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
-import { addressingKey, cameraName, readAddressing, shownMac, startScan } from './discovery';
+import { addressingKey, cameraBrand, cameraName, readAddressing, shownMac, startScan } from './discovery';
 import type { Camera } from './types';
 
 const cam = (over: Partial<Camera>): Camera => ({
@@ -51,6 +51,21 @@ describe('cameraName', () => {
     expect(cameraName({ brand: 'Hikvision', model: 'DS-2CD2143G2' })).toBe('Hikvision DS-2CD2143G2');
     expect(cameraName({ brand: 'AXIS', model: 'AXISP' })).toBe('AXIS AXISP');
     expect(cameraName({ brand: null, model: null })).toBe('—');
+  });
+});
+
+describe('cameraBrand', () => {
+  it('shows the raw brand as-is when present (LTS kept apart from Hikvision)', () => {
+    expect(cameraBrand({ family: 'hikvision', brand: 'LTS' })).toBe('LTS');
+    expect(cameraBrand({ family: 'axis', brand: 'AXIS' })).toBe('AXIS');
+  });
+  it('falls back to a family label when the brand is absent or blank', () => {
+    expect(cameraBrand({ family: 'axis', brand: null })).toBe('Axis');
+    expect(cameraBrand({ family: 'hikvision', brand: '' })).toBe('Hikvision');
+    expect(cameraBrand({ family: 'axis', brand: '  ' })).toBe('Axis');
+  });
+  it('returns null for an unknown family without brand', () => {
+    expect(cameraBrand({ family: 'other', brand: null })).toBeNull();
   });
 });
 

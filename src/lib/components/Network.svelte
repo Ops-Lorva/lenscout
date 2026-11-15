@@ -333,6 +333,7 @@
       <tr>
         <th class="chk"><input type="checkbox" checked={allSelected} onchange={toggleAll} aria-label={$_('network.selectAll')} /></th>
         <th aria-sort={ariaSort('camera')}><button class="sort" class:on={$sort.col === 'camera'} onclick={() => toggleSort('camera')}>{$_('network.col.camera')}<span class="arr" aria-hidden="true">{arrow('camera')}</span></button></th>
+        <th style="width:112px" aria-sort={ariaSort('brand')}><button class="sort" class:on={$sort.col === 'brand'} onclick={() => toggleSort('brand')}>{$_('network.col.brand')}<span class="arr" aria-hidden="true">{arrow('brand')}</span></button></th>
         <th style="width:128px" aria-sort={ariaSort('ip')}><button class="sort" class:on={$sort.col === 'ip'} onclick={() => toggleSort('ip')}>{$_('network.col.ip')}<span class="arr" aria-hidden="true">{arrow('ip')}</span></button></th>
         <th style="width:164px" aria-sort={ariaSort('mac')}><button class="sort" class:on={$sort.col === 'mac'} onclick={() => toggleSort('mac')}>{$_('network.col.mac')}<span class="arr" aria-hidden="true">{arrow('mac')}</span></button></th>
         <th style="width:128px" aria-sort={ariaSort('serial')}><button class="sort" class:on={$sort.col === 'serial'} onclick={() => toggleSort('serial')}>{$_('network.col.serial')}<span class="arr" aria-hidden="true">{arrow('serial')}</span></button></th>

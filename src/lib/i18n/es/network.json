@@ -5,6 +5,7 @@
   "none": "Ninguna cámara",
   "col": {
     "camera": "Cámara",
+    "brand": "Marca",
     "ip": "IP",
     "mac": "MAC",
     "serial": "N.º de serie",

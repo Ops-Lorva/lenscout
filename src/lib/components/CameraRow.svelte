@@ -2,7 +2,7 @@
   import { _ } from 'svelte-i18n';
   import { resultMessage, type ActionResult } from '#lib/api/configure.ts';
   import type { Camera } from '#lib/api/types.ts';
-  import { addressingKey, cameraName, shownMac } from '#lib/api/discovery.ts';
+  import { addressingKey, cameraBrand, cameraName, shownMac } from '#lib/api/discovery.ts';
 
   let {
     camera,
@@ -23,6 +23,7 @@
   const message = $derived(result ? resultMessage(result) : null);
   const text = $derived(message ? $_(message.key, { values: message.values }) : '');
   const label = $derived(cameraName(camera));
+  const brand = $derived(cameraBrand(camera));
   const addressing = $derived(addressingKey(camera));
   const mac = $derived(shownMac(camera));
 </script>
@@ -32,6 +33,7 @@
     <input type="checkbox" checked={selected} onchange={onToggle} aria-label={$_('network.select')} />
   </td>
   <td class="grow" title={label}>{label}</td>
+  <td class:dim-t={brand === null}>{brand ?? '—'}</td>
   <td class="m">{camera.ip}</td>
   <td class="mac" class:dim-t={!mac.mac} class:decl={mac.declared} title={mac.declared ? $_('network.macDeclared') : undefined}>{mac.mac ?? '—'}{#if mac.declared}<sup>*</sup>{/if}</td>
   <td class="mac ser" class:dim-t={!camera.serial} title={camera.serial ?? ''}>{camera.serial ?? '—'}</td>

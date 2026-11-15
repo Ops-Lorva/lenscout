@@ -227,6 +227,16 @@ test('tri par nom de caméra (brand/model), absence rangée en fin', () => {
   expect(r.map((c) => c.ip)).toEqual(['10.0.50.2', '10.0.50.1', '10.0.50.3']);
 });
 
+test('tri par marque : libellé affiché (marque brute ou famille), inconnu rangé en fin', () => {
+  const lts = cam({ ip: '10.0.50.1', mac: 'AA:BB:CC:00:00:01', family: 'hikvision', brand: 'LTS' });
+  const axis = cam({ ip: '10.0.50.2', mac: 'AA:BB:CC:00:00:02', family: 'axis', brand: null });
+  const none = cam({ ip: '10.0.50.3', mac: 'AA:BB:CC:00:00:03', family: 'other', brand: null });
+  // « Axis » (dérivé de la famille) < « LTS » (marque brute) ; inconnu en fin.
+  expect(sortCameras([lts, axis, none], { col: 'brand', dir: 'asc' }).map((c) => c.ip)).toEqual(['10.0.50.2', '10.0.50.1', '10.0.50.3']);
+  // Sens inverse : les deux marques s’inversent, l’inconnu reste en fin.
+  expect(sortCameras([lts, axis, none], { col: 'brand', dir: 'desc' }).map((c) => c.ip)).toEqual(['10.0.50.1', '10.0.50.2', '10.0.50.3']);
+});
+
 test('toggleSort : nouvelle colonne = asc, re-clic = inverse', () => {
   toggleSort('mac');
   expect(get(sort)).toEqual({ col: 'mac', dir: 'asc' });
