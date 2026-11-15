@@ -141,7 +141,7 @@
     {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
     <label for="b-mask">{$_('configure.mask')}</label><input id="b-mask" type="text" bind:value={mask} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />
     <label for="b-gw">{$_('configure.gateway')}</label><input id="b-gw" type="text" bind:value={gateway} oninput={() => (touched.gateway = true)} inputmode="decimal" autocomplete="off" />
-    <label for="b-dns">{$_('configure.dns')}</label><input id="b-dns" type="text" bind:value={dns} oninput={() => (dnsTouched = true)} autocomplete="off" />
+    <label for="b-dns">{$_('configure.dns')}</label><input id="b-dns" class="m" type="text" bind:value={dns} oninput={() => (dnsTouched = true)} autocomplete="off" />
   </div>
   <!-- L'aperçu : MAC, n° de série et passage d'adresse, dans l'ordre de la liste. -->
   {#if shown}
@@ -159,7 +159,7 @@
             <tr>
               <td class="mac">{r.mac}</td>
               <td class="mac ser" title={r.serial ?? ''}>{r.serial ?? ''}</td>
-              <td>{r.current_ip} → {r.new_ip}</td>
+              <td class="m">{r.current_ip} → <span class="cool">{r.new_ip}</span></td>
             </tr>
           {/each}
         </tbody>

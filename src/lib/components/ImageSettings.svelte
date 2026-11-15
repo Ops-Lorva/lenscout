@@ -131,9 +131,11 @@
             onchange={() => optics({ kind: 'focus', position: focus })} />
         </label>
         <div class="btns">
-          <button class="mini" disabled={locked} onclick={() => optics({ kind: 'autofocus' })}>{$_('framing.settings.autofocus')}</button>
-          <button class="mini" class:on={drawing} aria-pressed={drawing} disabled={locked} onclick={() => (drawing = !drawing)}>{$_('framing.settings.afArea')}</button>
-          <button class="mini" disabled={locked} onclick={() => optics({ kind: 'reset_focus' })}>{$_('framing.settings.resetFocus')}</button>
+          <button class="btn def" disabled={locked} onclick={() => optics({ kind: 'autofocus' })}>{$_('framing.settings.autofocus')}</button>
+          <span class="pair">
+            <button class="btn" class:on={drawing} aria-pressed={drawing} disabled={locked} onclick={() => (drawing = !drawing)}>{$_('framing.settings.afArea')}</button>
+            <button class="btn" disabled={locked} onclick={() => optics({ kind: 'reset_focus' })}>{$_('framing.settings.resetFocus')}</button>
+          </span>
         </div>
       {/if}
     {/if}
@@ -157,11 +159,25 @@
 {/if}
 
 <style>
-  .settings { width: 230px; flex: none; display: flex; flex-direction: column; gap: 14px; padding: 2px 2px 2px 0; overflow-y: auto; }
-  .row { display: flex; flex-direction: column; gap: 6px; }
+  /* Panneau de la maquette : collé à droite de l'image, groupes séparés par un filet. */
+  .settings {
+    width: 288px; flex: none; display: flex; flex-direction: column; overflow-y: auto;
+    padding: 8px 24px 24px; border-left: 1px solid var(--line); background: var(--page);
+  }
+  .settings > * { padding: 16px 0; border-bottom: 1px solid var(--line); }
+  .settings > :last-child { border-bottom: 0; }
+  /* Curseur de mise au point et ses boutons : un seul groupe. */
+  .settings > .row:has(+ .btns) { border-bottom: 0; padding-bottom: 8px; }
+  .settings > .btns { padding-top: 0; }
+  .row { display: flex; flex-direction: column; gap: 8px; }
+  .row > span:first-child { color: var(--text-2); font-size: 13px; font-weight: 500; }
   .row input[type='range'] { width: 100%; }
-  .ends { display: flex; justify-content: space-between; font-size: 11.5px; }
-  .btns { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
-  .btns .mini.on { border-color: var(--text-2); background: var(--sel); }
+  .ends { display: flex; justify-content: space-between; font-size: 12px; }
+  .btns { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+  /* Libellés longs (« Réinitialiser la mise au point ») : l'un sous l'autre, pas en paire. */
+  .pair { display: flex; flex-direction: column; gap: 4px; }
+  .btns .btn.on { border-color: var(--act); background: var(--act-soft); color: var(--text); }
   .check { display: flex; align-items: center; gap: 8px; }
+  .settings > .spin { padding: 0; border-bottom: 1.5px solid var(--line-2); align-self: flex-start; margin-top: 16px; }
+  .settings > .err { padding: 0; border-bottom: 0; margin-top: 12px; }
 </style>

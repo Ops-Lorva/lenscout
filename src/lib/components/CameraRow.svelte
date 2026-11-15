@@ -32,14 +32,14 @@
     <input type="checkbox" checked={selected} onchange={onToggle} aria-label={$_('network.select')} />
   </td>
   <td class="grow" title={label}>{label}</td>
-  <td>{camera.ip}</td>
+  <td class="m">{camera.ip}</td>
   <td class="mac" class:dim-t={!mac.mac} class:decl={mac.declared} title={mac.declared ? $_('network.macDeclared') : undefined}>{mac.mac ?? '—'}{#if mac.declared}<sup>*</sup>{/if}</td>
   <td class="mac ser" class:dim-t={!camera.serial} title={camera.serial ?? ''}>{camera.serial ?? '—'}</td>
-  <td class:dim-t={!camera.firmware}>{camera.firmware ?? '—'}</td>
+  <td class="m" class:dim-t={!camera.firmware}>{camera.firmware ?? '—'}</td>
   <td class:dim-t={addressing.endsWith('.unknown')}>{$_(addressing)}</td>
   <!-- Le résultat de la dernière action se lit sous l'état, en texte. -->
-  <td class="st {camera.activation}" class:dim-t={camera.activation === 'unknown'}>
-    {$_(`network.state.${camera.activation}`)}
+  <td class="st" class:dim-t={camera.activation === 'unknown'}>
+    {#if camera.activation === 'new'}<span class="chip new">{$_('network.state.new')}</span>{:else}{$_(`network.state.${camera.activation}`)}{/if}
     {#if result?.ok}
       <div class="res ok">{$_('configure.ok')}</div>
     {:else if text}

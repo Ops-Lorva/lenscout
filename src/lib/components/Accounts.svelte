@@ -230,7 +230,7 @@
   });
 </script>
 
-<div class="tools">
+<div class="tools bar">
   <span class="title">{$_('common.nav.accounts')}</span>
   <button class="btn" onclick={doImport}>{$_('accounts.import')}</button>
   <button class="btn" onclick={doExport} disabled={accounts.length === 0}>{$_('accounts.export')}</button>
@@ -254,7 +254,7 @@
       <tr>
         <td class="grow" title={a.name}>{a.name}</td>
         <td>{a.login}</td>
-        <td class="dim-t">{a.pc_ip ?? ''}</td>
+        <td class="m">{a.pc_ip ?? ''}</td>
         <td>{#if a.has_secret}••••••••{:else}<span class="warn">{$_('accounts.resecret')}</span>{/if}</td>
         <td class="ra acts">
           <button class="mini" onclick={() => open(a)}>{$_('accounts.edit')}</button>
@@ -301,7 +301,7 @@
         <label for="a-gw">{$_('accounts.field.gateway')}</label>
         <input id="a-gw" type="text" bind:value={gateway} placeholder="192.168.1.1" inputmode="decimal" autocomplete="off" spellcheck="false" />
         <label for="a-excl">{$_('accounts.field.exclusions')}</label>
-        <input id="a-excl" type="text" bind:value={exclusions} placeholder="192.168.1.2-192.168.1.9, 192.168.1.100" autocomplete="off" spellcheck="false" />
+        <input id="a-excl" class="m" type="text" bind:value={exclusions} placeholder="192.168.1.2-192.168.1.9, 192.168.1.100" autocomplete="off" spellcheck="false" />
       </div>
       {#if editing && (fill || known.length > 0)}
         <section class="subnet">
@@ -316,7 +316,7 @@
                 <span class="k-{seg.kind}" style="left:{b.left}%;width:{b.width}%"></span>
               {/each}
             </div>
-            {#if ends}<div class="ends"><span>{ends[0]}</span><span>{ends[1]}</span></div>{/if}
+            {#if ends}<div class="ends"><span class="m">{ends[0]}</span><span class="m">{ends[1]}</span></div>{/if}
             <ul class="legend">
               {#if fill.gateway}<li><i class="k-gateway"></i>{$_('accounts.net.gateway')}</li>{/if}
               <li><i class="k-pc"></i>{$_('accounts.net.pc')}</li>
@@ -375,23 +375,26 @@
   }
   .eye:hover { color: var(--text); }
   .eye:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
-  /* Le réseau du compte : barre à l'échelle du réseau, libres = le fond. */
-  .subnet { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
-  .subnet .sh { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+  /* Le réseau du compte : barre à l'échelle du réseau, libres = le fond.
+     Passerelle en bleu froid (mesurée), PC en ambre (posé par la personne). */
+  .subnet { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--win); }
+  .subnet .sh { display: flex; justify-content: space-between; gap: 8px; font-weight: 500; font-size: 14px; }
   .subnet .sh .warn { color: var(--warn); font-weight: 500; }
-  .strip { position: relative; height: 22px; border-radius: 4px; background: var(--seg); border: 1px solid var(--line); overflow: hidden; }
-  .strip span { position: absolute; top: 0; bottom: 0; min-width: 2px; }
-  .k-gateway { background: var(--text-2); }
+  .strip { position: relative; height: 28px; border-radius: 4px; background: var(--page); border: 1px solid var(--line); overflow: hidden; }
+  .strip span { position: absolute; top: 0; bottom: 0; min-width: 3px; }
+  .k-gateway { background: var(--cool); }
   .k-pc { background: var(--act); }
   .k-camera { background: var(--ok); }
-  .k-excluded { background: repeating-linear-gradient(135deg, var(--text-2) 0 1px, transparent 1px 4px); }
-  .ends { display: flex; justify-content: space-between; color: var(--text-2); font-size: 11px; }
-  .legend { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 0; padding: 0; list-style: none; color: var(--text-2); font-size: 12px; }
-  .legend li { display: inline-flex; align-items: center; gap: 5px; }
-  .legend i { width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--line); }
-  .legend .count { margin-left: auto; color: var(--text); }
-  .subnet summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
+  .k-excluded { background: repeating-linear-gradient(135deg, var(--line-2) 0 2px, transparent 2px 5px); }
+  .legend .k-excluded { border: 1px solid var(--line-2); }
+  .ends { display: flex; justify-content: space-between; color: var(--text-2); font-size: 12px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; color: var(--text-ink2); font-size: 13px; }
+  .legend li { display: inline-flex; align-items: center; gap: 8px; }
+  .legend i { width: 12px; height: 12px; border-radius: 2px; }
+  .legend .count { margin-left: auto; color: var(--text-2); }
+  .subnet summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
   .known { max-height: 180px; overflow-y: auto; margin-top: 4px; }
-  .mono { font-variant-numeric: tabular-nums; }
+  .known td { height: 36px; }
+  .known tbody tr:last-child td { border-bottom: 0; }
   .eye svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 </style>

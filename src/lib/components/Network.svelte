@@ -280,24 +280,29 @@
   });
 </script>
 
-<div class="tools">
-  <select value={iface} onchange={onIface} disabled={interfaces.length === 0 || switching || posing} aria-label={$_('common.interface.label')}>
-    {#if interfaces.length === 0}<option value="">{$_('common.interface.none')}</option>{/if}
-    {#each interfaces as name}<option value={name}>{name}</option>{/each}
-  </select>
-  <select value={account} onchange={onAccount} disabled={!iface || switching || posing} aria-label={$_('network.account')}>
-    <option value="">{$_('network.dhcp')}</option>
-    {#each choices as a (a.id)}<option value={a.id}>{a.deleted ? $_('network.deletedAccount') : a.name}</option>{/each}
-  </select>
+<div class="tools bar">
+  <span class="title">{$_('common.nav.network')}</span>
+  <label class="field">{$_('common.interface.label')}
+    <select value={iface} onchange={onIface} disabled={interfaces.length === 0 || switching || posing} aria-label={$_('common.interface.label')}>
+      {#if interfaces.length === 0}<option value="">{$_('common.interface.none')}</option>{/if}
+      {#each interfaces as name}<option value={name}>{name}</option>{/each}
+    </select>
+  </label>
+  <label class="field">{$_('accounts.picker')}
+    <select value={account} onchange={onAccount} disabled={!iface || switching || posing} aria-label={$_('network.account')}>
+      <option value="">{$_('network.dhcp')}</option>
+      {#each choices as a (a.id)}<option value={a.id}>{a.deleted ? $_('network.deletedAccount') : a.name}</option>{/each}
+    </select>
+  </label>
   {#if switching}<span class="spin"></span>{:else if shownAddr}<span class="iface">{shownAddr}{#if shown_.via}<span class="via">{$_('network.via', { values: { gateway: shown_.via } })}</span>{/if}</span>{/if}
+  <input type="search" bind:value={$query} placeholder={$_('network.search')} aria-label={$_('network.search')} />
   {#if scanning}
     <button class="btn" onclick={stop}><span class="spin"></span>{$_('network.stop')}</button>
   {:else if posing}
-    <button class="btn def" disabled><span class="spin"></span>{$_('network.posing')}</button>
+    <button class="btn" disabled><span class="spin"></span>{$_('network.posing')}</button>
   {:else}
-    <button class="btn def" onclick={() => scan()} disabled={!iface || switching}>{$_('network.rescan')}</button>
+    <button class="btn" onclick={() => scan()} disabled={!iface || switching}>{$_('network.rescan')}</button>
   {/if}
-  <input type="search" bind:value={$query} placeholder={$_('network.search')} aria-label={$_('network.search')} />
 </div>
 
 {#if error}<p class="err">{$_(error)}</p>{/if}
@@ -310,11 +315,11 @@
       <tr>
         <th class="chk"><input type="checkbox" checked={allSelected} onchange={toggleAll} aria-label={$_('network.selectAll')} /></th>
         <th>{$_('network.col.camera')}</th>
-        <th style="width:112px">{$_('network.col.ip')}</th>
-        <th style="width:136px">{$_('network.col.mac')}</th>
-        <th style="width:100px">{$_('network.col.serial')}</th>
-        <th style="width:84px">{$_('network.col.firmware')}</th>
-        <th style="width:100px">{$_('network.col.addressing')}</th>
+        <th style="width:128px">{$_('network.col.ip')}</th>
+        <th style="width:164px">{$_('network.col.mac')}</th>
+        <th style="width:128px">{$_('network.col.serial')}</th>
+        <th style="width:96px">{$_('network.col.firmware')}</th>
+        <th style="width:112px">{$_('network.col.addressing')}</th>
         <th style="width:112px">{$_('network.col.state')}</th>
         <th class="acts"></th>
       </tr>

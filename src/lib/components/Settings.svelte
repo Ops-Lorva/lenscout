@@ -34,14 +34,16 @@
   });
 </script>
 
-<div class="tools"><span class="title">{$_('common.nav.settings')}</span></div>
+<div class="tools bar"><span class="title">{$_('common.nav.settings')}</span></div>
 
 <div class="settings">
   <span class="k">{$_('settings.theme')}</span>
-  <div class="seg" role="radiogroup" aria-label={$_('settings.theme')}>
-    {#each THEMES as t}
-      <label><input type="radio" name="theme" value={t} checked={$theme === t} onchange={() => setTheme(t)} /><span>{$_(`settings.${t}`)}</span></label>
-    {/each}
+  <div>
+    <div class="seg" role="radiogroup" aria-label={$_('settings.theme')}>
+      {#each THEMES as t}
+        <label><input type="radio" name="theme" value={t} checked={$theme === t} onchange={() => setTheme(t)} /><span>{$_(`settings.${t}`)}</span></label>
+      {/each}
+    </div>
   </div>
 
   <span class="k">{$_('settings.language')}</span>
@@ -59,7 +61,7 @@
   </div>
 
   <span class="k">{$_('settings.version')}</span>
-  <div class="v">{version || '—'}</div>
+  <div class="v m">{version || '—'}</div>
 </div>
 
 <style>

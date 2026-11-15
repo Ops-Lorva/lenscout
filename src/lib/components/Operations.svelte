@@ -226,7 +226,7 @@
   });
 </script>
 
-<div class="tools">
+<div class="tools bar">
   <span class="title">{$_('common.nav.operations')}</span>
   <span class="count">{$_('ops.selected', { values: { count: targets.length } })}</span>
 </div>
@@ -252,9 +252,9 @@
       {@const ph = kind === 'keep_ip' ? $_('ops.unchanged') : ''}
       <label for="o-mask">{$_('configure.mask')}</label><input id="o-mask" type="text" bind:value={mask} placeholder={ph} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />
       <label for="o-gw">{$_('configure.gateway')}</label><input id="o-gw" type="text" bind:value={gateway} placeholder={ph} oninput={() => (touched.gateway = true)} inputmode="decimal" autocomplete="off" />
-      <label for="o-dns">{$_('configure.dns')}</label><input id="o-dns" type="text" bind:value={dns} placeholder={ph} oninput={() => (dnsTouched = true)} autocomplete="off" />
+      <label for="o-dns">{$_('configure.dns')}</label><input id="o-dns" class="m" type="text" bind:value={dns} placeholder={ph} oninput={() => (dnsTouched = true)} autocomplete="off" />
     {:else}
-      <label for="o-ntp">{$_('configure.ntp')}</label><input id="o-ntp" type="text" bind:value={ntp} autocomplete="off" spellcheck="false" />
+      <label for="o-ntp">{$_('configure.ntp')}</label><input id="o-ntp" class="m" type="text" bind:value={ntp} autocomplete="off" spellcheck="false" />
       <label for="o-tz">{$_('configure.timezone')}</label>
       <select id="o-tz" bind:value={timezone}>{#each zones as z}<option value={z}>{z}</option>{/each}</select>
     {/if}
@@ -276,7 +276,7 @@
           <tr>
             <td class="chk"><input type="checkbox" checked={$selection.has(cameraKey(c))} onchange={() => toggle(c)} disabled={running} aria-label={$_('network.select')} /></td>
             <td class="grow" title={cameraName(c)}>{cameraName(c)}</td>
-            <td>{c.ip}</td>
+            <td class="m">{c.ip}</td>
             <td class="mac" class:dim-t={!mac.mac}>{mac.mac ?? '—'}</td>
             <td class:dim-t={addressingKey(c).endsWith('.unknown')}>{$_(addressingKey(c))}</td>
           </tr>
@@ -366,16 +366,19 @@
 {/if}
 
 <style>
-  .step { margin-bottom: 18px; }
-  h4 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  /* Étapes l'une sous l'autre, séparées par un filet, à l'alignement de la barre. */
+  .step { padding: 20px 24px; border-bottom: 1px solid var(--line); }
+  h4 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 15px; font-weight: 500; letter-spacing: -.02em; }
   h4 b {
-    display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
-    background: var(--seg); color: var(--text-2); font-size: 11px; font-weight: 600;
+    display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 4px;
+    border: 1px solid var(--line-2); background: var(--page); color: var(--text-2);
+    font: 500 12px/1 var(--font-mono);
   }
-  .seg { margin-bottom: 12px; }
+  .seg { margin-bottom: 16px; }
   .form { max-width: 560px; }
   .list { max-height: 260px; overflow-y: auto; }
-  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: nowrap; }
+  .mono { font-size: 13px; white-space: nowrap; }
+  .mono b { font-weight: 500; color: var(--cool); }
   .cf { display: block; font-size: 11.5px; }
   .cf.bad { color: var(--err); }
   tr.cur td { background: var(--sel); }

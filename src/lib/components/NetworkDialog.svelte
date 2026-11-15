@@ -90,7 +90,7 @@
       {#if off}<span class="note warn">{$_('configure.off_subnet', { values: { iface } })}</span>{/if}
       <label for="ip-mask">{$_('configure.mask')}</label><input id="ip-mask" type="text" bind:value={mask} oninput={() => (touched.mask = true)} inputmode="decimal" autocomplete="off" />
       <label for="ip-gw">{$_('configure.gateway')}</label><input id="ip-gw" type="text" bind:value={gateway} oninput={() => (touched.gateway = true)} inputmode="decimal" autocomplete="off" />
-      <label for="ip-dns">{$_('configure.dns')}</label><input id="ip-dns" type="text" bind:value={dns} oninput={() => (dnsTouched = true)} autocomplete="off" />
+      <label for="ip-dns">{$_('configure.dns')}</label><input id="ip-dns" class="m" type="text" bind:value={dns} oninput={() => (dnsTouched = true)} autocomplete="off" />
     {/if}
   </div>
   <div class="foot">

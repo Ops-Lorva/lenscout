@@ -50,7 +50,7 @@
       </thead>
       <tbody>
         {#each lines as l, i (i)}
-          <tr><td>{l.name}</td><td>{l.ip}</td><td class="mac">{l.mac}</td></tr>
+          <tr><td>{l.name}</td><td class="m">{l.ip}</td><td class="mac">{l.mac}</td></tr>
         {/each}
       </tbody>
     </table>
@@ -58,7 +58,7 @@
   <div class="foot">
     <span class="sum e">{confirming ? $_('configure.reset.sure', { values: { count: cams.length } }) : ''}</span>
     <button class="btn" onclick={onClose}>{$_('configure.cancel')}</button>
-    <button class="btn def" onclick={submit} disabled={!ready}>
+    <button class="btn danger" class:armed={confirming} onclick={submit} disabled={!ready}>
       {#if busy}<span class="spin"></span>{/if}{$_(confirming ? 'configure.reset.confirm' : 'configure.reset.apply')}
     </button>
   </div>

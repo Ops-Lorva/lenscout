@@ -196,7 +196,8 @@
   });
 </script>
 
-<div class="fbar">
+<div class="fbar tools bar">
+  <span class="title">{$_('common.nav.framing')}</span>
   <form class="byip" onsubmit={(e) => { e.preventDefault(); void openTyped(); }}>
     <input type="text" bind:value={typedIp} placeholder="192.168.1.64" aria-label={$_('framing.ip')}
       inputmode="decimal" autocomplete="off" spellcheck="false" />
@@ -205,7 +206,7 @@
     </button>
   </form>
   <!-- Compte avant le nom de la caméra : sa place ne dépend pas de la longueur du nom. -->
-  <label class="acc"><span class="dim-t">{$_('accounts.picker')}</span> <AccountPicker bind:accountId /></label>
+  <label class="acc field">{$_('accounts.picker')} <AccountPicker bind:accountId /></label>
   {#if cam}
     <strong>{cameraName(cam)}</strong>
     <span class="ip">{cam.ip}</span>
@@ -220,7 +221,7 @@
   {/if}
   {#if cam}
     {#if playing}
-      <button class="btn def" onclick={stop}>{$_('framing.stop')}</button>
+      <button class="btn" onclick={stop}>{$_('framing.stop')}</button>
     {:else}
       <button class="btn def" onclick={play} disabled={!accountId}>{$_('framing.play')}</button>
     {/if}
@@ -259,9 +260,8 @@
 {/if}
 
 <style>
-  .acc { display: inline-flex; align-items: center; gap: 6px; }
-  .byip { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
-  .byip input { width: 130px; }
+  .byip { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+  .byip input { width: 9.5rem; }
   .view { display: flex; align-items: center; justify-content: center; container-type: size; }
   /* Largeur bornée par la zone et par la hauteur transposée via le ratio (unités de conteneur). */
   .frame { position: relative; width: min(100%, calc(100cqh * var(--r))); aspect-ratio: var(--r); }
@@ -273,7 +273,9 @@
     .frame .grid, .frame .ret { display: none; }
   }
   .view:fullscreen { border-radius: 0; background: #000; }
-  .stage { flex: 1; display: flex; gap: 14px; min-height: 0; }
+  /* Image à gauche, panneau des réglages optiques collé à droite (maquette). */
+  .stage { flex: 1; display: flex; min-height: 0; }
+  .stage .view { margin: 24px; }
   .draw { position: absolute; inset: 0; cursor: crosshair; }
   .zone { position: absolute; border: 1.5px solid var(--view-line); background: #ffffff1a; pointer-events: none; }
 </style>

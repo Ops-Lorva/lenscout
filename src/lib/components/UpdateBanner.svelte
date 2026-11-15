@@ -59,8 +59,8 @@
 
 <style>
   .update {
-    display: flex; align-items: center; gap: 10px; padding: 6px 16px; flex-shrink: 0;
-    border-bottom: 1px solid var(--line); background: var(--side); font-size: 12.5px;
+    display: flex; align-items: center; gap: 8px; padding: 8px 24px; flex-shrink: 0;
+    border-bottom: 1px solid var(--line); background: var(--side); font-size: 13px;
   }
   .t { flex: 1; }
   .fail { color: var(--err); margin-left: 6px; }

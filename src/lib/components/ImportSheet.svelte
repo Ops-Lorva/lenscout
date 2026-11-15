@@ -93,10 +93,10 @@
 </Dialog>
 
 <style>
-  .file { color: var(--text-2); font-size: 12px; margin: -8px 0 12px; overflow-wrap: anywhere; }
+  .file { color: var(--text-2); font: 13px var(--font-mono); margin: -8px 0 12px; overflow-wrap: anywhere; }
   .grp { font-size: 12px; color: var(--text-2); margin: 12px 0 5px; }
   .file + .grp { margin-top: 0; }
-  .list { border: 1px solid var(--line); border-radius: 8px; background: var(--field); overflow: hidden; max-height: 220px; overflow-y: auto; }
+  .list { border: 1px solid var(--line); border-radius: 6px; background: var(--field); overflow: hidden; max-height: 220px; overflow-y: auto; }
   .it { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-top: 1px solid var(--line-soft); }
   .it:first-child { border-top: 0; }
   .who { flex: 1; min-width: 0; overflow-wrap: anywhere; }

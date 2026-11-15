@@ -109,14 +109,16 @@
 </script>
 
 {#if cams.length > 0}
-  <div class="tools">
-    <button class="btn" disabled={!activatable} onclick={() => (open = 'activate')}>{$_('configure.activate')}</button>
+  <!-- Barre de la sélection (maquette) : le compte d'abord, Activer en principal, la réinitialisation en rouge. -->
+  <div class="tools selbar">
+    <span class="count">{$_('configure.cameras', { values: { count: cams.length } })}</span>
+    <button class="btn def" disabled={!activatable} onclick={() => (open = 'activate')}>{$_('configure.activate')}</button>
+    <span class="sep" aria-hidden="true"></span>
     <button class="btn" disabled={!ipAllowed} onclick={() => (open = 'network')}>{$_('configure.ip')}</button>
     <!-- Raccourci : l'onglet Opérations, sur Renuméroter, avec la sélection courante (aperçu, confirmation, Arrêter). -->
     <button class="btn" disabled={!batchAllowed} onclick={() => openOperations('renumber')}>{$_('batch.title')}</button>
     <button class="btn" disabled={!allowed} onclick={() => (open = 'time')}>{$_('configure.time')}</button>
-    <button class="btn" disabled={!resetAllowed} onclick={() => (open = 'reset')}>{$_('configure.reset.button')}</button>
-    <span class="count">{$_('configure.cameras', { values: { count: cams.length } })}</span>
+    <button class="btn danger" disabled={!resetAllowed} onclick={() => (open = 'reset')}>{$_('configure.reset.button')}</button>
     {#if busy}<span class="spin" aria-label={$_('configure.busy')}></span>{/if}
     {#if error}<span class="err inline">{$_(error)}</span>{/if}
   </div>

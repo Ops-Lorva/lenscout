@@ -34,17 +34,18 @@
 <style>
   .app { display: flex; flex-direction: column; height: 100vh; position: relative; background: var(--win); color: var(--text); }
   .body { flex: 1; min-height: 0; display: flex; }
-  .pane { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 16px 16px 36px; display: flex; flex-direction: column; }
-  /* Même mise en page que le panneau : chaque écran y était enfant direct. */
+  .pane { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 0 0 36px; display: flex; flex-direction: column; }
+  /* Même mise en page que le panneau : chaque écran y était enfant direct.
+     Bord à bord : chaque écran pose sa barre du haut et ses marges. */
   /* Pleine largeur : les colonnes fixes ne bougent pas, seule la première
      (le nom) prend l'espace ; les boutons restent groupés à gauche. */
   .page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .page[hidden] { display: none; }
   /* Barre d'état : à droite de la barre latérale, par-dessus le bas du panneau. */
   .status {
-    position: absolute; left: 160px; right: 0; bottom: 0;
+    position: absolute; left: 208px; right: 0; bottom: 0;
     border-top: 1px solid var(--line); background: var(--side);
-    padding: 6px 18px; font-size: 12px; color: var(--text-2);
+    padding: 7px 24px; font-size: 13px; color: var(--text-2);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .status b { font-weight: 500; }
