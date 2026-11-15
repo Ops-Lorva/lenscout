@@ -7,6 +7,7 @@ use commands::accounts::{
     cmd_accounts_startup, notice_code,
 };
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
+use commands::ops::{OpsStore, cmd_ops_close, cmd_ops_preview, cmd_ops_step};
 use commands::stream::{StreamState, cmd_identify_camera, cmd_stream_ack, cmd_stream_start, cmd_stream_stop, cmd_stream_views};
 use commands::update::{cmd_apply_update, cmd_check_update};
 use commands::app::{cmd_app_version, cmd_debug_get, cmd_debug_set, cmd_interface_details, cmd_list_interfaces};
@@ -42,6 +43,7 @@ pub fn run() {
         .manage(StreamState::default())
         .manage(FreeIpsState::default())
         .manage(PreviewStore::default())
+        .manage(OpsStore::default())
         .manage(JoinState::default())
         .setup(move |app| {
             // Installeurs laissés par une mise à jour précédente.
@@ -103,6 +105,9 @@ pub fn run() {
             cmd_apply_action,
             cmd_batch_preview,
             cmd_batch_apply,
+            cmd_ops_preview,
+            cmd_ops_step,
+            cmd_ops_close,
             cmd_stream_start,
             cmd_stream_views,
             cmd_image_settings,

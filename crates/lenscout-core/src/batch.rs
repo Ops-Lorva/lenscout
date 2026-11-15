@@ -30,7 +30,7 @@ pub struct Assignment {
 }
 
 /// Codes stables, traduits par le front.
-#[derive(Serialize, thiserror::Error, Debug, PartialEq)]
+#[derive(Serialize, thiserror::Error, Debug, Clone, PartialEq)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum BatchError {
     #[error("aucune caméra sélectionnée")]
@@ -55,6 +55,9 @@ pub enum BatchError {
     IpInUse { ip: Ipv4Addr, mac: Option<String> },
     #[error("{needed} caméras pour {free} adresses libres")]
     NotEnoughFree { needed: usize, free: u32 },
+    /// « Garder les IP » sans masque, passerelle ni DNS : rien à écrire.
+    #[error("rien à changer")]
+    NoChange,
 }
 
 /// Le lot tient-il dans les adresses libres du réseau du compte ? Refusé
@@ -87,15 +90,8 @@ pub fn plan_batch(
     if selection.is_empty() {
         return Err(BatchError::NoSelection);
     }
+    check_request(req)?;
     let m = u32::from(req.mask);
-    // Contigu, ni /0 ni /31 ni /32 : même règle que `vapix::validate_static`.
-    if m.leading_ones() + m.trailing_zeros() != 32 || m.leading_ones() == 0 || m.leading_ones() >= 31 {
-        return Err(BatchError::InvalidMask);
-    }
-    // La caméra n'a que deux emplacements DNS.
-    if req.dns.len() > 2 {
-        return Err(BatchError::TooManyDns);
-    }
     // Marque, puis MAC, avant tout calcul d'adresse.
     let mut macs = Vec::with_capacity(selection.len());
     for cam in selection {
@@ -112,43 +108,11 @@ pub fn plan_batch(
             None => return Err(BatchError::MissingMac { ip: cam.ip }),
         }
     }
-    let start = u32::from(req.start);
-    let net = start & m;
-    // Les adresses de la plage, à partir de `start`, exclusions sautées ; toute
-    // la plage doit tenir dans le sous-réseau de `start`.
-    let mut addrs = Vec::with_capacity(selection.len());
-    let mut next = Some(start);
-    for _ in selection {
-        let a = next.and_then(|n| excluded.next_free(n)).ok_or(BatchError::RangeOverflow)?;
-        if a & m != net {
-            return Err(BatchError::RangeOverflow);
-        }
-        addrs.push(a);
-        next = a.checked_add(1);
-    }
+    let net = u32::from(req.start) & m;
+    let addrs = addresses(selection, req, excluded)?;
     if let Some(&a) = addrs.iter().find(|&&a| a == net || a == net | !m) {
         return Err(BatchError::NetworkOrBroadcast { ip: Ipv4Addr::from(a) });
     }
-    // Une caméra dont l'adresse actuelle tombe dans la plage la garde ; les
-    // autres prennent les adresses restantes, dans l'ordre affiché. Aucune ne
-    // reçoit donc l'adresse actuelle d'une autre caméra du lot : un échange
-    // ou une chaîne dépendrait de l'ordre d'application et de la réussite de
-    // la caméra précédente (une caméra refusée est sautée, les autres
-    // continuent), et laisserait deux caméras sur la même adresse.
-    let mut left: Vec<Option<u32>> = addrs.iter().copied().map(Some).collect();
-    let mut chosen: Vec<Option<u32>> = selection
-        .iter()
-        .map(|cam| {
-            let own = u32::from(cam.ip);
-            let slot = left.iter_mut().find(|a| **a == Some(own))?;
-            slot.take()
-        })
-        .collect();
-    let mut rest = left.into_iter().flatten();
-    for c in chosen.iter_mut().filter(|c| c.is_none()) {
-        *c = rest.next();
-    }
-    let addrs: Vec<u32> = chosen.into_iter().map(|c| c.expect("autant d'adresses que de caméras")).collect();
     // Passerelle : dans le sous-réseau, ni adresse réseau ni broadcast.
     if let Some(gw) = req.gateway {
         let g = u32::from(gw);
@@ -190,6 +154,142 @@ pub fn plan_batch(
         return Err(BatchError::GatewayInRange { ip: gw });
     }
     Ok(out)
+}
+
+/// Masque et DNS de la demande, avant toute adresse.
+fn check_request(req: &BatchRequest) -> Result<(), BatchError> {
+    if !usable_mask(req.mask) {
+        return Err(BatchError::InvalidMask);
+    }
+    // La caméra n'a que deux emplacements DNS.
+    if req.dns.len() > 2 {
+        return Err(BatchError::TooManyDns);
+    }
+    Ok(())
+}
+
+/// Contigu, ni /0 ni /31 ni /32 : même règle que `vapix::validate_static`.
+pub fn usable_mask(mask: Ipv4Addr) -> bool {
+    let m = u32::from(mask);
+    m.leading_ones() + m.trailing_zeros() == 32 && m.leading_ones() != 0 && m.leading_ones() < 31
+}
+
+/// Les adresses du plan, une par caméra de `selection` (ordre affiché) : la
+/// plage à partir de `start`, IP exclues sautées, tenue dans le sous-réseau.
+fn addresses(selection: &[Camera], req: &BatchRequest, excluded: &Exclusions) -> Result<Vec<u32>, BatchError> {
+    let m = u32::from(req.mask);
+    let start = u32::from(req.start);
+    let net = start & m;
+    // Les adresses de la plage, à partir de `start`, exclusions sautées ; toute
+    // la plage doit tenir dans le sous-réseau de `start`.
+    let mut addrs = Vec::with_capacity(selection.len());
+    let mut next = Some(start);
+    for _ in selection {
+        let a = next.and_then(|n| excluded.next_free(n)).ok_or(BatchError::RangeOverflow)?;
+        if a & m != net {
+            return Err(BatchError::RangeOverflow);
+        }
+        addrs.push(a);
+        next = a.checked_add(1);
+    }
+    // Une caméra dont l'adresse actuelle tombe dans la plage la garde ; les
+    // autres prennent les adresses restantes, dans l'ordre affiché. Aucune ne
+    // reçoit donc l'adresse actuelle d'une autre caméra du lot : un échange
+    // ou une chaîne dépendrait de l'ordre d'application et de la réussite de
+    // la caméra précédente (une caméra refusée est sautée, les autres
+    // continuent), et laisserait deux caméras sur la même adresse.
+    let mut left: Vec<Option<u32>> = addrs.iter().copied().map(Some).collect();
+    let mut chosen: Vec<Option<u32>> = selection
+        .iter()
+        .map(|cam| {
+            let own = u32::from(cam.ip);
+            let slot = left.iter_mut().find(|a| **a == Some(own))?;
+            slot.take()
+        })
+        .collect();
+    let mut rest = left.into_iter().flatten();
+    for c in chosen.iter_mut().filter(|c| c.is_none()) {
+        *c = rest.next();
+    }
+    Ok(chosen.into_iter().map(|c| c.expect("autant d'adresses que de caméras")).collect())
+}
+
+/// Une ligne du plan et ses refus : l'aperçu d'une opération de masse les
+/// montre tous, ligne par ligne, au lieu de s'arrêter au premier.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedRow {
+    pub new_ip: Ipv4Addr,
+    pub conflicts: Vec<BatchError>,
+}
+
+/// `plan_batch` ligne par ligne. Restent des erreurs de toute la demande :
+/// sélection vide, masque, DNS, plage hors du sous-réseau, passerelle hors du
+/// sous-réseau. Le reste est rendu sur sa ligne : marque sans écriture,
+/// identité absente (ni MAC ni n° de série : une caméra vue à travers le
+/// routeur n'a pas de MAC, son n° de série suffit à `verify_identity`),
+/// adresse réseau ou broadcast, adresse prise (poste ou autre caméra),
+/// passerelle sur l'adresse de la ligne.
+pub fn plan_rows(
+    selection: &[Camera],
+    req: &BatchRequest,
+    others: &[Camera],
+    reserved: &[Ipv4Addr],
+    excluded: &Exclusions,
+) -> Result<Vec<PlannedRow>, BatchError> {
+    if selection.is_empty() {
+        return Err(BatchError::NoSelection);
+    }
+    check_request(req)?;
+    let m = u32::from(req.mask);
+    let net = u32::from(req.start) & m;
+    let addrs = addresses(selection, req, excluded)?;
+    if let Some(gw) = req.gateway {
+        let g = u32::from(gw);
+        if g & m != net || g == net || g == net | !m {
+            return Err(BatchError::GatewayOutOfSubnet { ip: gw });
+        }
+    }
+    let rows = selection
+        .iter()
+        .zip(addrs)
+        .enumerate()
+        .map(|(i, (cam, a))| {
+            let new_ip = Ipv4Addr::from(a);
+            let mut conflicts = Vec::new();
+            let supported = match cam.family {
+                Family::Axis => true,
+                Family::Hikvision => sadp::can_configure(),
+                Family::Other => false,
+            };
+            if !supported {
+                conflicts.push(BatchError::Unsupported { ip: cam.ip });
+            }
+            let known = |f: &Option<String>| f.as_deref().is_some_and(|s| !s.trim().is_empty());
+            if !known(&cam.mac) && !known(&cam.serial) {
+                conflicts.push(BatchError::MissingMac { ip: cam.ip });
+            }
+            if a == net || a == net | !m {
+                conflicts.push(BatchError::NetworkOrBroadcast { ip: new_ip });
+            }
+            let taken = selection
+                .iter()
+                .enumerate()
+                .filter(|(j, o)| *j != i && o.ip == new_ip)
+                .map(|(_, o)| o)
+                .chain(others.iter().filter(|o| o.ip == new_ip))
+                .next();
+            if reserved.contains(&new_ip) {
+                conflicts.push(BatchError::IpInUse { ip: new_ip, mac: None });
+            } else if let Some(o) = taken {
+                conflicts.push(BatchError::IpInUse { ip: new_ip, mac: o.mac.clone() });
+            }
+            if req.gateway == Some(new_ip) {
+                conflicts.push(BatchError::GatewayInRange { ip: new_ip });
+            }
+            PlannedRow { new_ip, conflicts }
+        })
+        .collect();
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -486,6 +586,53 @@ mod tests {
         let ex = Exclusions::default().with_addresses([ip("10.0.50.12")]);
         let rows = plan_batch(&[axis(200), axis(201)], &req("10.0.50.11"), &[], &[], &ex).unwrap();
         assert_eq!(rows.iter().map(|r| r.new_ip).collect::<Vec<_>>(), [ip("10.0.50.11"), ip("10.0.50.13")]);
+    }
+
+    #[test]
+    fn plan_rows_lists_each_conflict_on_its_row_without_stopping() {
+        // .11 (prise par une autre caméra) et .12 (le poste) : deux lignes en
+        // conflit, la troisième propre.
+        let sel = [axis(200), axis(201), axis(202)];
+        let others = [axis(11)];
+        let rows = plan_rows(&sel, &req("10.0.50.11"), &others, &[ip("10.0.50.12")], &none()).unwrap();
+        assert_eq!(rows.iter().map(|r| r.new_ip).collect::<Vec<_>>(), [ip("10.0.50.11"), ip("10.0.50.12"), ip("10.0.50.13")]);
+        assert_eq!(rows[0].conflicts, [BatchError::IpInUse { ip: ip("10.0.50.11"), mac: Some("AC:CC:8E:00:00:0B".into()) }]);
+        assert_eq!(rows[1].conflicts, [BatchError::IpInUse { ip: ip("10.0.50.12"), mac: None }]);
+        assert!(rows[2].conflicts.is_empty());
+    }
+
+    #[test]
+    fn plan_rows_flags_brand_identity_broadcast_and_gateway_per_row() {
+        let mut hik = cam(3, Some("AA:BB:CC:00:00:03"), Family::Hikvision);
+        hik.serial = None;
+        let mut nothing = cam(4, None, Family::Axis);
+        nothing.serial = None;
+        // Vue à travers le routeur : pas de MAC, mais un n° de série. Elle passe.
+        let routed = cam(5, None, Family::Axis);
+        let sel = [routed, hik, nothing];
+        let mut r = req("10.0.50.253");
+        r.gateway = Some(ip("10.0.50.254"));
+        let rows = plan_rows(&sel, &r, &[], &[], &none()).unwrap();
+        assert!(rows[0].conflicts.is_empty());
+        assert_eq!(rows[1].conflicts, [BatchError::Unsupported { ip: ip("10.0.50.3") }, BatchError::GatewayInRange { ip: ip("10.0.50.254") }]);
+        assert_eq!(
+            rows[2].conflicts,
+            [BatchError::MissingMac { ip: ip("10.0.50.4") }, BatchError::NetworkOrBroadcast { ip: ip("10.0.50.255") }]
+        );
+    }
+
+    #[test]
+    fn plan_rows_keeps_the_errors_of_the_whole_request() {
+        let sel = [axis(1), axis(2)];
+        assert_eq!(plan_rows(&[], &req("10.0.50.11"), &[], &[], &none()), Err(BatchError::NoSelection));
+        let mut r = req("10.0.50.11");
+        r.mask = ip("255.0.255.0");
+        assert_eq!(plan_rows(&sel, &r, &[], &[], &none()), Err(BatchError::InvalidMask));
+        let mut r = req("10.0.50.11");
+        r.gateway = Some(ip("10.0.51.1"));
+        assert_eq!(plan_rows(&sel, &r, &[], &[], &none()), Err(BatchError::GatewayOutOfSubnet { ip: ip("10.0.51.1") }));
+        let sel: Vec<Camera> = (1..=4).map(axis).collect();
+        assert_eq!(plan_rows(&sel, &req("10.0.50.253"), &[], &[], &none()), Err(BatchError::RangeOverflow));
     }
 
     #[test]

@@ -114,7 +114,7 @@ pub(crate) fn one_camera_for_cleartext(action: &Action, cameras: usize) -> Resul
 /// Le contexte d'écriture, identique pour une action et pour un lot : sous-réseau
 /// de l'interface choisie, ce que le dernier scan a entendu, SADP pour une
 /// sélection Hikvision.
-async fn build_context(
+pub(crate) async fn build_context(
     iface: String,
     cameras: &[Camera],
     scan: &ScanState,
@@ -234,9 +234,9 @@ pub async fn cmd_apply_action(
 }
 
 /// Durée de vie d'un aperçu : passé ce délai le réseau a pu changer.
-const PREVIEW_TTL: Duration = Duration::from_secs(10 * 60);
+pub(crate) const PREVIEW_TTL: Duration = Duration::from_secs(10 * 60);
 /// Aperçus gardés en même temps ; le plus ancien part au-delà.
-const PREVIEW_MAX: usize = 8;
+pub(crate) const PREVIEW_MAX: usize = 8;
 
 /// Un aperçu validé, tel que Rust l'a calculé : c'est lui, et lui seul, que
 /// `cmd_batch_apply` applique.
@@ -341,20 +341,7 @@ pub async fn cmd_batch_preview(
     accounts: State<'_, Mutex<AccountBook>>,
 ) -> Result<BatchPreview, PreviewError> {
     let req: BatchRequest = req.into();
-    let name = iface;
-    let host = tauri::async_runtime::spawn_blocking(move || {
-        if !list_interfaces_up().contains(&name) {
-            return Err("iface_unknown".to_string());
-        }
-        ScanInterface::from_details(&name, &get_interface_details(&name))
-            .ok_or_else(|| "iface_no_ipv4".to_string())
-    })
-    .await
-    .map_err(|_| PreviewError::Code("internal".into()))?
-    .map_err(PreviewError::Code)?;
-    // Les deux adresses du poste sont réservées : la principale et celle d'un compte.
-    let primary = host.ip;
-    let host = join.scope(host);
+    let (primary, host) = host_addresses(iface, &join).await.map_err(PreviewError::Code)?;
     // Les adresses actuelles du lot sont libres pour lui ; celles des autres
     // caméras connues du compte sont sautées comme les IP exclues.
     let own: Vec<Ipv4Addr> = selection.iter().map(|c| c.ip).collect();
@@ -363,6 +350,23 @@ pub async fn cmd_batch_preview(
     let rows = plan_batch(&selection, &req, &others, &[primary, host.ip], &excluded)?;
     let id = remember_preview(&store, selection, rows.clone(), req, &host, Instant::now());
     Ok(BatchPreview { id, rows })
+}
+
+/// L'interface choisie, et l'adresse principale du poste sur elle. Les deux
+/// adresses du poste sont réservées par un plan : la principale et celle d'un
+/// compte (l'interface rendue est dans son réseau quand il est posé).
+pub(crate) async fn host_addresses(iface: String, join: &super::join::JoinState) -> Result<(Ipv4Addr, ScanInterface), String> {
+    let host = tauri::async_runtime::spawn_blocking(move || {
+        if !list_interfaces_up().contains(&iface) {
+            return Err("iface_unknown".to_string());
+        }
+        ScanInterface::from_details(&iface, &get_interface_details(&iface))
+            .ok_or_else(|| "iface_no_ipv4".to_string())
+    })
+    .await
+    .map_err(|_| "internal".to_string())??;
+    let primary = host.ip;
+    Ok((primary, join.scope(host)))
 }
 
 /// Garde un aperçu sous l'interface telle que le scan et l'application la

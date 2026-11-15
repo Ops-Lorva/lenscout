@@ -319,6 +319,53 @@ pub async fn boot_proto(http: &dyn CameraHttp, base: &str, creds: &Credentials) 
     }
 }
 
+/// Réglage réseau IPv4 lu sur la caméra : ce qu'une opération de masse
+/// montre « avant », et ce qu'elle garde des champs laissés vides.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct NetConfig {
+    pub addressing: Addressing,
+    pub ip: Ipv4Addr,
+    pub mask: Ipv4Addr,
+    pub gateway: Option<Ipv4Addr>,
+    pub dns: Vec<Ipv4Addr>,
+}
+
+/// Les paramètres `Network.*` que `set_network` écrit, lus avec le compte
+/// (groupe non lisible anonymement). Adresse et masque sont exigés ; une
+/// passerelle ou un DNS vide (ou `0.0.0.0`) est absent. // À VÉRIFIER sur
+/// vraie Axis : la liste de groupes séparés par des virgules.
+pub async fn network_config(http: &dyn CameraHttp, base: &str, creds: &Credentials) -> Result<NetConfig, VapixError> {
+    let req = HttpRequest {
+        method: Method::Get,
+        url: url(
+            base,
+            "/axis-cgi/param.cgi?action=list&group=Network.BootProto,Network.IPAddress,Network.SubnetMask,Network.DefaultRouter,Network.DNSServer1,Network.DNSServer2",
+        ),
+        body: None,
+        content_type: None,
+    };
+    let resp = http.send(req, Some(creds)).await?;
+    require_text_ok(&resp)?;
+    let body = String::from_utf8_lossy(&resp.body);
+    let value = |name: &str| {
+        body.lines()
+            .filter_map(|l| l.trim().split_once('='))
+            .find(|(k, _)| k.trim().ends_with(&format!("Network.{name}")))
+            .map(|(_, v)| v.trim().to_string())
+    };
+    let addr = |name: &str| value(name).and_then(|v| v.parse::<Ipv4Addr>().ok()).filter(|a| !a.is_unspecified());
+    let addressing = match value("BootProto").map(|v| v.to_ascii_lowercase()).as_deref() {
+        Some("dhcp") => Addressing::Dhcp,
+        Some("none") => Addressing::Static,
+        _ => return Err(VapixError::Parse("Network.BootProto illisible".into())),
+    };
+    let (Some(ip), Some(mask)) = (addr("IPAddress"), addr("SubnetMask")) else {
+        return Err(VapixError::Parse("Network.IPAddress / SubnetMask illisible".into()));
+    };
+    let dns = ["DNSServer1", "DNSServer2"].iter().filter_map(|n| addr(n)).collect();
+    Ok(NetConfig { addressing, ip, mask, gateway: addr("DefaultRouter"), dns })
+}
+
 /// `boot_proto` pour plusieurs caméras (`(adresse, base)`), au plus
 /// `parallel` à la fois. Seules les lectures réussies reviennent : une caméra
 /// muette, un compte refusé ou une réponse illisible laissent « inconnu ».
@@ -1108,6 +1155,40 @@ mod tests {
             let r = &http.requests()[0];
             assert_eq!(r.url, "http://192.0.2.11/axis-cgi/param.cgi?action=list&group=Network.BootProto");
             assert_eq!(r.login.as_deref(), Some("root"));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_network_settings_are_read_with_the_account() {
+        let body = "root.Network.BootProto=none\nroot.Network.IPAddress=10.0.50.11\nroot.Network.SubnetMask=255.255.255.0\n\
+                    root.Network.DefaultRouter=10.0.50.1\nroot.Network.DNSServer1=10.0.50.2\nroot.Network.DNSServer2=0.0.0.0\n";
+        let http = FakeHttp::new().on(Method::Get, "/axis-cgi/param.cgi", 200, body);
+        let got = network_config(&http, BASE, &creds("root", "x")).await.unwrap();
+        assert_eq!(
+            got,
+            NetConfig {
+                addressing: Addressing::Static,
+                ip: "10.0.50.11".parse().unwrap(),
+                mask: "255.255.255.0".parse().unwrap(),
+                gateway: Some("10.0.50.1".parse().unwrap()),
+                dns: vec!["10.0.50.2".parse().unwrap()],
+            }
+        );
+        let r = &http.requests()[0];
+        assert_eq!(
+            r.url,
+            "http://192.0.2.11/axis-cgi/param.cgi?action=list&group=Network.BootProto,Network.IPAddress,Network.SubnetMask,Network.DefaultRouter,Network.DNSServer1,Network.DNSServer2"
+        );
+        assert_eq!(r.login.as_deref(), Some("root"));
+        // Sans passerelle ni DNS : rien d'inventé.
+        let bare = "root.Network.BootProto=dhcp\nroot.Network.IPAddress=10.0.50.12\nroot.Network.SubnetMask=255.255.0.0\nroot.Network.DefaultRouter=\n";
+        let http = FakeHttp::new().on(Method::Get, "/axis-cgi/param.cgi", 200, bare);
+        let got = network_config(&http, BASE, &creds("root", "x")).await.unwrap();
+        assert_eq!((got.addressing, got.gateway, got.dns.len()), (Addressing::Dhcp, None, 0));
+        // Adresse ou masque absent, refus : une erreur, jamais une supposition.
+        for body in ["root.Network.BootProto=none\nroot.Network.IPAddress=10.0.50.11\n", "# Error: Error -1 getting param\n"] {
+            let http = FakeHttp::new().on(Method::Get, "/axis-cgi/param.cgi", 200, body);
+            assert!(network_config(&http, BASE, &creds("root", "x")).await.is_err(), "{body}");
         }
     }
 

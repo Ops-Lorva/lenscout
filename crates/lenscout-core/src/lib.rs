@@ -19,6 +19,7 @@ pub mod migrate;
 pub mod mjpeg;
 pub mod model;
 pub mod oui;
+pub mod ops;
 pub mod permissions;
 pub mod presence;
 pub mod proc;

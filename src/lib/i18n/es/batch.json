@@ -19,7 +19,8 @@
     "ip_in_use": "Dirección ya en uso: {ip}",
     "gateway_out_of_subnet": "Puerta de enlace fuera de la subred: {ip}",
     "too_many_dns": "Más de 2 servidores DNS",
-    "not_enough_free": "{needed} cámaras para {free} direcciones libres"
+    "not_enough_free": "{needed} cámaras para {free} direcciones libres",
+    "no_change": "Nada que cambiar: máscara, puerta de enlace o DNS"
   },
   "almostFull": "Red de la cuenta casi llena: {free} libres"
 }

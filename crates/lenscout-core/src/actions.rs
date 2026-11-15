@@ -321,6 +321,13 @@ async fn routed_for(ctx: &ActionContext, ip: Ipv4Addr) -> bool {
     ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str()) && routed_allowed(ctx.routes.as_ref(), &ctx.seen_routed, ip).await
 }
 
+/// Jointe sans IP temporaire : dans le sous-réseau de l'interface, ou à
+/// travers le routeur (`routed_for`). Seule condition pour qu'une lecture
+/// avec le compte parte vers elle hors d'une action (aperçu d'une opération).
+pub async fn direct(ctx: &ActionContext, ip: Ipv4Addr) -> bool {
+    on_subnet(&ctx.iface, ip) || routed_for(ctx, ip).await
+}
+
 fn result(cam: &Camera, outcome: Result<(), ActionError>) -> ActionResult {
     ActionResult {
         key: row_key(cam),
