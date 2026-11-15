@@ -1,9 +1,21 @@
 {
   "netmask": "255.255.255.0",
   "pool": [
-    "10.0.20.46", "10.0.20.47", "10.0.20.48", "10.0.20.49", "10.0.20.50",
-    "10.0.20.51", "10.0.20.52", "10.0.20.53", "10.0.20.54", "10.0.20.55",
-    "10.0.20.56", "10.0.20.57", "10.0.20.58", "10.0.20.59", "10.0.20.60"
+    "10.0.20.46",
+    "10.0.20.47",
+    "10.0.20.48",
+    "10.0.20.49",
+    "10.0.20.50",
+    "10.0.20.51",
+    "10.0.20.52",
+    "10.0.20.53",
+    "10.0.20.54",
+    "10.0.20.55",
+    "10.0.20.56",
+    "10.0.20.57",
+    "10.0.20.58",
+    "10.0.20.59",
+    "10.0.20.60"
   ],
   "cameras": [
     {
@@ -15,7 +27,9 @@
       "state": "new",
       "addressing": "dhcp",
       "gateway": "10.0.20.1",
-      "dns": ["10.0.20.1"],
+      "dns": [
+        "10.0.20.1"
+      ],
       "users": {}
     },
     {
@@ -27,8 +41,12 @@
       "state": "activated",
       "addressing": "dhcp",
       "gateway": "10.0.20.1",
-      "dns": ["10.0.20.1"],
-      "users": {"root": "Chantier2026!"}
+      "dns": [
+        "10.0.20.1"
+      ],
+      "users": {
+        "root": "Chantier2026!"
+      }
     },
     {
       "ip": "10.0.20.33",
@@ -40,8 +58,13 @@
       "addressing": "static",
       "mask": "255.255.255.0",
       "gateway": "10.0.20.1",
-      "dns": ["10.0.20.1", "1.1.1.1"],
-      "users": {"root": "Lentille#77"}
+      "dns": [
+        "10.0.20.1",
+        "1.1.1.1"
+      ],
+      "users": {
+        "root": "Lentille#77"
+      }
     },
     {
       "ip": "10.0.20.35",
@@ -63,8 +86,12 @@
       "addressing": "static",
       "mask": "255.255.255.0",
       "gateway": "10.0.20.1",
-      "dns": ["10.0.20.1"],
-      "users": {"admin": "DomeQ6!2026"}
+      "dns": [
+        "10.0.20.1"
+      ],
+      "users": {
+        "root": "Chantier2026!"
+      }
     },
     {
       "ip": "10.0.20.39",
@@ -75,8 +102,12 @@
       "state": "activated",
       "addressing": "dhcp",
       "gateway": "10.0.20.1",
-      "dns": ["10.0.20.1"],
-      "users": {"root": "Chantier2026!"}
+      "dns": [
+        "10.0.20.1"
+      ],
+      "users": {
+        "root": "Chantier2026!"
+      }
     },
     {
       "ip": "10.0.20.41",
@@ -88,12 +119,28 @@
       "addressing": "static",
       "mask": "255.255.255.0",
       "gateway": "10.0.20.1",
-      "dns": ["10.0.20.1"],
-      "users": {"root": "MultiCapteur$9"},
+      "dns": [
+        "10.0.20.1"
+      ],
+      "users": {
+        "root": "Lentille#77"
+      },
       "views": [
-        {"source": "0", "name": "Vue capteur 1", "resolution": "2592x1944,1920x1080,1280x720"},
-        {"source": "1", "name": "Vue capteur 2", "resolution": "2592x1944,1920x1080,1280x720"},
-        {"source": "1,0", "name": "Vue panoramique", "resolution": "2592x972"}
+        {
+          "source": "0",
+          "name": "Vue capteur 1",
+          "resolution": "2592x1944,1920x1080,1280x720"
+        },
+        {
+          "source": "1",
+          "name": "Vue capteur 2",
+          "resolution": "2592x1944,1920x1080,1280x720"
+        },
+        {
+          "source": "1,0",
+          "name": "Vue panoramique",
+          "resolution": "2592x972"
+        }
       ]
     },
     {
@@ -114,7 +161,9 @@
       "firmware": "V5.7.15",
       "state": "activated",
       "addressing": "dhcp",
-      "users": {"admin": "HikPass#2026"}
+      "users": {
+        "admin": "HikPass#2026"
+      }
     }
   ]
 }
