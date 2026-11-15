@@ -403,6 +403,13 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method, path, query):
         body = self._read_body()
 
+        # Une caméra non-Axis (Hikvision) ne répond à AUCUN endpoint Axis :
+        # sinon LenScout, qui sonde `basicdeviceinfo.cgi` en premier, la prendrait
+        # pour une Axis. Une vraie Hikvision renvoie 404 là, puis est reconnue
+        # par son ISAPI.
+        if self.cam.brand != "axis" and path.startswith("/axis-cgi/"):
+            return self._send(404, "Not Found")
+
         # 1. Identité (anonyme)
         if path == "/axis-cgi/basicdeviceinfo.cgi" and method == "POST":
             return self._basic_device_info()
