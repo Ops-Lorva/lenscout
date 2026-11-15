@@ -128,9 +128,10 @@
 
   // Caméra ou compte prêts : le flux démarre tout seul (plus de bouton Lecture).
   // Changer de cible coupe d'abord le flux de la précédente. Une caméra encore
-  // à trancher (family « other », cf. l'effet de ré-identification) n'a pas
-  // d'URL de flux : on attend qu'elle soit relue en Axis, qui repose la cible
-  // et redéclenche cet effet — évite un bref « unsupported_brand ».
+  // à trancher (cf. `needsIdentify` : marque « other », ou vue à travers le
+  // routeur sans être confirmée Axis) peut n'avoir pas d'URL de flux : on attend
+  // qu'elle soit relue avec le compte, qui repose la cible et redéclenche cet
+  // effet — évite un bref « unsupported_brand ».
   $effect(() => {
     void cam; void accountId;
     untrack(() => {
@@ -144,12 +145,13 @@
   // injoignable, vues illisibles — un message au lieu du silence.
   let notice = $state('');
 
-  // Caméra arrivée par « Cadrer » : le scan l'a posée telle qu'il l'a vue, et
-  // une Axis routée y paraît « other » — son sélecteur de vues et son panneau
-  // Axis restent cachés. On la relit avec le compte, comme l'ouverture par IP,
-  // pour trancher sa marque AVANT de lister les vues. `identify` ne rend jamais
+  // Caméra arrivée par « Cadrer » : le scan l'a posée telle qu'il l'a vue. Une
+  // Axis routée, identifiée sans compte au balayage HTTP, y paraît « other » ou
+  // Hikvision — son sélecteur de vues et son panneau Axis restent cachés. On la
+  // relit avec le compte, comme l'ouverture par IP, pour trancher sa marque
+  // AVANT de lister les vues. `identify` rend une caméra sans source et jamais
   // « other » : la relecture ne se répète pas (pas de boucle), et une caméra
-  // déjà identifiée (ouverture par IP, scan de couche 2) passe tout droit.
+  // déjà tranchée (ouverture par IP, scan de couche 2) passe tout droit.
   $effect(() => {
     const c = cam;
     const a = accountId;

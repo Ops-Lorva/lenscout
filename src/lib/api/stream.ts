@@ -45,17 +45,30 @@ export const identifyCamera = (ip: string, accountId: string) =>
 
 /**
  * La caméra posée par « Cadrer » mérite-t-elle d'être relue avec le compte ?
- * Le scan la pose telle qu'il l'a vue ; une Axis routée (balayage HTTP, sans
- * couche 2) y paraît souvent « other », et ni ses vues ni son panneau Axis
- * n'apparaissent. On la ré-identifie tant que sa marque n'est pas tranchée.
- * `identify` ne rend jamais « other » : une fois relue, la garde s'arrête (pas
- * de boucle) ; une marque déjà connue (ouverture par IP) passe tout droit.
+ * Le scan la pose telle qu'il l'a vue. Deux cas valent une relecture :
+ * - marque non tranchée (« other »), d'où qu'elle vienne ;
+ * - caméra vue au balayage du réseau routé (source « http ») et PAS confirmée
+ *   Axis : ce balayage identifie sans compte, et une Axis multicapteur y paraît
+ *   parfois Hikvision (basicdeviceinfo illisible à l'anonyme, repli sur une
+ *   sonde d'une autre marque) — ni ses vues ni son panneau Axis n'apparaissent.
+ * On la ré-identifie alors avec le compte, comme l'ouverture par IP, qui pose la
+ * marque de façon autoritaire. `identify` ne rend jamais « other » et sa caméra
+ * n'a pas de source (`sources: []`) : une fois reposée, la garde s'arrête (pas
+ * de boucle). Une Axis confirmée à l'anonyme, ou une marque de couche 2
+ * (ouverture par IP, SADP/mDNS/WSD), passe tout droit.
  */
-export const needsIdentify = (cam: Camera): boolean => cam.family === 'other';
+export const needsIdentify = (cam: Camera): boolean =>
+  cam.family === 'other' || (cam.family !== 'axis' && cam.sources.includes('http'));
 
-/** L'identité (famille, marque, modèle, série, IP) a-t-elle changé après relecture ? */
+/**
+ * L'identité a-t-elle changé après relecture ? Famille, marque, modèle, série,
+ * IP — et la source : `identify` rend une caméra sans source, donc une caméra
+ * routée (`['http']`) relue change au moins par là, même à marque égale. On la
+ * repose alors pour qu'elle cesse d'être « à relire » et que son flux démarre.
+ */
 export const identityChanged = (a: Camera, b: Camera): boolean =>
-  a.ip !== b.ip || a.family !== b.family || a.brand !== b.brand || a.model !== b.model || a.serial !== b.serial;
+  a.ip !== b.ip || a.family !== b.family || a.brand !== b.brand || a.model !== b.model || a.serial !== b.serial ||
+  a.sources.join() !== b.sources.join();
 
 /**
  * Message visible quand l'identification ou la lecture des vues échoue dans

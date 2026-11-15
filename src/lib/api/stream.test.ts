@@ -104,22 +104,34 @@ test('libellé d’une vue : son nom s’il y en a un, sinon « Vue N »', () =>
   expect(viewLabel({ n: 3, name: null })).toEqual({ key: 'framing.view', values: { n: 3 } });
 });
 
-test('une caméra non tranchée (« other ») se relit avec le compte, une marque connue non', () => {
-  // Une Axis routée (balayage HTTP) arrive « other » : à relire. Une marque
-  // déjà tranchée (ouverture par IP, ou scan de couche 2) passe tout droit.
+test('une caméra non tranchée (« other ») ou vue anonymement à travers le routeur se relit, une marque de couche 2 non', () => {
+  // Non tranchée (« other ») : à relire, d'où qu'elle vienne.
   expect(needsIdentify({ ...axis, sources: [], family: 'other' })).toBe(true);
+  // Le balayage routé (source « http ») n'identifie QU'anonymement : une Axis y
+  // paraît parfois Hikvision (ou reste non confirmée). On la relit avec le
+  // compte, comme l'ouverture par IP, pour trancher sa marque.
+  expect(needsIdentify({ ...axis, sources: ['http'], family: 'hikvision' })).toBe(true);
+  // Une Axis confirmée à l'anonyme (basicdeviceinfo) passe tout droit, même routée.
+  expect(needsIdentify({ ...axis, sources: ['http'] })).toBe(false);
+  // Une marque de couche 2 (ouverture par IP, SADP/mDNS/WSD) est faite avec le
+  // compte ou l'annonce de la caméra : elle passe tout droit.
   expect(needsIdentify({ ...axis, sources: [] })).toBe(false);
+  expect(needsIdentify({ ...axis, sources: ['sadp'], family: 'hikvision' })).toBe(false);
   expect(needsIdentify({ ...axis, sources: [], family: 'hikvision' })).toBe(false);
 });
 
-test('identité changée après relecture : marque, modèle, série, famille ou IP', () => {
-  const base: Camera = { ...axis, sources: [], family: 'other', brand: null, model: null, serial: null };
+test('identité changée après relecture : marque, modèle, série, famille, IP ou source', () => {
+  const base: Camera = { ...axis, sources: ['http'], family: 'other', brand: null, model: null, serial: null };
   expect(identityChanged(base, base)).toBe(false);
   expect(identityChanged({ ...base, family: 'axis' }, base)).toBe(true);
   expect(identityChanged({ ...base, brand: 'AXIS' }, base)).toBe(true);
   expect(identityChanged({ ...base, model: 'P4705-PLVE' }, base)).toBe(true);
   expect(identityChanged({ ...base, serial: 'ACCC8E000002' }, base)).toBe(true);
   expect(identityChanged({ ...base, ip: '192.0.2.21' }, base)).toBe(true);
+  // Relue avec le compte : `identify` rend une caméra sans source (`sources: []`).
+  // Même marque, mais la source change : on repose quand même la cible, pour que
+  // la caméra routée cesse d'être « à relire » et que son flux démarre.
+  expect(identityChanged({ ...base, sources: [] }, base)).toBe(true);
 });
 
 test('message visible d’un échec : identifiants refusés distingués du reste', () => {
