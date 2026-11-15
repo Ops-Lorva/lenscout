@@ -108,7 +108,23 @@ pub async fn identify(http: &dyn CameraHttp, ip: Ipv4Addr, creds: &Credentials) 
     cam.serial = tag(&xml, "serialNumber");
     cam.firmware = tag(&xml, "firmwareVersion");
     cam.mac = tag(&xml, "macAddress");
+    cam.brand = Some(isapi_brand(cam.model.as_deref()).to_string());
     Ok(cam)
+}
+
+/// Marque d'un appareil ISAPI : Hikvision, ou « LTS » (OEM Hikvision) quand le
+/// modèle porte un préfixe LTS. Via le scan routé, SADP ne passe pas (c'est lui
+/// qui distingue LTS d'après la description) ; on retombe sur le modèle ISAPI.
+/// NON VÉRIFIÉ sur une vraie LTS — préfixes d'après les gammes LTS publiques,
+/// à confirmer sur device (comme `sadp.rs`).
+fn isapi_brand(model: Option<&str>) -> &'static str {
+    const LTS_PREFIXES: &[&str] = &["CMIP", "PTZIP", "VSIP", "LTCMIP", "LTN", "LTD", "PLATINUM"];
+    let m = model.unwrap_or("").to_ascii_uppercase();
+    if LTS_PREFIXES.iter().any(|p| m.starts_with(p)) {
+        "LTS"
+    } else {
+        "Hikvision"
+    }
 }
 
 /// Corps de `GET /SDK/activateStatus` d'une Hikvision : lu sans compte (la
@@ -156,6 +172,7 @@ pub async fn identify_anonymous(http: &dyn CameraHttp, ip: Ipv4Addr) -> Option<C
             cam.model = tag(&xml, "model");
             cam.serial = tag(&xml, "serialNumber");
             cam.firmware = tag(&xml, "firmwareVersion");
+            cam.brand = Some(isapi_brand(cam.model.as_deref()).to_string());
             return Some(cam);
         }
     }
@@ -217,6 +234,28 @@ mod tests {
         assert_eq!(cam.firmware.as_deref(), Some("V5.7.3"));
         let isapi = http.requests().into_iter().find(|r| r.url.contains("ISAPI")).unwrap();
         assert_eq!(isapi.login.as_deref(), Some("admin"));
+    }
+
+    #[tokio::test]
+    async fn une_lts_se_reconnait_par_le_prefixe_du_modele() {
+        // OEM Hikvision : même ISAPI, modèle préfixé LTS (CMIP...). SADP ne
+        // passe pas au scan routé, c'est le modèle qui tranche.
+        let lts = HIK.replace("DS-2CD2143G2-I", "CMIP7442W-28M");
+        let http = FakeHttp::new()
+            .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 404, "")
+            .on(Method::Get, "/axis-cgi/param.cgi", 404, "")
+            .on(Method::Get, "/ISAPI/System/deviceInfo", 200, lts);
+        let cam = identify_anonymous(&http, ip()).await.unwrap();
+        assert_eq!(cam.family, Family::Hikvision);
+        assert_eq!(cam.brand.as_deref(), Some("LTS"));
+    }
+
+    #[test]
+    fn isapi_brand_distingue_lts_des_hikvision() {
+        assert_eq!(isapi_brand(Some("CMIP7442W-28M")), "LTS");
+        assert_eq!(isapi_brand(Some("ptzip20x")), "LTS");
+        assert_eq!(isapi_brand(Some("DS-2CD2143G2-I")), "Hikvision");
+        assert_eq!(isapi_brand(None), "Hikvision");
     }
 
     #[tokio::test]
