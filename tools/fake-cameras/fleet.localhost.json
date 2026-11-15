@@ -1,0 +1,58 @@
+{
+  "_comment": "Parc miniature sur loopback (127.0.0.0/8 est entièrement local sous Linux). Sert à l'auto-test par curl, sans alias ni root : lancer avec --port 8080.",
+  "netmask": "255.255.255.0",
+  "pool": ["127.0.0.90", "127.0.0.91", "127.0.0.92"],
+  "cameras": [
+    {
+      "ip": "127.0.0.30",
+      "brand": "axis",
+      "model": "P3268-LVE",
+      "serial": "ACCC8E100001",
+      "firmware": "11.11.73",
+      "state": "new",
+      "addressing": "dhcp",
+      "users": {}
+    },
+    {
+      "ip": "127.0.0.31",
+      "brand": "axis",
+      "model": "M2036-LE",
+      "serial": "ACCC8E100002",
+      "firmware": "11.9.54",
+      "state": "activated",
+      "addressing": "static",
+      "mask": "255.255.255.0",
+      "gateway": "10.0.20.1",
+      "dns": ["10.0.20.1", "1.1.1.1"],
+      "users": {"root": "Lentille#77"}
+    },
+    {
+      "ip": "127.0.0.41",
+      "brand": "axis",
+      "model": "P4705-PLVE",
+      "serial": "ACCC8E100007",
+      "firmware": "11.11.73",
+      "state": "activated",
+      "addressing": "static",
+      "mask": "255.255.255.0",
+      "gateway": "10.0.20.1",
+      "dns": ["10.0.20.1"],
+      "users": {"root": "MultiCapteur$9"},
+      "views": [
+        {"source": "0", "name": "Vue capteur 1", "resolution": "2592x1944,1920x1080,1280x720"},
+        {"source": "1", "name": "Vue capteur 2", "resolution": "2592x1944,1920x1080,1280x720"},
+        {"source": "1,0", "name": "Vue panoramique", "resolution": "2592x972"}
+      ]
+    },
+    {
+      "ip": "127.0.0.45",
+      "brand": "hikvision",
+      "model": "DS-2CD2043G2-I",
+      "serial": "DS-2CD2043G2-I20240101AAWRE00000001",
+      "firmware": "V5.7.15",
+      "state": "activated",
+      "addressing": "dhcp",
+      "users": {"admin": "HikPass#2026"}
+    }
+  ]
+}

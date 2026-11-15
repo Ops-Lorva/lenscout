@@ -1,0 +1,120 @@
+{
+  "netmask": "255.255.255.0",
+  "pool": [
+    "10.0.20.46", "10.0.20.47", "10.0.20.48", "10.0.20.49", "10.0.20.50",
+    "10.0.20.51", "10.0.20.52", "10.0.20.53", "10.0.20.54", "10.0.20.55",
+    "10.0.20.56", "10.0.20.57", "10.0.20.58", "10.0.20.59", "10.0.20.60"
+  ],
+  "cameras": [
+    {
+      "ip": "10.0.20.30",
+      "brand": "axis",
+      "model": "P3268-LVE",
+      "serial": "ACCC8E100001",
+      "firmware": "11.11.73",
+      "state": "new",
+      "addressing": "dhcp",
+      "gateway": "10.0.20.1",
+      "dns": ["10.0.20.1"],
+      "users": {}
+    },
+    {
+      "ip": "10.0.20.31",
+      "brand": "axis",
+      "model": "P3268-LVE",
+      "serial": "ACCC8E100002",
+      "firmware": "11.11.73",
+      "state": "activated",
+      "addressing": "dhcp",
+      "gateway": "10.0.20.1",
+      "dns": ["10.0.20.1"],
+      "users": {"root": "Chantier2026!"}
+    },
+    {
+      "ip": "10.0.20.33",
+      "brand": "axis",
+      "model": "M2036-LE",
+      "serial": "ACCC8E100003",
+      "firmware": "11.9.54",
+      "state": "activated",
+      "addressing": "static",
+      "mask": "255.255.255.0",
+      "gateway": "10.0.20.1",
+      "dns": ["10.0.20.1", "1.1.1.1"],
+      "users": {"root": "Lentille#77"}
+    },
+    {
+      "ip": "10.0.20.35",
+      "brand": "axis",
+      "model": "M2036-LE",
+      "serial": "ACCC8E100004",
+      "firmware": "11.9.54",
+      "state": "new",
+      "addressing": "dhcp",
+      "users": {}
+    },
+    {
+      "ip": "10.0.20.37",
+      "brand": "axis",
+      "model": "Q6135-LE",
+      "serial": "ACCC8E100005",
+      "firmware": "11.11.73",
+      "state": "activated",
+      "addressing": "static",
+      "mask": "255.255.255.0",
+      "gateway": "10.0.20.1",
+      "dns": ["10.0.20.1"],
+      "users": {"admin": "DomeQ6!2026"}
+    },
+    {
+      "ip": "10.0.20.39",
+      "brand": "axis",
+      "model": "P1468-XLE",
+      "serial": "ACCC8E100006",
+      "firmware": "11.11.73",
+      "state": "activated",
+      "addressing": "dhcp",
+      "gateway": "10.0.20.1",
+      "dns": ["10.0.20.1"],
+      "users": {"root": "Chantier2026!"}
+    },
+    {
+      "ip": "10.0.20.41",
+      "brand": "axis",
+      "model": "P4705-PLVE",
+      "serial": "ACCC8E100007",
+      "firmware": "11.11.73",
+      "state": "activated",
+      "addressing": "static",
+      "mask": "255.255.255.0",
+      "gateway": "10.0.20.1",
+      "dns": ["10.0.20.1"],
+      "users": {"root": "MultiCapteur$9"},
+      "views": [
+        {"source": "0", "name": "Vue capteur 1", "resolution": "2592x1944,1920x1080,1280x720"},
+        {"source": "1", "name": "Vue capteur 2", "resolution": "2592x1944,1920x1080,1280x720"},
+        {"source": "1,0", "name": "Vue panoramique", "resolution": "2592x972"}
+      ]
+    },
+    {
+      "ip": "10.0.20.43",
+      "brand": "axis",
+      "model": "P1468-XLE",
+      "serial": "ACCC8E100008",
+      "firmware": "11.9.54",
+      "state": "new",
+      "addressing": "dhcp",
+      "users": {}
+    },
+    {
+      "ip": "10.0.20.45",
+      "brand": "hikvision",
+      "model": "DS-2CD2043G2-I",
+      "serial": "DS-2CD2043G2-I20240101AAWRE00000001",
+      "firmware": "V5.7.15",
+      "state": "activated",
+      "addressing": "dhcp",
+      "users": {"admin": "HikPass#2026"}
+    }
+  ]
+}
