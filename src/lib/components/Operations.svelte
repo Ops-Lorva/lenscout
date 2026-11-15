@@ -15,7 +15,7 @@
   } from '#lib/api/ops.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { cameraKey, cameras, markAddressing, selection } from '#lib/stores/cameras.ts';
-  import { ipsChanged, opsRequest, scanIface } from '#lib/stores/nav.ts';
+  import { opsRequest, scanIface } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
   import FreeIps from './FreeIps.svelte';
 
@@ -246,9 +246,10 @@
     const done = r.results.filter((x): x is StepResult => !!x && !isCredResult(x));
     clearResults();
     setResults(done);
+    // L'adressage posé se voit sur place ; pas de rescan automatique (le
+    // technicien rafraîchit avec le bouton Rescanner de Réseau).
     if (r.kind !== 'time' && done.some((x) => x.ok)) {
       markAddressing(done, 'static', movedIps(r.rows, r.results as (StepResult | undefined)[]));
-      ipsChanged.update((n) => n + 1);
     }
   }
 

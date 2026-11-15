@@ -12,16 +12,15 @@
   import ResetDialog from './ResetDialog.svelte';
   import TimeDialog from './TimeDialog.svelte';
 
-  // `iface` : l'interface du scan en cours. `onDone` : appelé après une action
-  // qui change l'IP ou réinitialise, pour que la page rescanne (son délai
-  // dépend de l'action). `open` : la page ouvre la réinitialisation depuis
-  // le menu « … » d'une ligne.
+  // `iface` : l'interface du scan en cours. `open` : la page ouvre la
+  // réinitialisation depuis le menu « … » d'une ligne. Pas de rescan
+  // automatique après une action : la ligne se met à jour sur place, le
+  // technicien rafraîchit avec le bouton Rescanner quand il veut.
   type Open = 'activate' | 'network' | 'batch' | 'time' | 'reset';
   let {
     iface,
-    onDone,
     open = $bindable(null),
-  }: { iface: string; onDone: (kind: ActionDto['kind'] | 'batch') => void; open?: Open | null } = $props();
+  }: { iface: string; open?: Open | null } = $props();
   let accountId = $state('');
   let busy = $state(false);
   let error = $state('');
@@ -47,13 +46,12 @@
     open = dialogAfterSelection(open, cams);
   });
 
-  // Résultats d'un lot : même texte par ligne, puis rescan comme après une IP.
+  // Résultats d'un lot : même texte par ligne, l'adressage posé se voit sur place.
   function batchDone(results: ActionResult[]) {
     clearResults();
     setResults(results);
     markAddressing(results, 'static');
     open = null;
-    onDone('batch');
   }
 
   function closeDialog() {
@@ -78,9 +76,6 @@
       pending = pendingAfterRun(action, results, targets);
       pendingAccount = accountId;
       if (pending.length === 0) open = null;
-      if (action.kind === 'network_dhcp' || action.kind === 'network_static') onDone(action.kind);
-      // Réinitialisée, la caméra redémarre : la page rescanne plus tard.
-      if (action.kind === 'factory_reset' && results.some((r) => r.ok)) onDone(action.kind);
     } catch (e) {
       closeDialog();
       error = `configure.${errorKey(e)}`;

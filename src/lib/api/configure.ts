@@ -102,15 +102,6 @@ export const resetLine = (c: Camera): { name: string; ip: string; mac: string } 
   mac: c.mac ?? '—',
 });
 
-/** Rescans après un changement d'IP : la caméra reparaît vite ; un second passage rattrape un bail DHCP lent. */
-export const IP_RESCAN_DELAYS_MS = [3000, 15000];
-/** Après une réinitialisation, la caméra redémarre (une à deux minutes) avant de reparaître. */
-export const RESET_RESCAN_DELAYS_MS = [90_000, 180_000];
-
-/** Délais du rescan qui suit une action. */
-export const rescanDelaysAfter = (kind: ActionDto['kind'] | 'batch'): number[] =>
-  kind === 'factory_reset' ? RESET_RESCAN_DELAYS_MS : IP_RESCAN_DELAYS_MS;
-
 /** Le changement d'IP vise une seule caméra (le lot a son plan d'adresses). */
 export const canChangeIp = (cams: Camera[]): boolean => cams.length === 1 && canAct(cams);
 

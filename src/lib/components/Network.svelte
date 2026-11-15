@@ -6,11 +6,11 @@
   import { cancelScan, openCameraWeb, readAddressing, startScan } from '#lib/api/discovery.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
-  import { cameraKey, cameras, clear, clearCameras, query, selection, setAddressing, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
-  import { clearStatusIf, framingTarget, ipsChanged, page, scanIface, status, type Status } from '#lib/stores/nav.ts';
+  import { cameraKey, cameras, clear, query, selection, setAddressing, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
+  import { clearStatusIf, framingTarget, page, scanIface, status, type Status } from '#lib/stores/nav.ts';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
-  import { actionResults, rescanDelaysAfter, resultFor, type ActionDto } from '#lib/api/configure.ts';
+  import { actionResults, resultFor } from '#lib/api/configure.ts';
   import { accountList, ensureAccounts } from '#lib/stores/accounts.ts';
   import {
     accountChoices, canScan, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, shownAddress, type JoinChoice,
@@ -64,15 +64,13 @@
     } catch {}
   }
 
-  // `keepSelection` : rescan différé d'une action IP, la sélection suit les MAC.
-  async function scan(keepSelection = false) {
-    // Rescan différé, premier affichage : rien pendant la pose d'une IP.
+  async function scan() {
+    // Premier affichage ou Rescanner : rien pendant la pose d'une IP.
     if (!canScan(iface, posing)) return;
     const mine = ++run;
     error = '';
     scanning = true;
-    if (keepSelection) clearCameras();
-    else clear();
+    clear();
     try {
       await startScan(iface, account, (e) => {
         if (mine !== run) return;
@@ -137,10 +135,8 @@
     const mine = poses.next();
     posing = true;
     error = '';
-    // Plus rien de l'ancien réseau : ni rescan différé, ni scan en cours
-    // (ses derniers événements sont ignorés, il ne re-remplit pas la liste).
-    rescanTimers.forEach(clearTimeout);
-    rescanTimers = [];
+    // Plus rien de l'ancien réseau : le scan en cours est arrêté (ses derniers
+    // événements sont ignorés, il ne re-remplit pas la liste).
     if (scanning) stop();
     try {
       await joinReady();
@@ -250,30 +246,17 @@
     }
   });
 
-  // Une caméra dont l'IP vient de changer met un instant à reparaître, une
-  // caméra réinitialisée redémarre : on rescanne après le délai de l'action,
-  // sauf si la page a été quittée entre-temps.
-  let rescanTimers: ReturnType<typeof setTimeout>[] = [];
-  function rescanSoon(kind: ActionDto['kind'] | 'batch') {
-    rescanTimers.forEach(clearTimeout);
-    rescanTimers = rescanDelaysAfter(kind).map((d) => setTimeout(() => void scan(true), d));
-  }
+  // Pas de rescan automatique : après une action la ligne se met à jour sur
+  // place (nouvelle IP, « IP fixe »…), et le technicien rafraîchit quand il
+  // veut avec le bouton Rescanner. Après une réinitialisation d'usine, la
+  // caméra redémarre (~1 min) ; il rescanne une fois qu'elle est revenue.
 
-  // Opérations écrit par l'interface du scan ; des adresses qu'il a changées
-  // font rescanner comme après une IP.
+  // Opérations écrit par l'interface du scan : elle doit la connaître.
   $effect(() => scanIface.set(iface));
-  let seenChanges = get(ipsChanged);
-  const stopChanges = ipsChanged.subscribe((n) => {
-    if (n === seenChanges) return;
-    seenChanges = n;
-    rescanSoon('batch');
-  });
 
   let barOpen = $state<'activate' | 'network' | 'batch' | 'time' | 'reset' | null>(null);
 
   onDestroy(() => {
-    stopChanges();
-    rescanTimers.forEach(clearTimeout);
     if (scanning) stop();
     clearStatusIf(scanStatus);
     clearStatusIf(failStatus);
@@ -307,7 +290,7 @@
 
 {#if error}<p class="err">{$_(error)}</p>{/if}
 
-<ActionBar {iface} onDone={rescanSoon} bind:open={barOpen} />
+<ActionBar {iface} bind:open={barOpen} />
 
 <div class="scroll">
   <table>

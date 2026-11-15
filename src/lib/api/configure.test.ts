@@ -4,7 +4,7 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import { get } from 'svelte/store';
 import type { Camera } from './types';
-import { canReset, rescanDelaysAfter, RESET_RESCAN_DELAYS_MS, resetLine, activateCleartext, cleartextPending, pendingAfterConfirm, pendingAfterRun, mergeResults, actionResults, applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
+import { canReset, resetLine, activateCleartext, cleartextPending, pendingAfterConfirm, pendingAfterRun, mergeResults, actionResults, applyAction, canBatchIp, batchErrorMessage, batchFingerprint, batchPreview, batchApply, dialogAfterSelection, canActivate, outsideSubnet, canAct, canChangeIp, orNull, resultMessage, splitList, timeZones, defaultTimeZone } from './configure';
 
 const cam = (family: Camera['family'], ip = '10.0.50.11'): Camera => ({
   ip, mac: null, family, brand: null, model: null, serial: null, firmware: null,
@@ -217,14 +217,6 @@ test('réinitialisation : Axis et Hikvision, une ou plusieurs ; jamais une autre
   expect(canReset([cam('axis'), cam('hikvision', '10.0.50.12')])).toBe(true);
   expect(canReset([cam('axis'), cam('other', '10.0.50.12')])).toBe(false);
   expect(canReset([])).toBe(false);
-});
-
-test('après une réinitialisation, le rescan attend le redémarrage de la caméra', () => {
-  expect(rescanDelaysAfter('factory_reset')).toEqual(RESET_RESCAN_DELAYS_MS);
-  expect(Math.min(...RESET_RESCAN_DELAYS_MS)).toBeGreaterThanOrEqual(60_000);
-  // Changement d’IP : le rescan habituel, rapide.
-  expect(rescanDelaysAfter('network_static')).toEqual([3000, 15000]);
-  expect(rescanDelaysAfter('batch')).toEqual([3000, 15000]);
 });
 
 test('la confirmation rappelle nom, IP et MAC de chaque caméra', () => {
