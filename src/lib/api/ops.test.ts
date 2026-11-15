@@ -121,8 +121,8 @@ describe('opérations', () => {
   it('« changer les identifiants » : l’aperçu ne porte pas de secret, les secrets partent à part', () => {
     const f = { kind: 'change_credentials' as const, start: '', mask: '', gateway: '', dns: '', ntp: '', timezone: 'UTC' };
     expect(opRequest(f)).toEqual({ kind: 'change_credentials' });
-    const req = credsRequest(' root ', 'N3w', [{ login: ' installer ', password: 'old' }, { login: '', password: '' }]);
-    expect(req).toEqual({ kind: 'change_credentials', new_login: 'root', new_password: 'N3w', candidates: [{ login: 'installer', password: 'old' }] });
+    const req = credsRequest([{ login: ' installer ', password: 'old' }, { login: '', password: '' }]);
+    expect(req).toEqual({ kind: 'change_credentials', candidates: [{ login: 'installer', password: 'old' }] });
     // Un champ d’identifiant qui change invalide l’aperçu via l’empreinte (sans secret dedans).
     const cams = [{ mac: 'A', ip: '10.0.50.11' }] as Camera[];
     const base = opsFingerprint(cams, f, 'eth0', 'acc', '1');

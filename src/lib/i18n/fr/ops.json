@@ -40,8 +40,7 @@
     "running": "En cours"
   },
   "cred": {
-    "newLogin": "Nouvel utilisateur",
-    "newPassword": "Nouveau mot de passe",
+    "fromAccount": "Le nouvel identifiant posé est celui du compte sélectionné.",
     "tryHint": "Mots de passe actuels à essayer (jamais enregistrés)",
     "login": "Utilisateur",
     "password": "Mot de passe",

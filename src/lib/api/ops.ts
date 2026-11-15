@@ -89,7 +89,7 @@ export type OpRequest =
   | { kind: 'keep_ip'; mask: string | null; gateway: string | null; dns: string[] | null }
   | { kind: 'renumber'; start: string; mask: string; gateway: string | null; dns: string[] }
   | { kind: 'time'; ntp_servers: string[]; timezone: string }
-  | { kind: 'change_credentials'; new_login: string; new_password: string; candidates: CredPair[] };
+  | { kind: 'change_credentials'; candidates: CredPair[] };
 
 /** Les champs de l'écran, toutes opérations confondues. */
 export interface OpFields {
@@ -140,11 +140,13 @@ export function opRequest(f: OpFields): OpRequest | { kind: 'change_credentials'
   }
 }
 
-/** Requête backend « changer les identifiants » : secrets en clair, uniquement en mémoire. */
-export const credsRequest = (newLogin: string, newPassword: string, pairs: CredPair[]): OpRequest => ({
+/**
+ * Requête backend « changer les identifiants » : l'identifiant visé est celui
+ * du compte sélectionné (Rust le lit), la requête ne porte que les couples à
+ * essayer. Secrets en clair, uniquement en mémoire.
+ */
+export const credsRequest = (pairs: CredPair[]): OpRequest => ({
   kind: 'change_credentials',
-  new_login: newLogin.trim(),
-  new_password: newPassword,
   candidates: pairs.filter((p) => p.login.trim() !== '' || p.password !== '').map((p) => ({ login: p.login.trim(), password: p.password })),
 });
 

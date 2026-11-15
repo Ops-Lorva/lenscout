@@ -40,8 +40,7 @@
     "running": "En curso"
   },
   "cred": {
-    "newLogin": "Nuevo usuario",
-    "newPassword": "Nueva contraseña",
+    "fromAccount": "El nuevo identificador aplicado es el de la cuenta seleccionada.",
     "tryHint": "Contraseñas actuales a probar (nunca se guardan)",
     "login": "Usuario",
     "password": "Contraseña",

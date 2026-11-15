@@ -37,21 +37,21 @@
   let busy = $state(false);
   let error = $state<{ key: string; values?: Record<string, string | number> } | null>(null);
 
-  // « Changer les identifiants » : le nouvel identifiant visé et les couples à
-  // essayer. Ces mots de passe ne vivent qu'ici, en mémoire : jamais
+  // « Changer les identifiants » : le nouvel identifiant visé EST celui du
+  // compte sélectionné (Rust le lit) ; ici on ne saisit que les couples
+  // actuels à essayer. Ces mots de passe ne vivent qu'ici, en mémoire : jamais
   // enregistrés, effacés à la fin et en quittant l'écran. `credsVersion`
   // invalide l'aperçu dès qu'un champ change, sans mettre de secret dans
   // l'empreinte.
-  let newLogin = $state('');
-  let newPassword = $state('');
   let pairs = $state<{ login: string; password: string }[]>([]);
+  let revealPairs = $state(false);
   let credsVersion = $state(0);
   const bump = () => (credsVersion += 1);
   const addPair = () => (pairs = [...pairs, { login: '', password: '' }]);
   const removePair = (i: number) => { pairs = pairs.filter((_, j) => j !== i); bump(); };
   function clearCredentials() {
-    newPassword = '';
     pairs = [];
+    revealPairs = false;
     bump();
   }
 
@@ -135,7 +135,6 @@
     dnsTouched = false;
     // Les identifiants ne traînent pas d'une opération à l'autre.
     clearCredentials();
-    newLogin = '';
   }
 
   let fill = $state<NetworkFill | null>(null);
@@ -180,7 +179,7 @@
     const k = kind;
     // Les secrets partent à part : l'aperçu n'essaie rien, mais le plan gardé
     // par Rust doit recevoir le nouvel identifiant et les couples à essayer.
-    const req: OpRequest = k === 'change_credentials' ? credsRequest(newLogin, newPassword, pairs) : (opRequest(fields) as OpRequest);
+    const req: OpRequest = k === 'change_credentials' ? credsRequest(pairs) : (opRequest(fields) as OpRequest);
     try {
       const data = await opsPreview(cams, others, req, iface, accountId);
       preview = { data, fingerprint: fp, cams, kind: k };
@@ -288,13 +287,11 @@
     }
   }
 
+  // « Changer les identifiants » : rien d'autre à exiger que le compte (il
+  // porte le nouvel identifiant) et des caméras cochées.
   const ready = $derived(
     !busy && !running && !!iface && !!accountId && targets.length > 0 &&
-      (kind === 'renumber'
-        ? start.trim() !== '' && mask.trim() !== ''
-        : kind === 'change_credentials'
-          ? newLogin.trim() !== '' && newPassword !== ''
-          : true),
+      (kind === 'renumber' ? start.trim() !== '' && mask.trim() !== '' : true),
   );
 
   onMount(() => () => {
@@ -337,16 +334,23 @@
       <label for="o-tz">{$_('configure.timezone')}</label>
       <select id="o-tz" bind:value={timezone}>{#each zones as z}<option value={z}>{z}</option>{/each}</select>
     {:else}
-      <label for="o-nl">{$_('ops.cred.newLogin')}</label>
-      <input id="o-nl" type="text" bind:value={newLogin} oninput={bump} autocomplete="off" spellcheck="false" />
-      <label for="o-np">{$_('ops.cred.newPassword')}</label>
-      <input id="o-np" type="password" bind:value={newPassword} oninput={bump} autocomplete="new-password" />
+      <span class="note">{$_('ops.cred.fromAccount')}</span>
       <span class="note">{$_('ops.cred.tryHint')}</span>
       <div class="pairs">
         {#each pairs as p, i (i)}
           <div class="pair">
             <input type="text" placeholder={$_('ops.cred.login')} bind:value={p.login} oninput={bump} autocomplete="off" spellcheck="false" />
-            <input type="password" placeholder={$_('ops.cred.password')} bind:value={p.password} oninput={bump} autocomplete="off" />
+            <span class="pw">
+              <input type={revealPairs ? 'text' : 'password'} placeholder={$_('ops.cred.password')} bind:value={p.password} oninput={bump} autocomplete="off" />
+              <button class="eye" type="button" onclick={() => (revealPairs = !revealPairs)}
+                aria-label={$_(revealPairs ? 'accounts.hidePassword' : 'accounts.showPassword')} aria-pressed={revealPairs}>
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" />
+                  <circle cx="8" cy="8" r="2" />
+                  {#if revealPairs}<path d="M2.5 13.5l11-11" />{/if}
+                </svg>
+              </button>
+            </span>
             <button class="mini" type="button" onclick={() => removePair(i)}>{$_('ops.cred.removePair')}</button>
           </div>
         {/each}
@@ -488,5 +492,16 @@
   /* Couples à essayer : une liste en colonne 2 du formulaire. */
   .pairs { grid-column: 2; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
   .pair { display: flex; gap: 8px; width: 100%; }
-  .pair input { flex: 1; }
+  .pair > input { flex: 1; }
+  .pair .pw { position: relative; flex: 1; display: block; }
+  .pair .pw input { width: 100%; padding-right: 30px; }
+  .eye {
+    position: absolute; right: 3px; top: 50%; transform: translateY(-50%);
+    width: 24px; height: 22px; padding: 0; border: 0; border-radius: 5px;
+    background: transparent; color: var(--text-2); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .eye:hover { color: var(--text); }
+  .eye:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
+  .eye svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 </style>

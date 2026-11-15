@@ -60,12 +60,11 @@ pub enum OpRequestDto {
         ntp_servers: Vec<String>,
         timezone: String,
     },
-    /// Changer les identifiants : le nouvel identifiant visé, et une liste de
-    /// couples à essayer. Les mots de passe (`Secret`) ne sont jamais
-    /// resérialisés : ils ne vivent qu'en mémoire, le temps de l'opération.
+    /// Changer les identifiants : le nouvel identifiant visé est celui du
+    /// compte sélectionné (login + mot de passe au trousseau), pas un champ de
+    /// la requête ; seuls voyagent les couples à essayer. Les mots de passe
+    /// (`Secret`) ne sont jamais resérialisés : ils ne vivent qu'en mémoire.
     ChangeCredentials {
-        new_login: String,
-        new_password: Secret,
         #[serde(default)]
         candidates: Vec<CredentialPairDto>,
     },
@@ -258,12 +257,14 @@ pub async fn cmd_ops_preview(
             let plan = actions_of(&rows, None).map(Plan::Actions);
             (rows, plan)
         }
-        OpRequestDto::ChangeCredentials { new_login, new_password, candidates } => {
-            // L'aperçu N'ESSAIE AUCUN identifiant (pour ne pas doubler le risque
-            // de blocage) : il n'annonce que l'intention, le test se fait à
-            // l'application. Les mots de passe ne vivent que dans le plan gardé.
+        OpRequestDto::ChangeCredentials { candidates } => {
+            // Le nouvel identifiant visé EST celui du compte sélectionné
+            // (`creds`, login + secret au trousseau). L'aperçu N'ESSAIE AUCUN
+            // identifiant (pour ne pas doubler le risque de blocage) : il
+            // n'annonce que l'intention, le test se fait à l'application. Les
+            // mots de passe ne vivent que dans le plan gardé.
             let rows = plan_change_credentials(&selection)?;
-            let new = Credentials { login: new_login, password: new_password };
+            let new = creds.clone();
             let candidates: Vec<Credentials> = candidates.into_iter().map(Into::into).collect();
             let plan = (!rows.iter().any(OpRow::blocked)).then_some(Plan::Credentials { new, candidates });
             (rows, plan)
@@ -465,16 +466,16 @@ mod tests {
         let time: OpRequestDto = serde_json::from_str(r#"{"kind":"time","timezone":"Europe/Paris"}"#).unwrap();
         assert!(matches!(time, OpRequestDto::Time { .. }));
         assert!(serde_json::from_str::<OpRequestDto>(r#"{"kind":"keep_ip","mask":"pas-une-ip"}"#).is_err());
-        // Changer les identifiants : nouvel identifiant visé + couples à essayer.
+        // Changer les identifiants : le nouvel identifiant visé vient du compte,
+        // la requête ne porte que les couples à essayer.
         let creds: OpRequestDto = serde_json::from_str(
-            r#"{"kind":"change_credentials","new_login":"root","new_password":"N3w","candidates":[{"login":"installer","password":"old"}]}"#,
+            r#"{"kind":"change_credentials","candidates":[{"login":"installer","password":"old"}]}"#,
         )
         .unwrap();
-        let OpRequestDto::ChangeCredentials { new_login, new_password, candidates } = creds else { panic!() };
-        assert_eq!((new_login.as_str(), new_password.expose()), ("root", "N3w"));
+        let OpRequestDto::ChangeCredentials { candidates } = creds else { panic!() };
         assert_eq!((candidates[0].login.as_str(), candidates[0].password.expose()), ("installer", "old"));
         // La liste des couples est facultative.
-        assert!(serde_json::from_str::<OpRequestDto>(r#"{"kind":"change_credentials","new_login":"root","new_password":"x"}"#).is_ok());
+        assert!(serde_json::from_str::<OpRequestDto>(r#"{"kind":"change_credentials"}"#).is_ok());
     }
 
     /// Une opération « changer les identifiants » se garde comme un plan
