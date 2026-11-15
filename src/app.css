@@ -224,7 +224,9 @@ tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--act); }
 .mac { font-size: 13.5px; }
 td.m { font-size: 13.5px; }
 td.mac.decl { font-style: italic; }
-td.ser { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+/* N° de série en entier : la colonne `grow` (nom) absorbe la place, et un
+   série très long pousse le tableau dans son défilement horizontal. */
+td.ser { white-space: nowrap; }
 /* « Neuve » : le seul mot ambre de la liste, il reste du travail sur elle. */
 .chip { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border: 1px solid transparent; border-radius: 4px; font-size: 13px; font-weight: 500; }
 .chip.new { background: var(--act-soft); color: var(--act); border-color: color-mix(in srgb, var(--act) 35%, transparent); }
