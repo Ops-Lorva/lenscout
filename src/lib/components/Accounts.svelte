@@ -4,8 +4,8 @@
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
     accountCameras, accountFill, accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, fillLabel, forgetCamera,
-    importPlan, knownKey, netIn, networkEnds, noticeKey, passwordRequired, passwordToSend, pcIpError, removeAccount, segmentBox, updateAccount,
-    withExtension, type AccountEntry, type ImportPlan, type ImportSummary, type KnownCamera, type NetworkFill,
+    importPlan, knownKey, netIn, networkEnds, noticeKey, passwordRequired, passwordToSend, pcIpError, removeAccount, segmentBox, sortKnown, updateAccount,
+    withExtension, type AccountEntry, type ImportPlan, type ImportSummary, type KnownCamera, type KnownSortColumn, type NetworkFill,
   } from '#lib/api/accounts.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { accountList, refreshAccounts } from '#lib/stores/accounts.ts';
@@ -40,6 +40,15 @@
   let forgetting = $state('');
   // Liste des caméras connues ouverte en grand, pour tout voir à l'aise.
   let expanded = $state(false);
+  // Tri de la modale (local, par IP croissante au départ) : clic sur un en-tête
+  // trie, re-clic inverse le sens.
+  let knownSort = $state<{ col: KnownSortColumn; dir: 'asc' | 'desc' }>({ col: 'ip', dir: 'asc' });
+  const sortedKnown = $derived(sortKnown(known, knownSort));
+  const toggleKnownSort = (col: KnownSortColumn) =>
+    (knownSort = knownSort.col === col ? { col, dir: knownSort.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' });
+  const knownAria = (col: KnownSortColumn): 'ascending' | 'descending' | 'none' =>
+    knownSort.col === col ? (knownSort.dir === 'asc' ? 'ascending' : 'descending') : 'none';
+  const knownArrow = (col: KnownSortColumn): string => (knownSort.col === col ? (knownSort.dir === 'asc' ? '▲' : '▼') : '');
   const ends = $derived(fill ? networkEnds(fill.network) : null);
   const counts = $derived(fill ? fillLabel(fill) : null);
   const seenOn = (c: KnownCamera) => new Date(c.last_seen * 1000).toLocaleDateString($locale ?? undefined);
@@ -355,7 +364,7 @@
               <summary>
                 <span>{$_('accounts.net.known', { values: { count: known.length } })}</span>
                 <button class="expand" type="button" aria-label={$_('accounts.net.expand')} title={$_('accounts.net.expand')}
-                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); expanded = true; }}>
+                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); knownSort = { col: 'ip', dir: 'asc' }; expanded = true; }}>
                   <svg viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4" />
                   </svg>
@@ -404,16 +413,16 @@
       <table>
         <thead>
           <tr>
-            <th>{$_('accounts.net.colIp')}</th>
-            <th>{$_('accounts.net.colId')}</th>
-            <th>{$_('accounts.net.colType')}</th>
-            <th class="grow">{$_('accounts.net.colModel')}</th>
-            <th>{$_('accounts.net.colSeen')}</th>
+            <th aria-sort={knownAria('ip')}><button class="sort" class:on={knownSort.col === 'ip'} onclick={() => toggleKnownSort('ip')}>{$_('accounts.net.colIp')}<span class="arr" aria-hidden="true">{knownArrow('ip')}</span></button></th>
+            <th aria-sort={knownAria('id')}><button class="sort" class:on={knownSort.col === 'id'} onclick={() => toggleKnownSort('id')}>{$_('accounts.net.colId')}<span class="arr" aria-hidden="true">{knownArrow('id')}</span></button></th>
+            <th aria-sort={knownAria('type')}><button class="sort" class:on={knownSort.col === 'type'} onclick={() => toggleKnownSort('type')}>{$_('accounts.net.colType')}<span class="arr" aria-hidden="true">{knownArrow('type')}</span></button></th>
+            <th class="grow" aria-sort={knownAria('model')}><button class="sort" class:on={knownSort.col === 'model'} onclick={() => toggleKnownSort('model')}>{$_('accounts.net.colModel')}<span class="arr" aria-hidden="true">{knownArrow('model')}</span></button></th>
+            <th aria-sort={knownAria('seen')}><button class="sort" class:on={knownSort.col === 'seen'} onclick={() => toggleKnownSort('seen')}>{$_('accounts.net.colSeen')}<span class="arr" aria-hidden="true">{knownArrow('seen')}</span></button></th>
             <th class="acts"></th>
           </tr>
         </thead>
         <tbody>
-          {#each known as c (knownKey(c))}
+          {#each sortedKnown as c (knownKey(c))}
             <tr>
               <td class="mono">{c.ip}</td>
               <td class="mono dim-t" title={knownKey(c)}>{knownKey(c)}</td>
@@ -498,4 +507,8 @@
   .bigknown td { height: 36px; }
   .bigknown tbody tr:last-child td { border-bottom: 0; }
   .eye svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+  /* En-tête triable de la modale : le bouton hérite de la typo de `th`. */
+  .bigknown .sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
+  .bigknown .sort:hover, .bigknown .sort.on { color: var(--text); }
+  .bigknown .sort .arr { font-size: 9px; color: var(--act); }
 </style>

@@ -6,7 +6,7 @@ import {
   accountPassword, createAccount, joinable, netIn, passwordToSend, pcIpError, updateAccount, whyKeys,
   applyImport, defaultChoices, exportAccounts, groupPlan, importPlan, keepBothNames, noticeKey, passwordRequired,
   pickAccount, suffixedName, withExtension, type ImportPlan,
-  accountCameras, accountFill, fillLabel, forgetCamera, knownKey, networkEnds, segmentBox, type NetworkFill,
+  accountCameras, accountFill, fillLabel, forgetCamera, knownKey, networkEnds, segmentBox, sortKnown, type KnownCamera, type NetworkFill,
 } from './accounts';
 import { errorKey } from './errors';
 
@@ -236,4 +236,33 @@ test('bornes de la barre : adresse de réseau et diffusion', () => {
   expect(networkEnds('10.0.8.0/24')).toEqual(['10.0.8.0', '10.0.8.255']);
   expect(networkEnds('172.16.0.0/12')).toEqual(['172.16.0.0', '172.31.255.255']);
   expect(networkEnds('n/a')).toBeNull();
+});
+
+const kc = (over: Partial<KnownCamera>): KnownCamera => ({ ip: '10.0.8.5', last_seen: 1000, ...over });
+
+test('sortKnown par IP : numérique, dans les deux sens', () => {
+  const a = kc({ ip: '10.0.8.9' });
+  const b = kc({ ip: '10.0.8.10' });
+  const c = kc({ ip: '10.0.8.200' });
+  expect(sortKnown([b, c, a], { col: 'ip', dir: 'asc' }).map((x) => x.ip)).toEqual(['10.0.8.9', '10.0.8.10', '10.0.8.200']);
+  expect(sortKnown([a, b, c], { col: 'ip', dir: 'desc' }).map((x) => x.ip)).toEqual(['10.0.8.200', '10.0.8.10', '10.0.8.9']);
+});
+
+test('sortKnown par modèle, absence rangée en fin quel que soit le sens', () => {
+  const m = kc({ ip: '10.0.8.2', model: 'P1' });
+  const none = kc({ ip: '10.0.8.1', model: undefined });
+  expect(sortKnown([none, m], { col: 'model', dir: 'asc' }).map((x) => x.ip)).toEqual(['10.0.8.2', '10.0.8.1']);
+  expect(sortKnown([m, none], { col: 'model', dir: 'desc' }).map((x) => x.ip)).toEqual(['10.0.8.2', '10.0.8.1']);
+});
+
+test('sortKnown par « Vue le » (last_seen)', () => {
+  const old = kc({ ip: '10.0.8.1', last_seen: 100 });
+  const recent = kc({ ip: '10.0.8.2', last_seen: 900 });
+  expect(sortKnown([old, recent], { col: 'seen', dir: 'desc' }).map((x) => x.ip)).toEqual(['10.0.8.2', '10.0.8.1']);
+});
+
+test('sortKnown stable : à valeur égale, départage par IP croissante', () => {
+  const a = kc({ ip: '10.0.8.20', last_seen: 500 });
+  const b = kc({ ip: '10.0.8.5', last_seen: 500 });
+  expect(sortKnown([a, b], { col: 'seen', dir: 'desc' }).map((x) => x.ip)).toEqual(['10.0.8.5', '10.0.8.20']);
 });

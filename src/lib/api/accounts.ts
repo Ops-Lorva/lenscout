@@ -95,6 +95,55 @@ export interface NetworkFill {
 /** Clé d'une caméra connue, comme Rust : le n° de série, sinon la MAC. */
 export const knownKey = (c: KnownCamera): string => c.serial ?? c.mac ?? '';
 
+/** Colonnes triables du tableau des caméras connues (la modale « agrandir »). */
+export type KnownSortColumn = 'ip' | 'id' | 'type' | 'model' | 'seen';
+export type KnownSortDir = 'asc' | 'desc';
+export interface KnownSort {
+  col: KnownSortColumn;
+  dir: KnownSortDir;
+}
+
+const ipNum = (ip: string): number =>
+  ip.split('.').reduce((acc, part) => acc * 256 + (Number(part) || 0), 0);
+
+/**
+ * Valeur comparable d'une caméra connue pour une colonne : nombre pour l'IP
+ * (ordre numérique) et « Vue le » (last_seen), chaîne sinon. `null` = valeur
+ * absente, rangée en fin de liste quel que soit le sens.
+ */
+function knownValue(c: KnownCamera, col: KnownSortColumn): number | string | null {
+  switch (col) {
+    case 'ip':
+      return ipNum(c.ip);
+    case 'id':
+      return knownKey(c) || null;
+    case 'type':
+      return c.serial ? 'serial' : c.mac ? 'mac' : null;
+    case 'model':
+      return c.model || null;
+    case 'seen':
+      return c.last_seen;
+  }
+}
+
+/**
+ * Tri stable : valeurs absentes toujours en fin, comparaison numérique ou
+ * textuelle selon la colonne, puis départage par IP numérique croissante.
+ */
+export function sortKnown(list: KnownCamera[], s: KnownSort): KnownCamera[] {
+  const dir = s.dir === 'asc' ? 1 : -1;
+  return [...list].sort((a, b) => {
+    const va = knownValue(a, s.col);
+    const vb = knownValue(b, s.col);
+    if (va === null || vb === null) {
+      if (va === vb) return ipNum(a.ip) - ipNum(b.ip);
+      return va === null ? 1 : -1;
+    }
+    const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb));
+    return cmp !== 0 ? cmp * dir : ipNum(a.ip) - ipNum(b.ip);
+  });
+}
+
 export const accountCameras = (id: string) => invoke<KnownCamera[]>('cmd_account_cameras', { id });
 /** `null` : compte sans IP du PC. */
 export const accountFill = (id: string) => invoke<NetworkFill | null>('cmd_account_fill', { id });
