@@ -1,7 +1,8 @@
 import { writable } from 'svelte/store';
 import type { Camera } from '#lib/api/types.ts';
+import type { OpKind } from '#lib/api/ops.ts';
 
-export const PAGES = ['network', 'framing', 'accounts', 'settings'] as const;
+export const PAGES = ['network', 'framing', 'accounts', 'operations', 'settings'] as const;
 export type Page = (typeof PAGES)[number];
 
 /** `#comptes`-style deep link : `index.html#settings` ouvre l'onglet (captures, essais). */
@@ -14,6 +15,21 @@ export const page = writable<Page>(initialPage(typeof location === 'undefined' ?
 
 /** Caméra à cadrer, posée par l'onglet Réseau avant de passer à Cadrage. */
 export const framingTarget = writable<Camera | null>(null);
+
+/** Opération demandée par un raccourci de Réseau ; l'onglet Opérations la reprend puis la vide. */
+export const opsRequest = writable<OpKind | null>(null);
+
+/** Raccourci de Réseau (« IP en lot ») : Opérations, sur cette opération, avec la sélection courante. */
+export function openOperations(kind: OpKind): void {
+  opsRequest.set(kind);
+  page.set('operations');
+}
+
+/** Interface du scan de Réseau : Opérations écrit par elle, comme la barre d'actions. */
+export const scanIface = writable('');
+
+/** Adresses changées depuis Opérations : Réseau rescanne comme après une IP (compteur). */
+export const ipsChanged = writable(0);
 
 /**
  * Barre d'état en bas de la fenêtre : ce qui concerne le poste, pas une

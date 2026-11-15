@@ -3,6 +3,7 @@
   import Network from '#lib/components/Network.svelte';
   import Framing from '#lib/components/Framing.svelte';
   import Accounts from '#lib/components/Accounts.svelte';
+  import Operations from '#lib/components/Operations.svelte';
   import Settings from '#lib/components/Settings.svelte';
   import UpdateBanner from '#lib/components/UpdateBanner.svelte';
   import { page, status } from '#lib/stores/nav.ts';
@@ -13,12 +14,13 @@
   <UpdateBanner />
   <div class="body">
     <Sidebar />
-    <!-- Les quatre écrans restent montés, un seul visible : changer d'onglet ne
+    <!-- Les écrans restent montés, un seul visible : changer d'onglet ne
          perd ni le scan, ni le filtre, ni les coches, ni une feuille ouverte. -->
     <main class="pane">
       <section class="page" hidden={$page !== 'network'}><Network /></section>
       <section class="page" hidden={$page !== 'framing'}><Framing /></section>
       <section class="page" hidden={$page !== 'accounts'}><Accounts /></section>
+      <section class="page" hidden={$page !== 'operations'}><Operations /></section>
       <section class="page" hidden={$page !== 'settings'}><Settings /></section>
     </main>
   </div>

@@ -7,7 +7,7 @@
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { cameraKey, cameras, clear, clearCameras, query, selection, setAddressing, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
-  import { clearStatusIf, framingTarget, page, status, type Status } from '#lib/stores/nav.ts';
+  import { clearStatusIf, framingTarget, ipsChanged, page, scanIface, status, type Status } from '#lib/stores/nav.ts';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
   import { actionResults, rescanDelaysAfter, resultFor, type ActionDto } from '#lib/api/configure.ts';
@@ -259,9 +259,20 @@
     rescanTimers = rescanDelaysAfter(kind).map((d) => setTimeout(() => void scan(true), d));
   }
 
+  // Opérations écrit par l'interface du scan ; des adresses qu'il a changées
+  // font rescanner comme après une IP.
+  $effect(() => scanIface.set(iface));
+  let seenChanges = get(ipsChanged);
+  const stopChanges = ipsChanged.subscribe((n) => {
+    if (n === seenChanges) return;
+    seenChanges = n;
+    rescanSoon('batch');
+  });
+
   let barOpen = $state<'activate' | 'network' | 'batch' | 'time' | 'reset' | null>(null);
 
   onDestroy(() => {
+    stopChanges();
     rescanTimers.forEach(clearTimeout);
     if (scanning) stop();
     clearStatusIf(scanStatus);

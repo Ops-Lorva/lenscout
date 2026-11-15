@@ -67,7 +67,9 @@ const shown: Record<string, string[]> = {
     ]),
   ].sort(),
   free: codesIn(rust('src-tauri/src/commands/free_ips.rs')),
-  configure: [...new Set([...codesIn(rust('src-tauri/src/commands/configure.rs')), ...credentials, ...lock, ...front])].sort(),
+  configure: [
+    ...new Set([...codesIn(rust('src-tauri/src/commands/configure.rs')), ...codesIn(rust('src-tauri/src/commands/ops.rs')), ...credentials, ...lock, ...front]),
+  ].sort(),
 };
 
 const actions = rust('crates/lenscout-core/src/actions.rs');
@@ -83,6 +85,7 @@ const actionKeys = variants(actions, 'ActionError').flatMap((code) => {
 });
 
 const batchCodes = variants(rust('crates/lenscout-core/src/batch.rs'), 'BatchError');
+const conflictCodes = variants(rust('crates/lenscout-core/src/ops.rs'), 'Conflict');
 
 const locales = mergeLocales(import.meta.glob('./*/*.json', { eager: true }) as Record<string, { default: unknown }>);
 
@@ -100,6 +103,7 @@ describe('codes d’erreur Rust ↔ clés i18n', () => {
     expect(credentials).toEqual(['keyring', 'not_found', 'secret_missing']);
     expect(reasons).toContain('gateway_is_ip');
     expect(batchCodes).toContain('ip_in_use');
+    expect(conflictCodes).toContain('outside_account');
     expect(shown.free).toContain('ping_unavailable');
     expect(actionKeys).toContain('elevation.refused');
     expect(front).toEqual(['no_cameras', 'no_cameras']);
@@ -126,6 +130,7 @@ describe('codes d’erreur Rust ↔ clés i18n', () => {
       for (const [ns, codes] of Object.entries(shown)) for (const c of [...codes, 'unknown']) need(lang, `${ns}.error.${c}`);
       for (const key of actionKeys) need(lang, key);
       for (const c of batchCodes) need(lang, `batch.error.${c}`);
+      for (const c of conflictCodes) need(lang, `ops.conflict.${c}`);
     }
     expect(missing).toEqual([]);
   });
@@ -142,6 +147,7 @@ describe('codes d’erreur Rust ↔ clés i18n', () => {
       }
       for (const k of subkeys(lang, 'configure.invalid')) if (!reasons.includes(k)) dead.push(`${lang} configure.invalid.${k}`);
       for (const k of subkeys(lang, 'batch.error')) if (!batchCodes.includes(k)) dead.push(`${lang} batch.error.${k}`);
+      for (const k of subkeys(lang, 'ops.conflict')) if (!conflictCodes.includes(k)) dead.push(`${lang} ops.conflict.${k}`);
     }
     expect(dead).toEqual([]);
   });

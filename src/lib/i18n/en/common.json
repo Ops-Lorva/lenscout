@@ -3,6 +3,7 @@
     "network": "Network",
     "framing": "Framing",
     "accounts": "Accounts",
+    "operations": "Operations",
     "settings": "Settings"
   },
   "lang": {

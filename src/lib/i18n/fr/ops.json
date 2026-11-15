@@ -1,0 +1,49 @@
+{
+  "kind": {
+    "keep_ip": "Garder les IP",
+    "renumber": "Renuméroter",
+    "time": "Mettre l'heure"
+  },
+  "step": {
+    "choose": "Choisir",
+    "preview": "Aperçu",
+    "confirm": "Confirmer",
+    "apply": "Appliquer"
+  },
+  "unchanged": "inchangé",
+  "selected": "{count, plural, =0 {Aucune caméra cochée} one {# caméra cochée} other {# caméras cochées}}",
+  "noCameras": "Aucune caméra : lancez un scan dans Réseau",
+  "col": {
+    "camera": "Caméra",
+    "ip": "IP",
+    "mask": "Masque",
+    "gateway": "Passerelle",
+    "dns": "DNS",
+    "state": "État"
+  },
+  "preview": "Aperçu",
+  "blocked": "{count, plural, one {# ligne bloque} other {# lignes bloquent}} : décochez ou corrigez",
+  "confirm": "Tapez {count} pour confirmer",
+  "apply": "Appliquer",
+  "stop": "Arrêter",
+  "stopping": "Arrêt après la caméra en cours",
+  "progress": "{done} / {total}",
+  "report": "{ok, plural, one {# réussie} other {# réussies}} · {failed, plural, one {# échouée} other {# échouées}} · {unreachable, plural, one {# injoignable} other {# injoignables}} après changement",
+  "skipped": "{count, plural, one {# non faite} other {# non faites}}",
+  "state": {
+    "ok": "OK",
+    "unreachable": "Injoignable à la nouvelle adresse",
+    "running": "En cours"
+  },
+  "conflict": {
+    "unsupported": "Marque non prise en charge",
+    "missing_identity": "Ni MAC ni n° de série",
+    "unreadable": "Réglage réseau illisible",
+    "dhcp": "En DHCP",
+    "ip_in_use": "{ip} déjà prise",
+    "network_or_broadcast": "{ip} : adresse réseau ou broadcast",
+    "gateway_out_of_subnet": "Passerelle {ip} hors du sous-réseau",
+    "gateway_is_ip": "Passerelle {ip} = adresse de la caméra",
+    "outside_account": "Hors du réseau du compte ({network})"
+  }
+}

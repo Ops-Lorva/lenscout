@@ -1,12 +1,13 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
-import { clearStatusIf, initialPage, status, suspendStep, type Status } from './nav';
+import { clearStatusIf, initialPage, openOperations, opsRequest, page, PAGES, status, suspendStep, type Status } from './nav';
 
 beforeEach(() => status.set(null));
 
 test('initialPage lit le fragment, sinon Réseau', () => {
   expect(initialPage('#settings')).toBe('settings');
   expect(initialPage('#accounts')).toBe('accounts');
+  expect(initialPage('#operations')).toBe('operations');
   expect(initialPage('#ailleurs')).toBe('network');
   expect(initialPage('')).toBe('network');
 });
@@ -32,4 +33,16 @@ test('flux du Cadrage : suspendu quand l’onglet se cache, repris au retour', (
   expect(suspendStep(false, false, false)).toBe('none');
   expect(suspendStep(true, true, false)).toBe('none');
   expect(suspendStep(true, false, false)).toBe('none');
+});
+
+test('Opérations vient juste après Comptes', () => {
+  expect(PAGES.indexOf('operations')).toBe(PAGES.indexOf('accounts') + 1);
+});
+
+test('« IP en lot » ouvre Opérations sur Renuméroter', () => {
+  page.set('network');
+  opsRequest.set(null);
+  openOperations('renumber');
+  expect(get(page)).toBe('operations');
+  expect(get(opsRequest)).toBe('renumber');
 });

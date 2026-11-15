@@ -5,6 +5,7 @@
   import { cameraName } from '#lib/api/discovery.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { cameraKey, cameras, markActivated, markAddressing, selectedCameras } from '#lib/stores/cameras.ts';
+  import { openOperations } from '#lib/stores/nav.ts';
   import BatchIpDialog from './BatchIpDialog.svelte';
   import ActivateDialog from './ActivateDialog.svelte';
   import NetworkDialog from './NetworkDialog.svelte';
@@ -111,7 +112,8 @@
   <div class="tools">
     <button class="btn" disabled={!activatable} onclick={() => (open = 'activate')}>{$_('configure.activate')}</button>
     <button class="btn" disabled={!ipAllowed} onclick={() => (open = 'network')}>{$_('configure.ip')}</button>
-    <button class="btn" disabled={!batchAllowed} onclick={() => (open = 'batch')}>{$_('batch.title')}</button>
+    <!-- Raccourci : l'onglet Opérations, sur Renuméroter, avec la sélection courante (aperçu, confirmation, Arrêter). -->
+    <button class="btn" disabled={!batchAllowed} onclick={() => openOperations('renumber')}>{$_('batch.title')}</button>
     <button class="btn" disabled={!allowed} onclick={() => (open = 'time')}>{$_('configure.time')}</button>
     <button class="btn" disabled={!resetAllowed} onclick={() => (open = 'reset')}>{$_('configure.reset.button')}</button>
     <span class="count">{$_('configure.cameras', { values: { count: cams.length } })}</span>

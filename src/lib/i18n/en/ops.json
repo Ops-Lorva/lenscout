@@ -1,0 +1,49 @@
+{
+  "kind": {
+    "keep_ip": "Keep IPs",
+    "renumber": "Renumber",
+    "time": "Set time"
+  },
+  "step": {
+    "choose": "Choose",
+    "preview": "Preview",
+    "confirm": "Confirm",
+    "apply": "Apply"
+  },
+  "unchanged": "unchanged",
+  "selected": "{count, plural, =0 {No camera checked} one {# camera checked} other {# cameras checked}}",
+  "noCameras": "No cameras: run a scan in Network",
+  "col": {
+    "camera": "Camera",
+    "ip": "IP",
+    "mask": "Mask",
+    "gateway": "Gateway",
+    "dns": "DNS",
+    "state": "Status"
+  },
+  "preview": "Preview",
+  "blocked": "{count, plural, one {# row blocks} other {# rows block}}: uncheck or fix",
+  "confirm": "Type {count} to confirm",
+  "apply": "Apply",
+  "stop": "Stop",
+  "stopping": "Stopping after the current camera",
+  "progress": "{done} / {total}",
+  "report": "{ok} succeeded · {failed} failed · {unreachable} unreachable after change",
+  "skipped": "{count, plural, one {# not done} other {# not done}}",
+  "state": {
+    "ok": "OK",
+    "unreachable": "Unreachable at the new address",
+    "running": "Running"
+  },
+  "conflict": {
+    "unsupported": "Brand not supported",
+    "missing_identity": "No MAC or serial number",
+    "unreadable": "Network settings unreadable",
+    "dhcp": "On DHCP",
+    "ip_in_use": "{ip} already taken",
+    "network_or_broadcast": "{ip}: network or broadcast address",
+    "gateway_out_of_subnet": "Gateway {ip} outside the subnet",
+    "gateway_is_ip": "Gateway {ip} = camera address",
+    "outside_account": "Outside the account network ({network})"
+  }
+}

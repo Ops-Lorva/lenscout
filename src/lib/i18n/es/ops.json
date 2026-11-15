@@ -1,0 +1,49 @@
+{
+  "kind": {
+    "keep_ip": "Mantener las IP",
+    "renumber": "Renumerar",
+    "time": "Poner la hora"
+  },
+  "step": {
+    "choose": "Elegir",
+    "preview": "Vista previa",
+    "confirm": "Confirmar",
+    "apply": "Aplicar"
+  },
+  "unchanged": "sin cambios",
+  "selected": "{count, plural, =0 {Ninguna cámara marcada} one {# cámara marcada} other {# cámaras marcadas}}",
+  "noCameras": "Ninguna cámara: lance un escaneo en Red",
+  "col": {
+    "camera": "Cámara",
+    "ip": "IP",
+    "mask": "Máscara",
+    "gateway": "Puerta de enlace",
+    "dns": "DNS",
+    "state": "Estado"
+  },
+  "preview": "Vista previa",
+  "blocked": "{count, plural, one {# fila bloquea} other {# filas bloquean}}: desmarque o corrija",
+  "confirm": "Escriba {count} para confirmar",
+  "apply": "Aplicar",
+  "stop": "Detener",
+  "stopping": "Se detiene tras la cámara en curso",
+  "progress": "{done} / {total}",
+  "report": "{ok, plural, one {# correcta} other {# correctas}} · {failed, plural, one {# fallida} other {# fallidas}} · {unreachable, plural, one {# inalcanzable} other {# inalcanzables}} tras el cambio",
+  "skipped": "{count, plural, one {# sin hacer} other {# sin hacer}}",
+  "state": {
+    "ok": "OK",
+    "unreachable": "Inalcanzable en la nueva dirección",
+    "running": "En curso"
+  },
+  "conflict": {
+    "unsupported": "Marca no compatible",
+    "missing_identity": "Sin MAC ni número de serie",
+    "unreadable": "Configuración de red ilegible",
+    "dhcp": "En DHCP",
+    "ip_in_use": "{ip} ya ocupada",
+    "network_or_broadcast": "{ip}: dirección de red o broadcast",
+    "gateway_out_of_subnet": "Puerta de enlace {ip} fuera de la subred",
+    "gateway_is_ip": "Puerta de enlace {ip} = dirección de la cámara",
+    "outside_account": "Fuera de la red de la cuenta ({network})"
+  }
+}
