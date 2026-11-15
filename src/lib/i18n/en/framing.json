@@ -1,4 +1,6 @@
 {
+  "resume": "Relaunch",
+  "pause": "Pause",
   "play": "Play",
   "stop": "Stop",
   "none": "No camera to frame",

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy, tick, untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
+  import { get } from 'svelte/store';
   import { _ } from 'svelte-i18n';
   import { errorKey } from '#lib/api/errors.ts';
   import { ackFrame, FramePresenter, identifyCamera, listViews, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
@@ -11,8 +12,15 @@
 
   let accountId = $state('');
   let playing = $state(false);
+  // Mis en pause à la main (le bouton de secours) : ni l'auto-démarrage ni la
+  // relance automatique ne repartent tant que le technicien n'a pas relancé.
+  let paused = $state(false);
   let src = $state<string | null>(null);
   let error = $state('');
+  // Un flux qui tombe (caméra qui redémarre, réseau qui cligne) se relance seul
+  // après ce délai ; une pause ou un changement de caméra l'annulent.
+  const RELAUNCH_MS = 1500;
+  let relaunchTimer: ReturnType<typeof setTimeout> | null = null;
   // Un start remplacé par un autre se résout aussi : seule la dernière
   // génération a le droit de toucher à l'état.
   let generation = 0;
@@ -38,9 +46,9 @@
     error = '';
     try {
       const found = await identifyCamera(typedIp, accountId);
+      paused = false;
+      // La nouvelle cible déclenche l'auto-démarrage (effet sur `cam`).
       framingTarget.set(found);
-      await tick();
-      void play();
     } catch (e) {
       error = `framing.${errorKey(e)}`;
     } finally {
@@ -48,8 +56,23 @@
     }
   }
 
+  // Le flux est-il encore voulu ? (caméra et compte là, onglet visible, ni
+  // suspendu par l'onglet caché, ni mis en pause à la main.)
+  function wantsStream(): boolean {
+    return !!cam && !!accountId && get(page) === 'framing' && !suspended && !paused;
+  }
+
+  function clearRelaunch() {
+    if (relaunchTimer) { clearTimeout(relaunchTimer); relaunchTimer = null; }
+  }
+  function scheduleRelaunch() {
+    clearRelaunch();
+    relaunchTimer = setTimeout(() => { relaunchTimer = null; if (wantsStream()) void play(); }, RELAUNCH_MS);
+  }
+
   async function play() {
     if (!cam || !accountId) return;
+    clearRelaunch();
     const mine = ++generation;
     error = '';
     playing = true;
@@ -62,8 +85,15 @@
         },
         views.find((v) => v.n === view) ?? null,
       );
+      // Flux terminé de lui-même et toujours voulu : on le relance.
+      if (mine === generation && wantsStream()) { scheduleRelaunch(); return; }
     } catch (e) {
-      if (mine === generation) error = `framing.${errorKey(e)}`;
+      // Le flux est tombé : s'il est encore voulu, on affiche la raison mais on
+      // relance quand même (la caméra redémarre peut-être).
+      if (mine === generation) {
+        error = `framing.${errorKey(e)}`;
+        if (wantsStream()) { scheduleRelaunch(); return; }
+      }
     }
     if (mine === generation) {
       playing = false;
@@ -72,11 +102,16 @@
   }
 
   async function stop() {
+    clearRelaunch();
     generation++;
     playing = false;
     presenter.clear();
     try { await stopStream(); } catch {}
   }
+
+  // Bouton de secours : mettre en pause ou relancer à la main.
+  function pause() { paused = true; void stop(); }
+  function resume() { paused = false; void play(); }
 
   // Ratio largeur/hauteur de l'image reçue ; 16/9 tant qu'aucune n'est décodée.
   let ratio = $state(16 / 9);
@@ -91,13 +126,14 @@
     else void el.requestFullscreen?.();
   }
 
-  // Changer de caméra cible coupe le flux de la précédente (et oublie une
-  // reprise en attente : c'était l'autre caméra).
+  // Caméra ou compte prêts : le flux démarre tout seul (plus de bouton Lecture).
+  // Changer de cible coupe d'abord le flux de la précédente.
   $effect(() => {
-    void cam;
+    void cam; void accountId;
     untrack(() => {
       suspended = false;
-      if (playing) void stop();
+      void stop();
+      if (!paused) void play();
     });
   });
 
@@ -181,7 +217,7 @@
         void stop();
       } else if (step === 'resume') {
         suspended = false;
-        void play();
+        if (!paused) void play();
       } else if (visible) {
         suspended = false;
       }
@@ -190,6 +226,7 @@
 
   // Démontage (sortie de l'app) : coupe le flux et libère l'image.
   onDestroy(() => {
+    clearRelaunch();
     generation++;
     presenter.dispose();
     void stopStream().catch(() => {});
@@ -220,10 +257,11 @@
     {/if}
   {/if}
   {#if cam}
-    {#if playing}
-      <button class="btn" onclick={stop}>{$_('framing.stop')}</button>
+    <!-- Secours : le flux est automatique, ce bouton n'est qu'un filet. -->
+    {#if paused}
+      <button class="btn def" onclick={resume} disabled={!accountId}>{$_('framing.resume')}</button>
     {:else}
-      <button class="btn def" onclick={play} disabled={!accountId}>{$_('framing.play')}</button>
+      <button class="btn" onclick={pause}>{$_('framing.pause')}</button>
     {/if}
   {/if}
 </div>
