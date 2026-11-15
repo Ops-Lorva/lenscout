@@ -9,7 +9,8 @@
   "picker": "Cuenta",
   "col": {
     "name": "Nombre",
-    "login": "Usuario"
+    "login": "Usuario",
+    "free": "Libres"
   },
   "field": {
     "name": "Nombre",

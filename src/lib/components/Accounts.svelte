@@ -98,9 +98,26 @@
     error = `accounts.${errorCode}`;
   };
 
+  // IP libres par compte, pour la colonne « Libres » du tableau.
+  let fills = $state<Record<string, { free: number; almost: boolean }>>({});
+  async function loadFills() {
+    const entries = await Promise.all(
+      accounts.map(async (a) => {
+        try {
+          const f = await accountFill(a.id);
+          return [a.id, f ? { free: f.free, almost: f.almost_full } : null] as const;
+        } catch {
+          return [a.id, null] as const;
+        }
+      }),
+    );
+    fills = Object.fromEntries(entries.filter((e): e is [string, { free: number; almost: boolean }] => e[1] !== null));
+  }
+
   async function refresh() {
     try {
       await refreshAccounts();
+      await loadFills();
     } catch (e) {
       fail(e);
     }
@@ -246,6 +263,7 @@
       <th>{$_('accounts.col.name')}</th>
       <th style="width:150px">{$_('accounts.col.login')}</th>
       <th style="width:150px">{$_('accounts.field.pc_ip')}</th>
+      <th style="width:96px">{$_('accounts.col.free')}</th>
       <th style="width:110px">{$_('accounts.field.password')}</th>
       <th class="acts"></th>
     </tr>
@@ -256,6 +274,7 @@
         <td class="grow" title={a.name}>{a.name}</td>
         <td>{a.login}</td>
         <td class="m">{a.pc_ip ?? ''}</td>
+        <td class="m" class:warn={fills[a.id]?.almost}>{fills[a.id] ? fills[a.id].free : '—'}</td>
         <td>{#if a.has_secret}••••••••{:else}<span class="warn">{$_('accounts.resecret')}</span>{/if}</td>
         <td class="ra acts">
           <button class="mini" onclick={() => open(a)}>{$_('accounts.edit')}</button>
