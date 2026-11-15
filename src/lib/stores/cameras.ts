@@ -28,9 +28,26 @@ export const selection = writable<Set<string>>(new Set());
 /** Texte du champ de recherche : ce qu'il masque n'est plus sélectionné. */
 export const query = writable('');
 
-/** La liste affichée : filtrée par la recherche. */
-export const visibleCameras: Readable<Camera[]> = derived([cameras, query], ([list, q]) =>
-  filterCameras(list, q),
+/** Onglet d'état : toutes, seulement les neuves, ou seulement les activées. */
+export type CameraFilter = 'all' | 'new' | 'activated';
+export const filter = writable<CameraFilter>('all');
+
+/** Compteurs des onglets, sur toute la liste (indépendants de la recherche). */
+export const cameraCounts: Readable<{ all: number; new: number; activated: number }> = derived(
+  cameras,
+  (list) => ({
+    all: list.length,
+    new: list.filter((c) => c.activation === 'new').length,
+    activated: list.filter((c) => c.activation === 'activated').length,
+  }),
+);
+
+/** La liste affichée : filtrée par l'onglet d'état puis par la recherche. */
+export const visibleCameras: Readable<Camera[]> = derived([cameras, query, filter], ([list, q, f]) =>
+  filterCameras(
+    f === 'all' ? list : list.filter((c) => c.activation === f),
+    q,
+  ),
 );
 
 /**

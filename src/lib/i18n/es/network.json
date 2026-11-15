@@ -56,5 +56,10 @@
     "static": "IP fija",
     "unknown": "—"
   },
-  "via": "vía {gateway}"
+  "via": "vía {gateway}",
+  "filter": {
+    "all": "Todas",
+    "new": "Nuevas",
+    "activated": "Activadas"
+  }
 }

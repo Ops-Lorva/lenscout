@@ -6,7 +6,7 @@
   import { cancelScan, openCameraWeb, readAddressing, startScan } from '#lib/api/discovery.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
-  import { cameraKey, cameras, clear, query, selection, setAddressing, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
+  import { cameraCounts, cameraKey, cameras, clear, filter, query, selection, setAddressing, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
   import { clearStatusIf, framingTarget, page, scanIface, status, type Status } from '#lib/stores/nav.ts';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
@@ -46,6 +46,11 @@
   let run = 0;
 
   const shown = $derived($visibleCameras);
+  const filterTabs = $derived([
+    { key: 'all' as const, n: $cameraCounts.all },
+    { key: 'new' as const, n: $cameraCounts.new },
+    { key: 'activated' as const, n: $cameraCounts.activated },
+  ]);
   const allSelected = $derived(shown.length > 0 && shown.every((c) => $selection.has(cameraKey(c))));
 
   /** `255.255.255.0` → 24 ; masque absent ou illisible → l'adresse seule. */
@@ -288,9 +293,27 @@
   {/if}
 </div>
 
+<!-- Onglets d'état : filtrent la liste, avec le compte par onglet. -->
+<div class="tabs">
+  {#each filterTabs as t (t.key)}
+    <button class="tab" class:on={$filter === t.key} onclick={() => filter.set(t.key)}>
+      {$_(`network.filter.${t.key}`)} <span class="n">{t.n}</span>
+    </button>
+  {/each}
+</div>
+
 {#if error}<p class="err">{$_(error)}</p>{/if}
 
 <ActionBar {iface} bind:open={barOpen} />
+
+<style>
+  .tabs { display: flex; gap: 2px; padding: 10px 24px 2px; }
+  .tab { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 0; border-radius: 6px; background: none; color: var(--text-2); font: inherit; font-weight: 500; cursor: pointer; }
+  .tab:hover { background: var(--hover); color: var(--text); }
+  .tab.on { background: var(--sel); color: var(--text); }
+  .tab .n { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-2); }
+  .tab.on .n { color: var(--act); }
+</style>
 
 <div class="scroll">
   <table>

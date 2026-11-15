@@ -56,5 +56,10 @@
     "static": "Static IP",
     "unknown": "—"
   },
-  "via": "via {gateway}"
+  "via": "via {gateway}",
+  "filter": {
+    "all": "All",
+    "new": "New",
+    "activated": "Activated"
+  }
 }
