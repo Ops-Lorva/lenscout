@@ -100,7 +100,7 @@ pub async fn identify(http: &dyn CameraHttp, ip: Ipv4Addr, creds: &Credentials) 
         _ => return Err(IdentifyError::NotACamera),
     }
     let xml = String::from_utf8_lossy(&resp.body);
-    if !xml.contains("<deviceInfo") {
+    if !xml.contains("<DeviceInfo") && !xml.contains("<deviceInfo") {
         return Err(IdentifyError::NotACamera);
     }
     let mut cam = camera(ip, Family::Hikvision, "Hikvision");
@@ -152,7 +152,7 @@ pub async fn identify_anonymous(http: &dyn CameraHttp, ip: Ipv4Addr) -> Option<C
     let mut cam = camera(ip, Family::Hikvision, "Hikvision");
     if let Ok(resp) = http.send(get("/ISAPI/System/deviceInfo"), None).await {
         let xml = String::from_utf8_lossy(&resp.body);
-        if resp.status == 200 && xml.contains("<deviceInfo") {
+        if resp.status == 200 && (xml.contains("<DeviceInfo") || xml.contains("<deviceInfo")) {
             cam.model = tag(&xml, "model");
             cam.serial = tag(&xml, "serialNumber");
             cam.firmware = tag(&xml, "firmwareVersion");
@@ -172,11 +172,11 @@ mod tests {
 
     const INFO: &[u8] = include_bytes!("../tests/fixtures/vapix_basicdeviceinfo.json");
     const HIK: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<deviceInfo version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<DeviceInfo version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
 <deviceName>IP CAMERA</deviceName><model>DS-2CD2143G2-I</model>
 <serialNumber>DS-2CD2143G2-I20230101AAWRJ12345678</serialNumber>
 <macAddress>a4:14:37:12:34:56</macAddress><firmwareVersion>V5.7.3</firmwareVersion>
-</deviceInfo>"#;
+</DeviceInfo>"#;
 
     fn ip() -> Ipv4Addr {
         "192.168.1.64".parse().unwrap()
