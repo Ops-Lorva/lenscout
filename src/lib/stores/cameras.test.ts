@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
 import type { Camera } from '#lib/api/types.ts';
-import { cameras, clear, clearCameras, markActivated, markAddressing, query, selectedCameras, selection, setAddressing, shouldAutoScan, upsert } from './cameras';
+import { cameras, clear, clearCameras, markActivated, markAddressing, query, selectedCameras, selection, setAddressing, shouldAutoScan, sort, sortCameras, toggleSort, upsert, visibleCameras } from './cameras';
 
 const cam = (over: Partial<Camera>): Camera => ({
   ip: '10.0.50.5',
@@ -20,6 +20,7 @@ const cam = (over: Partial<Camera>): Camera => ({
 beforeEach(() => {
   clear();
   query.set('');
+  sort.set({ col: 'ip', dir: 'asc' });
 });
 
 test('upsert garde une ligne par MAC et met à jour', () => {
@@ -174,4 +175,75 @@ test('passage en DHCP : la ligne prend « DHCP » ; une caméra sans MAC suit sa
   clearCameras();
   upsert(cam({ ip: '10.0.62.40', mac: null }));
   expect(get(cameras)[0].addressing).toBe('static');
+});
+
+// --- Tri par colonne ---
+
+const ips = (list: Camera[]) => list.map((c) => c.ip);
+
+test('tri par IP : numérique, pas lexicographique, dans les deux sens', () => {
+  const a = cam({ ip: '10.0.50.9', mac: 'AA:BB:CC:00:00:09' });
+  const b = cam({ ip: '10.0.50.10', mac: 'AA:BB:CC:00:00:0A' });
+  const c = cam({ ip: '10.0.9.200', mac: 'AA:BB:CC:00:00:C8' });
+  expect(ips(sortCameras([a, b, c], { col: 'ip', dir: 'asc' }))).toEqual(['10.0.9.200', '10.0.50.9', '10.0.50.10']);
+  expect(ips(sortCameras([a, b, c], { col: 'ip', dir: 'desc' }))).toEqual(['10.0.50.10', '10.0.50.9', '10.0.9.200']);
+});
+
+test('tri par N° de série, asc et desc', () => {
+  const a = cam({ ip: '10.0.50.1', mac: 'AA:BB:CC:00:00:01', serial: 'B100' });
+  const b = cam({ ip: '10.0.50.2', mac: 'AA:BB:CC:00:00:02', serial: 'A200' });
+  expect(sortCameras([a, b], { col: 'serial', dir: 'asc' }).map((c) => c.serial)).toEqual(['A200', 'B100']);
+  expect(sortCameras([a, b], { col: 'serial', dir: 'desc' }).map((c) => c.serial)).toEqual(['B100', 'A200']);
+});
+
+test('valeurs manquantes (série) rangées en fin, quel que soit le sens', () => {
+  const withSerial = cam({ ip: '10.0.50.2', mac: 'AA:BB:CC:00:00:02', serial: 'S1' });
+  const noSerial = cam({ ip: '10.0.50.1', mac: 'AA:BB:CC:00:00:01', serial: null });
+  expect(sortCameras([noSerial, withSerial], { col: 'serial', dir: 'asc' }).map((c) => c.serial)).toEqual(['S1', null]);
+  expect(sortCameras([withSerial, noSerial], { col: 'serial', dir: 'desc' }).map((c) => c.serial)).toEqual(['S1', null]);
+});
+
+test('valeurs manquantes (MAC, firmware) rangées en fin', () => {
+  const full = cam({ ip: '10.0.50.2', mac: 'AA:BB:CC:00:00:02', firmware: '11.0' });
+  const bare = cam({ ip: '10.0.50.1', mac: null, declared_mac: null, firmware: null });
+  expect(sortCameras([bare, full], { col: 'mac', dir: 'asc' })[0].ip).toBe('10.0.50.2');
+  expect(sortCameras([bare, full], { col: 'mac', dir: 'desc' })[1].ip).toBe('10.0.50.1');
+  expect(sortCameras([bare, full], { col: 'firmware', dir: 'asc' })[1].ip).toBe('10.0.50.1');
+  expect(sortCameras([bare, full], { col: 'firmware', dir: 'desc' })[1].ip).toBe('10.0.50.1');
+});
+
+test('tri stable : à valeur de colonne égale, départage par IP croissante', () => {
+  const a = cam({ ip: '10.0.50.20', mac: 'AA:BB:CC:00:00:14', firmware: '9.0' });
+  const b = cam({ ip: '10.0.50.5', mac: 'AA:BB:CC:00:00:05', firmware: '9.0' });
+  expect(ips(sortCameras([a, b], { col: 'firmware', dir: 'asc' }))).toEqual(['10.0.50.5', '10.0.50.20']);
+  expect(ips(sortCameras([a, b], { col: 'firmware', dir: 'desc' }))).toEqual(['10.0.50.5', '10.0.50.20']);
+});
+
+test('tri par nom de caméra (brand/model), absence rangée en fin', () => {
+  const zed = cam({ ip: '10.0.50.1', mac: 'AA:BB:CC:00:00:01', brand: 'Zed', model: null });
+  const axis = cam({ ip: '10.0.50.2', mac: 'AA:BB:CC:00:00:02', brand: 'Axis', model: 'P1' });
+  const none = cam({ ip: '10.0.50.3', mac: 'AA:BB:CC:00:00:03', brand: null, model: null });
+  const r = sortCameras([zed, axis, none], { col: 'camera', dir: 'asc' });
+  expect(r.map((c) => c.ip)).toEqual(['10.0.50.2', '10.0.50.1', '10.0.50.3']);
+});
+
+test('toggleSort : nouvelle colonne = asc, re-clic = inverse', () => {
+  toggleSort('mac');
+  expect(get(sort)).toEqual({ col: 'mac', dir: 'asc' });
+  toggleSort('mac');
+  expect(get(sort)).toEqual({ col: 'mac', dir: 'desc' });
+  toggleSort('ip');
+  expect(get(sort)).toEqual({ col: 'ip', dir: 'asc' });
+});
+
+test('visibleCameras applique le tri APRÈS le filtre d’onglet et la recherche', () => {
+  upsert(cam({ ip: '10.0.50.10', mac: 'AA:BB:CC:00:00:0A', serial: 'C' }));
+  upsert(cam({ ip: '10.0.50.9', mac: 'AA:BB:CC:00:00:09', serial: 'A' }));
+  upsert(cam({ ip: '10.0.50.200', mac: 'AA:BB:CC:00:00:C8', serial: 'B' }));
+  // Par défaut : IP croissante.
+  expect(ips(get(visibleCameras))).toEqual(['10.0.50.9', '10.0.50.10', '10.0.50.200']);
+  sort.set({ col: 'serial', dir: 'asc' });
+  expect(get(visibleCameras).map((c) => c.serial)).toEqual(['A', 'B', 'C']);
+  sort.set({ col: 'serial', dir: 'desc' });
+  expect(get(visibleCameras).map((c) => c.serial)).toEqual(['C', 'B', 'A']);
 });

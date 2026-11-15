@@ -1,6 +1,7 @@
 import { derived, writable, type Readable } from 'svelte/store';
-import type { Camera } from '#lib/api/types.ts';
+import type { Addressing, Camera } from '#lib/api/types.ts';
 import { filterCameras } from '#lib/search.ts';
+import { cameraName, shownMac } from '#lib/api/discovery.ts';
 
 /** Clé d'une caméra : son MAC, sinon son IP (une caméra garde son MAC si elle change d'IP). */
 export const cameraKey = (c: Camera): string => c.mac ?? c.ip;
@@ -32,6 +33,72 @@ export const query = writable('');
 export type CameraFilter = 'all' | 'new' | 'activated';
 export const filter = writable<CameraFilter>('all');
 
+/** Colonnes de données triables du tableau Réseau. */
+export type SortColumn = 'camera' | 'ip' | 'mac' | 'serial' | 'firmware' | 'addressing' | 'state';
+export type SortDir = 'asc' | 'desc';
+export interface Sort {
+  col: SortColumn;
+  dir: SortDir;
+}
+
+/** Tri du tableau : IP croissante par défaut (ordre historique). */
+export const sort = writable<Sort>({ col: 'ip', dir: 'asc' });
+
+/** Clic sur un en-tête : trie par cette colonne (asc), re-clic inverse le sens. */
+export function toggleSort(col: SortColumn): void {
+  sort.update((s) => (s.col === col ? { col, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' }));
+}
+
+/**
+ * Adressage affiché pour le tri (miroir de `addressingKey` sans le préfixe
+ * i18n) : la valeur lue, sinon DHCP pour une Axis neuve, sinon rien.
+ */
+const addressingValue = (c: Camera): Addressing | null =>
+  c.addressing ?? (c.family === 'axis' && c.activation === 'new' ? 'dhcp' : null);
+
+/**
+ * Valeur comparable d'une caméra pour une colonne : nombre pour l'IP (ordre
+ * numérique via `ipValue`), chaîne sinon. `null` = valeur absente, rangée en
+ * fin de liste quel que soit le sens.
+ */
+function sortValue(c: Camera, col: SortColumn): number | string | null {
+  switch (col) {
+    case 'ip':
+      return ipValue(c.ip);
+    case 'camera':
+      return c.brand || c.model ? cameraName(c) : null;
+    case 'mac':
+      return shownMac(c).mac;
+    case 'serial':
+      return c.serial || null;
+    case 'firmware':
+      return c.firmware || null;
+    case 'addressing':
+      return addressingValue(c);
+    case 'state':
+      return c.activation === 'unknown' ? null : c.activation;
+  }
+}
+
+/**
+ * Tri stable : valeurs absentes toujours en fin, comparaison numérique ou
+ * textuelle selon la colonne, puis départage par IP numérique croissante pour
+ * un ordre déterministe.
+ */
+export function sortCameras(list: Camera[], s: Sort): Camera[] {
+  const dir = s.dir === 'asc' ? 1 : -1;
+  return [...list].sort((a, b) => {
+    const va = sortValue(a, s.col);
+    const vb = sortValue(b, s.col);
+    if (va === null || vb === null) {
+      if (va === vb) return ipValue(a.ip) - ipValue(b.ip);
+      return va === null ? 1 : -1;
+    }
+    const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb));
+    return cmp !== 0 ? cmp * dir : ipValue(a.ip) - ipValue(b.ip);
+  });
+}
+
 /** Compteurs des onglets, sur toute la liste (indépendants de la recherche). */
 export const cameraCounts: Readable<{ all: number; new: number; activated: number }> = derived(
   cameras,
@@ -42,12 +109,17 @@ export const cameraCounts: Readable<{ all: number; new: number; activated: numbe
   }),
 );
 
-/** La liste affichée : filtrée par l'onglet d'état puis par la recherche. */
-export const visibleCameras: Readable<Camera[]> = derived([cameras, query, filter], ([list, q, f]) =>
-  filterCameras(
-    f === 'all' ? list : list.filter((c) => c.activation === f),
-    q,
-  ),
+/** La liste affichée : filtrée par l'onglet d'état, par la recherche, puis triée. */
+export const visibleCameras: Readable<Camera[]> = derived(
+  [cameras, query, filter, sort],
+  ([list, q, f, s]) =>
+    sortCameras(
+      filterCameras(
+        f === 'all' ? list : list.filter((c) => c.activation === f),
+        q,
+      ),
+      s,
+    ),
 );
 
 /**

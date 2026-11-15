@@ -6,7 +6,7 @@
   import { cancelScan, openCameraWeb, readAddressing, startScan } from '#lib/api/discovery.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
-  import { cameraCounts, cameraKey, cameras, clear, filter, query, selection, setAddressing, shouldAutoScan, upsert, visibleCameras } from '#lib/stores/cameras.ts';
+  import { cameraCounts, cameraKey, cameras, clear, filter, query, selection, setAddressing, shouldAutoScan, sort, type SortColumn, toggleSort, upsert, visibleCameras } from '#lib/stores/cameras.ts';
   import { clearStatusIf, framingTarget, page, scanIface, status, type Status } from '#lib/stores/nav.ts';
   import ActionBar from './ActionBar.svelte';
   import CameraRow from './CameraRow.svelte';
@@ -52,6 +52,12 @@
     { key: 'activated' as const, n: $cameraCounts.activated },
   ]);
   const allSelected = $derived(shown.length > 0 && shown.every((c) => $selection.has(cameraKey(c))));
+
+  // En-têtes triables : l'état du tri vit dans le store, l'en-tête actif porte
+  // la flèche (▲/▼) et `aria-sort`.
+  const ariaSort = (col: SortColumn): 'ascending' | 'descending' | 'none' =>
+    $sort.col === col ? ($sort.dir === 'asc' ? 'ascending' : 'descending') : 'none';
+  const arrow = (col: SortColumn): string => ($sort.col === col ? ($sort.dir === 'asc' ? '▲' : '▼') : '');
 
   /** `255.255.255.0` → 24 ; masque absent ou illisible → l'adresse seule. */
   function cidr(ip: string | null, mask: string | null): string {
@@ -313,6 +319,12 @@
   .tab.on { background: var(--sel); color: var(--text); }
   .tab .n { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-2); }
   .tab.on .n { color: var(--act); }
+
+  /* En-tête triable : le bouton remplit la cellule, hérite de la typo de `th`. */
+  .sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
+  .sort:hover { color: var(--text); }
+  .sort.on { color: var(--text); }
+  .sort .arr { font-size: 9px; color: var(--act); }
 </style>
 
 <div class="scroll">
@@ -320,13 +332,13 @@
     <thead>
       <tr>
         <th class="chk"><input type="checkbox" checked={allSelected} onchange={toggleAll} aria-label={$_('network.selectAll')} /></th>
-        <th>{$_('network.col.camera')}</th>
-        <th style="width:128px">{$_('network.col.ip')}</th>
-        <th style="width:164px">{$_('network.col.mac')}</th>
-        <th style="width:128px">{$_('network.col.serial')}</th>
-        <th style="width:96px">{$_('network.col.firmware')}</th>
-        <th style="width:112px">{$_('network.col.addressing')}</th>
-        <th style="width:112px">{$_('network.col.state')}</th>
+        <th aria-sort={ariaSort('camera')}><button class="sort" class:on={$sort.col === 'camera'} onclick={() => toggleSort('camera')}>{$_('network.col.camera')}<span class="arr" aria-hidden="true">{arrow('camera')}</span></button></th>
+        <th style="width:128px" aria-sort={ariaSort('ip')}><button class="sort" class:on={$sort.col === 'ip'} onclick={() => toggleSort('ip')}>{$_('network.col.ip')}<span class="arr" aria-hidden="true">{arrow('ip')}</span></button></th>
+        <th style="width:164px" aria-sort={ariaSort('mac')}><button class="sort" class:on={$sort.col === 'mac'} onclick={() => toggleSort('mac')}>{$_('network.col.mac')}<span class="arr" aria-hidden="true">{arrow('mac')}</span></button></th>
+        <th style="width:128px" aria-sort={ariaSort('serial')}><button class="sort" class:on={$sort.col === 'serial'} onclick={() => toggleSort('serial')}>{$_('network.col.serial')}<span class="arr" aria-hidden="true">{arrow('serial')}</span></button></th>
+        <th style="width:96px" aria-sort={ariaSort('firmware')}><button class="sort" class:on={$sort.col === 'firmware'} onclick={() => toggleSort('firmware')}>{$_('network.col.firmware')}<span class="arr" aria-hidden="true">{arrow('firmware')}</span></button></th>
+        <th style="width:112px" aria-sort={ariaSort('addressing')}><button class="sort" class:on={$sort.col === 'addressing'} onclick={() => toggleSort('addressing')}>{$_('network.col.addressing')}<span class="arr" aria-hidden="true">{arrow('addressing')}</span></button></th>
+        <th style="width:112px" aria-sort={ariaSort('state')}><button class="sort" class:on={$sort.col === 'state'} onclick={() => toggleSort('state')}>{$_('network.col.state')}<span class="arr" aria-hidden="true">{arrow('state')}</span></button></th>
         <th class="acts"></th>
       </tr>
     </thead>
