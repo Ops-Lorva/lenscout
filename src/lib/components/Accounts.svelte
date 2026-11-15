@@ -10,7 +10,6 @@
   import { errorKey } from '#lib/api/errors.ts';
   import { accountList, refreshAccounts } from '#lib/stores/accounts.ts';
   import { clearStatusIf, page, status, type Status } from '#lib/stores/nav.ts';
-  import Dialog from './Dialog.svelte';
   import ImportSheet from './ImportSheet.svelte';
 
   // Liste partagée avec les sélecteurs des autres écrans.
@@ -239,6 +238,8 @@
 
 {#if error && editing === null}<p class="err">{$_(error)}</p>{/if}
 
+<div class="cols">
+  <div class="list">
 <table>
   <thead>
     <tr>
@@ -267,13 +268,11 @@
   </tbody>
 </table>
 {#if accounts.length === 0}<div class="none">{$_('accounts.none')}</div>{/if}
+  </div>
 
-{#if importing}
-  <ImportSheet path={importing.path} plan={importing.plan} existing={accounts.map((a) => a.name)} onClose={() => (importing = null)} onDone={imported} />
-{/if}
-
-{#if editing !== null}
-  <Dialog title={$_(editing ? 'accounts.edit' : 'accounts.add')} width={520} onClose={close}>
+  {#if editing !== null}
+    <aside class="editpanel">
+      <div class=" phead"><h2>{editing ? (name.trim() || $_('accounts.edit')) : $_('accounts.add')}</h2></div>
     <form onsubmit={(e) => { e.preventDefault(); if (ready) void save(); }}>
       <div class="form">
         <label for="a-name">{$_('accounts.field.name')}</label>
@@ -357,10 +356,23 @@
         <button class="btn def" type="submit" disabled={!ready}>{$_('accounts.save')}</button>
       </div>
     </form>
-  </Dialog>
+    </aside>
+  {/if}
+</div>
+
+{#if importing}
+  <ImportSheet path={importing.path} plan={importing.plan} existing={accounts.map((a) => a.name)} onClose={() => (importing = null)} onDone={imported} />
 {/if}
 
 <style>
+  /* Le tableau à gauche, le panneau d'édition ancré à droite (comme la maquette). */
+  .cols { display: flex; align-items: flex-start; gap: 16px; padding: 0 24px; }
+  .list { flex: 1; min-width: 0; }
+  /* Le tableau garde ses gouttières via le conteneur, pas via .page. */
+  .list table td:first-child, .list table th:first-child { padding-left: 0; }
+  .list table td:last-child, .list table th:last-child { padding-right: 0; }
+  .editpanel { flex: none; width: 360px; align-self: stretch; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--win); position: sticky; top: 12px; max-height: calc(100vh - 120px); overflow: auto; }
+  .editpanel .phead h2 { margin: 0 0 14px; font-size: 16px; font-weight: 600; color: var(--text); }
   form { margin: 0; }
   /* Boutons groupés à côté du titre : ils ne suivent pas le bord de la fenêtre. */
   .tools .title { flex: none; margin-right: 6px; }
