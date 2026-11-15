@@ -426,9 +426,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/axis-cgi/pwdgrp.cgi":
             return self._pwdgrp(method, query, body)
 
-        # 5 & 6. param.cgi (lecture et écriture réseau, séries, vues)
+        # 5 & 6. param.cgi (lecture et écriture réseau, séries, vues).
+        # L'écriture arrive en POST avec les paramètres dans le CORPS (comme
+        # une vraie Axis) ; on les fusionne avec ceux de l'URL.
         if path == "/axis-cgi/param.cgi":
-            return self._param_cgi(query)
+            # Un POST sur param.cgi est une écriture : comme une vraie Axis, on
+            # exige l'auth AVANT de lire l'action. Les clients Digest sondent
+            # d'abord avec un corps vide pour obtenir le défi 401 ; sans cette
+            # garde, cette sonde vide retomberait sur « action inconnue » (200)
+            # et le client ne s'authentifierait jamais.
+            if method == "POST" and not self._require_auth():
+                return "401"
+            params = dict(query)
+            if method == "POST" and body:
+                params.update(parse_qs(body.decode("utf-8", "replace")))
+            return self._param_cgi(params)
 
         # 7. Heure
         if path == "/axis-cgi/time.cgi" and method == "POST":
