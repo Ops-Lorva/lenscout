@@ -2,7 +2,8 @@ import { expect, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
-import { FramePresenter, identifyCamera, listViews, startStream, viewLabel } from './stream';
+import { FramePresenter, identifyCamera, identityChanged, listViews, needsIdentify, noticeKey, startStream, viewLabel } from './stream';
+import type { Camera } from './types';
 
 function setup() {
   const shown: (string | null)[] = [];
@@ -101,4 +102,30 @@ test('les vues se demandent à Rust ; une seule vue : pas de sélecteur', async 
 test('libellé d’une vue : son nom s’il y en a un, sinon « Vue N »', () => {
   expect(viewLabel({ n: 2, name: 'Quai' })).toEqual({ key: 'framing.viewNamed', values: { n: 2, name: 'Quai' } });
   expect(viewLabel({ n: 3, name: null })).toEqual({ key: 'framing.view', values: { n: 3 } });
+});
+
+test('une caméra non tranchée (« other ») se relit avec le compte, une marque connue non', () => {
+  // Une Axis routée (balayage HTTP) arrive « other » : à relire. Une marque
+  // déjà tranchée (ouverture par IP, ou scan de couche 2) passe tout droit.
+  expect(needsIdentify({ ...axis, sources: [], family: 'other' })).toBe(true);
+  expect(needsIdentify({ ...axis, sources: [] })).toBe(false);
+  expect(needsIdentify({ ...axis, sources: [], family: 'hikvision' })).toBe(false);
+});
+
+test('identité changée après relecture : marque, modèle, série, famille ou IP', () => {
+  const base: Camera = { ...axis, sources: [], family: 'other', brand: null, model: null, serial: null };
+  expect(identityChanged(base, base)).toBe(false);
+  expect(identityChanged({ ...base, family: 'axis' }, base)).toBe(true);
+  expect(identityChanged({ ...base, brand: 'AXIS' }, base)).toBe(true);
+  expect(identityChanged({ ...base, model: 'P4705-PLVE' }, base)).toBe(true);
+  expect(identityChanged({ ...base, serial: 'ACCC8E000002' }, base)).toBe(true);
+  expect(identityChanged({ ...base, ip: '192.0.2.21' }, base)).toBe(true);
+});
+
+test('message visible d’un échec : identifiants refusés distingués du reste', () => {
+  expect(noticeKey('auth_failed')).toBe('framing.notice.authRefused');
+  expect(noticeKey('auth_insecure')).toBe('framing.notice.authRefused');
+  expect(noticeKey('unreachable')).toBe('framing.notice.unavailable');
+  expect(noticeKey('not_a_camera')).toBe('framing.notice.unavailable');
+  expect(noticeKey(new Error('boum'))).toBe('framing.notice.unavailable');
 });

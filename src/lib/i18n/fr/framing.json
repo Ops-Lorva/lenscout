@@ -28,6 +28,10 @@
   "view": "Vue {n}",
   "viewNamed": "Vue {n} : {name}",
   "viewPicker": "Vue",
+  "notice": {
+    "authRefused": "Identifiants refusés : vues et réglages Axis indisponibles",
+    "unavailable": "Caméra non identifiée : vues et réglages Axis indisponibles"
+  },
   "settings": {
     "title": "Réglages",
     "zoom": "Zoom",

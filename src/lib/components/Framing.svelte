@@ -3,7 +3,7 @@
   import { get } from 'svelte/store';
   import { _ } from 'svelte-i18n';
   import { errorKey } from '#lib/api/errors.ts';
-  import { ackFrame, FramePresenter, identifyCamera, listViews, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
+  import { ackFrame, FramePresenter, identifyCamera, identityChanged, listViews, needsIdentify, noticeKey, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
   import { framingTarget, page, suspendStep } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
   import ImageSettings from './ImageSettings.svelte';
@@ -137,6 +137,32 @@
     });
   });
 
+  // Échec visible (identification ou vues) : identifiants refusés, caméra
+  // injoignable, vues illisibles — un message au lieu du silence.
+  let notice = $state('');
+
+  // Caméra arrivée par « Cadrer » : le scan l'a posée telle qu'il l'a vue, et
+  // une Axis routée y paraît « other » — son sélecteur de vues et son panneau
+  // Axis restent cachés. On la relit avec le compte, comme l'ouverture par IP,
+  // pour trancher sa marque AVANT de lister les vues. `identify` ne rend jamais
+  // « other » : la relecture ne se répète pas (pas de boucle), et une caméra
+  // déjà identifiée (ouverture par IP, scan de couche 2) passe tout droit.
+  $effect(() => {
+    const c = cam;
+    const a = accountId;
+    untrack(() => {
+      notice = '';
+      if (!c || !a || !needsIdentify(c)) return;
+      identifyCamera(c.ip, a)
+        .then((found) => {
+          // Même caméra visée et identité vraiment changée : on repose la cible
+          // (relance flux + vues, comme l'ouverture par IP).
+          if (get(framingTarget)?.ip === c.ip && identityChanged(found, c)) framingTarget.set(found);
+        })
+        .catch((e) => { notice = noticeKey(e); });
+    });
+  });
+
   // Axis multicapteur : ses vues, lues avec le compte, pour le sélecteur.
   // Une seule vue (ou rien de lisible) : pas de sélecteur, URL d'avant.
   let views = $state<View[]>([]);
@@ -156,7 +182,7 @@
           views = v;
           view = v[0].n;
         })
-        .catch(() => {});
+        .catch((e) => { if (mine === viewsRun) notice = noticeKey(e); });
     });
   });
 
@@ -266,6 +292,7 @@
   {/if}
 </div>
 {#if error}<p class="err">{$_(error)}</p>{/if}
+{#if cam && notice}<p class="err note">{$_(notice)}</p>{/if}
 {#if !cam}
   <div class="none">{$_('framing.none')}</div>
 {:else}
@@ -314,6 +341,8 @@
   /* Image à gauche, panneau des réglages optiques collé à droite (maquette). */
   .stage { flex: 1; display: flex; min-height: 0; }
   .stage .view { margin: 24px; }
+  /* Information (vues/réglages indisponibles), pas une panne de flux : ton plus discret. */
+  .note { opacity: 0.85; font-weight: 400; }
   .draw { position: absolute; inset: 0; cursor: crosshair; }
   .zone { position: absolute; border: 1.5px solid var(--view-line); background: #ffffff1a; pointer-events: none; }
 </style>

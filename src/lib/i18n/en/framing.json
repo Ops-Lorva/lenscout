@@ -28,6 +28,10 @@
   "view": "View {n}",
   "viewNamed": "View {n}: {name}",
   "viewPicker": "View",
+  "notice": {
+    "authRefused": "Credentials refused: Axis views and settings unavailable",
+    "unavailable": "Camera not identified: Axis views and settings unavailable"
+  },
   "settings": {
     "title": "Settings",
     "zoom": "Zoom",

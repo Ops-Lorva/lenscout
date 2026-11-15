@@ -28,6 +28,10 @@
   "view": "Vista {n}",
   "viewNamed": "Vista {n}: {name}",
   "viewPicker": "Vista",
+  "notice": {
+    "authRefused": "Credenciales rechazadas: vistas y ajustes Axis no disponibles",
+    "unavailable": "Cámara no identificada: vistas y ajustes Axis no disponibles"
+  },
   "settings": {
     "title": "Ajustes",
     "zoom": "Zoom",

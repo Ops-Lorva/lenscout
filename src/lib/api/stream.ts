@@ -43,6 +43,28 @@ export const stopStream = () => invoke<void>('cmd_stream_stop');
 export const identifyCamera = (ip: string, accountId: string) =>
   invoke<Camera>('cmd_identify_camera', { ip: ip.trim(), accountId });
 
+/**
+ * La caméra posée par « Cadrer » mérite-t-elle d'être relue avec le compte ?
+ * Le scan la pose telle qu'il l'a vue ; une Axis routée (balayage HTTP, sans
+ * couche 2) y paraît souvent « other », et ni ses vues ni son panneau Axis
+ * n'apparaissent. On la ré-identifie tant que sa marque n'est pas tranchée.
+ * `identify` ne rend jamais « other » : une fois relue, la garde s'arrête (pas
+ * de boucle) ; une marque déjà connue (ouverture par IP) passe tout droit.
+ */
+export const needsIdentify = (cam: Camera): boolean => cam.family === 'other';
+
+/** L'identité (famille, marque, modèle, série, IP) a-t-elle changé après relecture ? */
+export const identityChanged = (a: Camera, b: Camera): boolean =>
+  a.ip !== b.ip || a.family !== b.family || a.brand !== b.brand || a.model !== b.model || a.serial !== b.serial;
+
+/**
+ * Message visible quand l'identification ou la lecture des vues échoue dans
+ * Cadrage, au lieu du silence : identifiants refusés d'un côté, tout le reste
+ * (caméra injoignable, vues illisibles) de l'autre.
+ */
+export const noticeKey = (e: unknown): string =>
+  e === 'auth_failed' || e === 'auth_insecure' ? 'framing.notice.authRefused' : 'framing.notice.unavailable';
+
 /** Une image a été traitée (affichée ou abandonnée) : Rust peut en envoyer une autre. */
 export const ackFrame = () => invoke<void>('cmd_stream_ack');
 
