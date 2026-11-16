@@ -81,8 +81,7 @@ en anglais et en espagnol.
   ne sont jamais écrits dans un journal. La clé de scellement est livrée avec le code
   open source : elle empêche de lire le fichier d’un coup d’œil, ce n’est pas un coffre-fort.
   Protégez le fichier des comptes et ses exports comme les mots de passe qu’ils
-  contiennent. Le trousseau du système n’est lu qu’une fois, pour reprendre les comptes
-  enregistrés par les premières versions.
+  contiennent.
 - LenScout vérifie au démarrage s’il existe une version plus récente. Chaque installateur
   est livré avec une signature minisign `.sig`, que l’application vérifie avant d’exécuter
   quoi que ce soit qu’elle a téléchargé ; un téléchargement dont la vérification échoue

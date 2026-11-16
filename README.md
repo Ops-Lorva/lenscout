@@ -76,8 +76,7 @@ English, and Spanish.
   cannot be read or grepped in clear text, and they are never written to a log. The
   sealing key ships with the open-source code: it keeps the file from being read at a
   glance, it is not a vault. Protect the accounts file and its exports like the
-  passwords they hold. The OS keychain is only read once, to migrate accounts saved by
-  early builds.
+  passwords they hold.
 - LenScout checks for a newer release at startup. Every installer ships with a `.sig`
   minisign signature, which the app verifies before running anything it downloaded; a
   download that fails verification is not run.
