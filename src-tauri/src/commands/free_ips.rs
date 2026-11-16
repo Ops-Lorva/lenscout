@@ -91,6 +91,58 @@ fn exclusions(
     out
 }
 
+/// Ce que balaie un balayage d'adresses : `iface` (réseau balayé, adresse
+/// écartée), la passerelle à écarter, et `probe`, l'interface dont partent
+/// les pings. `routed` : le réseau du compte à travers le routeur (pas d'ARP).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SweepScope {
+    pub iface: ScanInterface,
+    pub gateway: Option<Ipv4Addr>,
+    pub routed: bool,
+    pub probe: ScanInterface,
+}
+
+/// La portée d'un balayage sur `iface` (passerelle de l'interface :
+/// `gateway`). Mode routé : le réseau du compte, pingé depuis l'adresse de
+/// l'interface (l'ARP ne passe pas le routeur ; ses voisins ne sont pas de ce
+/// réseau). Compte posé : son adresse et sa passerelle. Sinon l'interface.
+pub(crate) fn scope_for(iface: ScanInterface, gateway: Option<String>, join: &super::join::JoinState) -> SweepScope {
+    let parse = |g: Option<String>| g.and_then(|g| g.trim().parse::<Ipv4Addr>().ok());
+    match (join.routed_on(&iface.name), join.gateway_on(&iface.name)) {
+        (Some(r), _) => SweepScope {
+            iface: ScanInterface { name: iface.name.clone(), ip: r.probe, mask: r.mask },
+            gateway: Some(r.probe),
+            routed: true,
+            probe: iface,
+        },
+        (None, Some(g)) => {
+            let scoped = join.scope(iface);
+            SweepScope { iface: scoped.clone(), gateway: Some(g), routed: false, probe: scoped }
+        }
+        (None, None) if join.temp().is_some_and(|t| t.iface == iface.name) => {
+            let scoped = join.scope(iface);
+            SweepScope { iface: scoped.clone(), gateway: None, routed: false, probe: scoped }
+        }
+        (None, None) => SweepScope { iface: iface.clone(), gateway: parse(gateway), routed: false, probe: iface },
+    }
+}
+
+/// La portée d'un balayage sur l'interface nommée par le front. Erreurs :
+/// `iface_unknown`, `iface_no_ipv4`, `internal`.
+pub(crate) async fn sweep_scope(interface: String, join: &super::join::JoinState) -> Result<SweepScope, String> {
+    let (iface, gateway) = tauri::async_runtime::spawn_blocking(move || {
+        if !list_interfaces_up().contains(&interface) {
+            return Err("iface_unknown".to_string());
+        }
+        let details = get_interface_details(&interface);
+        let iface = ScanInterface::from_details(&interface, &details).ok_or_else(|| "iface_no_ipv4".to_string())?;
+        Ok((iface, details.gateway))
+    })
+    .await
+    .map_err(|_| "internal".to_string())??;
+    Ok(scope_for(iface, gateway, join))
+}
+
 /// Erreurs : codes stables (`iface_unknown`, `iface_no_ipv4`, `ping_unavailable`,
 /// `internal`), traduits par le front.
 ///
@@ -114,36 +166,15 @@ pub async fn cmd_free_ips(
     accounts: State<'_, Mutex<AccountBook>>,
 ) -> Result<(), String> {
     let token = state.begin(id);
-
-    let name = interface.clone();
-    let (iface, gateway) = tauri::async_runtime::spawn_blocking(move || {
-        if !list_interfaces_up().contains(&name) {
-            return Err("iface_unknown".to_string());
-        }
-        let details = get_interface_details(&name);
-        let iface = ScanInterface::from_details(&name, &details).ok_or_else(|| "iface_no_ipv4".to_string())?;
-        Ok((iface, details.gateway))
-    })
-    .await
-    .map_err(|_| "internal".to_string())??;
-
-    // Mode routé : le réseau du compte, pingé depuis l'adresse de l'interface
-    // (l'ARP ne passe pas le routeur ; ses voisins ne sont pas de ce réseau).
-    let routed = join.routed_on(&iface.name);
-    let probe = Arc::new(SystemProbe { iface: iface.clone() });
-    let (iface, gateway) = match (&routed, join.gateway_on(&iface.name)) {
-        (Some(r), _) => (ScanInterface { name: iface.name.clone(), ip: r.probe, mask: r.mask }, Some(r.probe.to_string())),
-        (None, Some(g)) => (join.scope(iface), Some(g.to_string())),
-        (None, None) if join.temp().is_some_and(|t| t.iface == iface.name) => (join.scope(iface), None),
-        (None, None) => (iface, gateway),
-    };
+    let SweepScope { iface, gateway, probe, .. } = sweep_scope(interface, &join).await?;
+    let gateway = gateway.map(|g| g.to_string());
     let own: Vec<Ipv4Addr> = own.unwrap_or_default();
     // IP exclues et caméras connues du compte (sauf celles qu'on réadresse).
     let account = super::accounts::reserved_for(&accounts, account_id.as_deref(), &own);
     let own: HashSet<Ipv4Addr> = own.into_iter().collect();
     let exclude = exclusions(&iface, &scan_state.seen(), gateway.as_deref(), &account, &own);
     // Sans mode routé, le ping part de l'adresse balayée (celle du compte posée).
-    let probe = if routed.is_some() { probe } else { Arc::new(SystemProbe { iface: iface.clone() }) };
+    let probe = Arc::new(SystemProbe { iface: probe });
     let sender = channel.clone();
     let result = scan(&iface, exclude, &own, probe, progress_to(token.clone(), move |e| sender.send(e).is_ok()), token.clone()).await;
     match result {
@@ -213,6 +244,29 @@ mod tests {
         // .33 (la caméra cliquée) reste candidate ; passerelle et exclusions du compte priment.
         let want: HashSet<Ipv4Addr> = ["10.0.50.31", "10.0.50.1", "10.0.50.40"].iter().map(|s| s.parse().unwrap()).collect();
         assert_eq!(out, want);
+    }
+
+    #[test]
+    fn free_ips_scope_unchanged() {
+        use super::super::join::{JoinState, RoutedJoin};
+        // DHCP : l'interface, sa passerelle, le ping depuis son adresse.
+        let join = JoinState::default();
+        let s = scope_for(eth0(), Some("10.0.50.1".into()), &join);
+        assert_eq!(s, SweepScope { iface: eth0(), gateway: Some("10.0.50.1".parse().unwrap()), routed: false, probe: eth0() });
+        assert_eq!(scope_for(eth0(), Some("pas une ip".into()), &join).gateway, None);
+        // Mode routé : le réseau du compte, pingé depuis l'adresse de l'interface.
+        join.set_routed(Some(RoutedJoin {
+            account_id: "a".into(),
+            service: "eth0".into(),
+            iface: "eth0".into(),
+            ip: "10.0.20.0".parse().unwrap(),
+            mask: "255.255.255.0".parse().unwrap(),
+            probe: "10.0.20.1".parse().unwrap(),
+            via: "10.0.50.1".parse().unwrap(),
+        }));
+        let s = scope_for(eth0(), Some("10.0.50.1".into()), &join);
+        assert_eq!(s.iface, ScanInterface { name: "eth0".into(), ip: "10.0.20.1".parse().unwrap(), mask: "255.255.255.0".parse().unwrap() });
+        assert_eq!((s.gateway, s.routed, s.probe), (Some("10.0.20.1".parse().unwrap()), true, eth0()));
     }
 
     #[test]

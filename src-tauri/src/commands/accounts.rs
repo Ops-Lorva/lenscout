@@ -324,14 +324,21 @@ pub(crate) fn exclusions_for(state: &Mutex<AccountBook>, id: Option<&str>) -> Ex
 }
 
 /// Ce qu'une feuille ne doit pas proposer pour le compte retenu : ses IP
-/// exclues et les adresses de ses caméras connues, sauf `own` (les adresses
+/// exclues, les adresses de ses caméras connues et des appareils relevés sur
+/// son réseau (même absents du dernier relevé), sauf `own` (les adresses
 /// actuelles des caméras qu'on réadresse, libres pour elles). Sans compte :
 /// rien, la feuille reste utilisable.
 pub(crate) fn reserved_for(state: &Mutex<AccountBook>, id: Option<&str>, own: &[Ipv4Addr]) -> Exclusions {
     let excluded = exclusions_for(state, id);
     let Some(id) = id else { return excluded };
-    let Ok(cameras) = lock(state).and_then(|b| b.known_cameras(id).map_err(code)) else { return excluded };
-    excluded.with_addresses(cameras.into_iter().map(|c| c.ip).filter(|a| !own.contains(a)))
+    let Ok(taken) = lock(state).and_then(|b| {
+        let cameras = b.known_cameras(id).map_err(code)?;
+        let (devices, _) = b.devices(id).map_err(code)?;
+        Ok(cameras.into_iter().map(|c| c.ip).chain(devices.into_iter().map(|d| d.ip)).collect::<Vec<_>>())
+    }) else {
+        return excluded;
+    };
+    excluded.with_addresses(taken.into_iter().filter(|a| !own.contains(a)))
 }
 
 /// Remplissage du réseau du compte retenu, `own` comptées libres ; `None` sans
@@ -346,6 +353,22 @@ pub(crate) fn account_cameras(book: &AccountBook, id: &str) -> Result<Vec<KnownC
 
 pub(crate) fn account_fill(book: &AccountBook, id: &str) -> Result<Option<NetworkFill>, String> {
     book.fill(id, &[]).map_err(code)
+}
+
+/// Inventaire relevé d'un compte et date du dernier relevé.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct AccountDevices {
+    pub devices: Vec<lenscout_core::site_survey::device::SeenDevice>,
+    pub surveyed_at: Option<u64>,
+}
+
+pub(crate) fn account_devices(book: &AccountBook, id: &str) -> Result<AccountDevices, String> {
+    let (devices, surveyed_at) = book.devices(id).map_err(code)?;
+    Ok(AccountDevices { devices, surveyed_at })
+}
+
+pub(crate) fn account_forget_device(book: &mut AccountBook, id: &str, key: &str) -> Result<(), String> {
+    book.forget_device(id, key).map_err(code)
 }
 
 pub(crate) fn account_forget_camera(book: &mut AccountBook, id: &str, key: &str) -> Result<(), String> {
@@ -445,6 +468,20 @@ pub async fn cmd_account_fill(id: String, state: State<'_, Mutex<AccountBook>>) 
     account_fill(&book, &id)
 }
 
+/// Inventaire relevé du compte et date du dernier relevé (jamais de secret).
+#[tauri::command]
+pub async fn cmd_account_devices(id: String, state: State<'_, Mutex<AccountBook>>) -> Result<AccountDevices, String> {
+    let book = lock(&state)?;
+    account_devices(&book, &id)
+}
+
+/// Oublie un appareil relevé (`key` : MAC, sinon IP).
+#[tauri::command]
+pub async fn cmd_account_forget_device(id: String, key: String, state: State<'_, Mutex<AccountBook>>) -> Result<(), String> {
+    let mut book = lock(&state)?;
+    account_forget_device(&mut book, &id, &key)
+}
+
 /// Oublie une caméra connue (`key` : n° de série, sinon MAC).
 #[tauri::command]
 pub async fn cmd_account_forget_camera(id: String, key: String, state: State<'_, Mutex<AccountBook>>) -> Result<(), String> {
@@ -483,6 +520,7 @@ pub async fn cmd_accounts_import_apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lenscout_core::site_survey::device::{DeviceKind, SeenDevice};
 
     /// Dossier temporaire d'un test, retiré à sa fin (même en cas d'échec).
     struct TmpDir(std::path::PathBuf);
@@ -612,6 +650,39 @@ mod tests {
         let f = fill_for(&state, Some(&acc.id), &[ip("10.0.8.21")]).unwrap();
         assert_eq!((f.cameras, f.free), (1, 254 - 4));
         assert!(fill_for(&state, None, &[]).is_none());
+    }
+
+    fn seen_device(ip: &str, mac: Option<&str>) -> SeenDevice {
+        SeenDevice { ip: ip.parse().unwrap(), mac: mac.map(str::to_string), vendor: None, kind: DeviceKind::Switch, name: None, model: None, first_seen: 1, last_seen: 1 }
+    }
+
+    #[test]
+    fn reserved_holds_surveyed_devices_but_not_own() {
+        let (mut book, _g_book) = book();
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), site()).unwrap();
+        book.record_survey(&acc.id, vec![seen_device("10.0.8.30", Some("AA:BB:CC:00:00:30")), seen_device("10.0.8.31", None)], 5).unwrap();
+        let state = Mutex::new(book);
+        let ip = |s: &str| s.parse::<std::net::Ipv4Addr>().unwrap();
+        let r = reserved_for(&state, Some(&acc.id), &[ip("10.0.8.31")]);
+        assert!(r.contains(ip("10.0.8.30")));
+        assert!(!r.contains(ip("10.0.8.31")));
+        let f = fill_for(&state, Some(&acc.id), &[]).unwrap();
+        assert_eq!(f.devices, 2);
+    }
+
+    #[test]
+    fn devices_of_an_account_are_listed_with_their_date_and_forgotten_by_key() {
+        let (mut book, _g_book) = book();
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), site()).unwrap();
+        let json = serde_json::to_value(account_devices(&book, &acc.id).unwrap()).unwrap();
+        assert_eq!(json, serde_json::json!({"devices": [], "surveyed_at": null}));
+        book.record_survey(&acc.id, vec![seen_device("10.0.8.30", Some("AA:BB:CC:00:00:30"))], 5).unwrap();
+        let json = serde_json::to_value(account_devices(&book, &acc.id).unwrap()).unwrap();
+        assert_eq!((json["devices"][0]["kind"].as_str(), json["surveyed_at"].as_u64()), (Some("switch"), Some(5)));
+        assert_eq!(account_forget_device(&mut book, &acc.id, "10.0.8.99").unwrap_err(), "not_found");
+        account_forget_device(&mut book, &acc.id, "AA:BB:CC:00:00:30").unwrap();
+        assert!(account_devices(&book, &acc.id).unwrap().devices.is_empty());
+        assert_eq!(account_devices(&book, "zzz").unwrap_err(), "not_found");
     }
 
     #[test]

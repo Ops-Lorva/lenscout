@@ -97,6 +97,12 @@ impl JoinState {
         self.routed_lock().take();
     }
 
+    /// Tests d'autres modules : pose un mode routé sans passer par la commande.
+    #[cfg(test)]
+    pub(crate) fn set_routed(&self, r: Option<RoutedJoin>) {
+        *self.routed_lock() = r;
+    }
+
     fn out(&self) -> Option<JoinedOut> {
         self.lock().as_ref().map(JoinedOut::new).or_else(|| self.routed_lock().as_ref().map(JoinedOut::routed))
     }
