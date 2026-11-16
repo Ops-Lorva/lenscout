@@ -96,6 +96,9 @@
     "colModel": "Modelo",
     "colSeen": "Vista",
     "mac": "MAC",
-    "serial": "Serie"
+    "serial": "Serie",
+    "devices": "Equipos",
+    "used": "{pct} % · {free} libres de {usable}",
+    "crowded": "Pasar a /{prefix} ({mask})"
   }
 }

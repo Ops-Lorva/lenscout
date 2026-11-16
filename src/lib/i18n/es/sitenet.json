@@ -1,0 +1,38 @@
+{
+  "survey": "Relevar",
+  "stop": "Detener",
+  "progress": "{done} / {total}",
+  "surveyed": "Relevado el {date}",
+  "never": "Nunca relevado",
+  "count": "{count, plural, one {# equipo} other {# equipos}}",
+  "offNetwork": "Fuera de la red de la cuenta",
+  "truncated": "Barrido parcial",
+  "list": "Ver la lista",
+  "all": "Todos",
+  "search": "IP, MAC, fabricante, nombre",
+  "export": "Exportar",
+  "exported": "Exportado",
+  "none": "Ningún equipo",
+  "absent": "Ausente en el último relevamiento",
+  "forget": "Olvidar",
+  "confirmForget": "Confirmar",
+  "close": "Cerrar",
+  "col": {
+    "ip": "IP",
+    "mac": "MAC",
+    "vendor": "Fabricante",
+    "kind": "Tipo",
+    "name": "Nombre",
+    "seen": "Visto el"
+  },
+  "kind": {
+    "camera": "Cámara",
+    "nvr": "NVR",
+    "switch": "Switch",
+    "pc": "PC",
+    "printer": "Impresora",
+    "gateway": "Puerta de enlace",
+    "this_pc": "Este PC",
+    "unknown": "Desconocido"
+  }
+}

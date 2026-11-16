@@ -12,6 +12,9 @@
   import { clearStatusIf, page, status, type Status } from '#lib/stores/nav.ts';
   import ImportSheet from './ImportSheet.svelte';
   import Dialog from './Dialog.svelte';
+  import SiteSurvey from './SiteSurvey.svelte';
+  import { maskOf } from '#lib/api/net.ts';
+  import { scanIface } from '#lib/stores/nav.ts';
 
   // Liste partagée avec les sélecteurs des autres écrans.
   const accounts = $derived<AccountEntry[]>($accountList ?? []);
@@ -50,6 +53,8 @@
     knownSort.col === col ? (knownSort.dir === 'asc' ? 'ascending' : 'descending') : 'none';
   const knownArrow = (col: KnownSortColumn): string => (knownSort.col === col ? (knownSort.dir === 'asc' ? '▲' : '▼') : '');
   const ends = $derived(fill ? networkEnds(fill.network) : null);
+  // IP du PC enregistrée (pas celle en cours de saisie) : c'est elle que le relevé balaie.
+  const savedPcIp = $derived(accounts.find((a) => a.id === editing)?.pc_ip ?? null);
   const counts = $derived(fill ? fillLabel(fill) : null);
   const seenOn = (c: KnownCamera) => new Date(c.last_seen * 1000).toLocaleDateString($locale ?? undefined);
   // Type d'identité affiché : numéro de série sinon adresse MAC, comme `knownKey`.
@@ -356,8 +361,16 @@
               <li><i class="k-pc"></i>{$_('accounts.net.pc')}</li>
               {#if fill.excluded}<li><i class="k-excluded"></i>{$_('accounts.net.excluded')} {fill.excluded}</li>{/if}
               <li><i class="k-camera"></i>{$_('accounts.net.cameras')}</li>
+              {#if fill.devices}<li><i class="k-device"></i>{$_('accounts.net.devices')} {fill.devices}</li>{/if}
               {#if counts}<li class="count">{$_('accounts.net.summary', { values: counts })}</li>{/if}
             </ul>
+            {#if fill.devices || fill.crowded}
+              <div class="used" class:warn={fill.crowded}>
+                <span>{$_('accounts.net.used', { values: { pct: fill.used_pct, free: fill.free, usable: fill.usable } })}</span>
+                {#if fill.suggest}<span class="m">{$_('accounts.net.crowded', { values: { prefix: fill.suggest.split('/')[1], mask: maskOf(fill.suggest) } })}</span>{/if}
+              </div>
+            {/if}
+            <SiteSurvey accountId={editing} accountName={name.trim()} pcIp={savedPcIp} iface={$scanIface} onDone={() => { if (editing) void loadNet(editing); }} />
           {/if}
           {#if known.length > 0}
             <details>
@@ -480,6 +493,9 @@
   .k-gateway { background: var(--cool); }
   .k-pc { background: var(--act); }
   .k-camera { background: var(--ok); }
+  .k-device { background: var(--text-2); }
+  .used { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--text-ink2); font-size: 13px; }
+  .used.warn { color: var(--warn); }
   .k-excluded { background: repeating-linear-gradient(135deg, var(--line-2) 0 2px, transparent 2px 5px); }
   .legend .k-excluded { border: 1px solid var(--line-2); }
   .ends { display: flex; justify-content: space-between; color: var(--text-2); font-size: 12px; }

@@ -1,0 +1,38 @@
+{
+  "survey": "Relever",
+  "stop": "Arrêter",
+  "progress": "{done} / {total}",
+  "surveyed": "Relevé le {date}",
+  "never": "Jamais relevé",
+  "count": "{count, plural, one {# appareil} other {# appareils}}",
+  "offNetwork": "Hors du réseau du compte",
+  "truncated": "Balayage partiel",
+  "list": "Voir la liste",
+  "all": "Tous",
+  "search": "IP, MAC, constructeur, nom",
+  "export": "Exporter",
+  "exported": "Exporté",
+  "none": "Aucun appareil",
+  "absent": "Absent au dernier relevé",
+  "forget": "Oublier",
+  "confirmForget": "Confirmer",
+  "close": "Fermer",
+  "col": {
+    "ip": "IP",
+    "mac": "MAC",
+    "vendor": "Constructeur",
+    "kind": "Type",
+    "name": "Nom",
+    "seen": "Vu le"
+  },
+  "kind": {
+    "camera": "Caméra",
+    "nvr": "NVR",
+    "switch": "Switch",
+    "pc": "PC",
+    "printer": "Imprimante",
+    "gateway": "Passerelle",
+    "this_pc": "Ce PC",
+    "unknown": "Inconnu"
+  }
+}

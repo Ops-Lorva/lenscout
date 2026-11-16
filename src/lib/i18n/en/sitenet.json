@@ -1,0 +1,38 @@
+{
+  "survey": "Survey",
+  "stop": "Stop",
+  "progress": "{done} / {total}",
+  "surveyed": "Surveyed {date}",
+  "never": "Never surveyed",
+  "count": "{count, plural, one {# device} other {# devices}}",
+  "offNetwork": "Not on the account network",
+  "truncated": "Partial sweep",
+  "list": "Show list",
+  "all": "All",
+  "search": "IP, MAC, vendor, name",
+  "export": "Export",
+  "exported": "Exported",
+  "none": "No devices",
+  "absent": "Missing from the last survey",
+  "forget": "Forget",
+  "confirmForget": "Confirm",
+  "close": "Close",
+  "col": {
+    "ip": "IP",
+    "mac": "MAC",
+    "vendor": "Vendor",
+    "kind": "Type",
+    "name": "Name",
+    "seen": "Seen"
+  },
+  "kind": {
+    "camera": "Camera",
+    "nvr": "NVR",
+    "switch": "Switch",
+    "pc": "PC",
+    "printer": "Printer",
+    "gateway": "Gateway",
+    "this_pc": "This PC",
+    "unknown": "Unknown"
+  }
+}
