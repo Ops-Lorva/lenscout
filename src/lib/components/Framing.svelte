@@ -6,6 +6,8 @@
   import { ackFrame, FramePresenter, identifyCamera, identityChanged, listViews, needsIdentify, noticeKey, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
   import { framingTarget, page, suspendStep } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
+  import { joined, joinRequest, needsJoin } from '#lib/api/net.ts';
+  import { accountList } from '#lib/stores/accounts.ts';
   import ImageSettings from './ImageSettings.svelte';
   import { normRect } from '#lib/api/imaging.ts';
   import { cameraName } from '#lib/api/discovery.ts';
@@ -17,6 +19,23 @@
   let paused = $state(false);
   let src = $state<string | null>(null);
   let error = $state('');
+  // Caméra hors du réseau du poste alors que le compte retenu a le sien :
+  // on propose de le poser (même geste que le sélecteur Compte de l'écran Réseau).
+  const account = $derived($accountList?.find((a) => a.id === accountId) ?? null);
+  const offSubnet = $derived(error === 'framing.camera_off_subnet' && needsJoin(account, $joined));
+  let joinAsked = $state(false);
+  function joinAccount() {
+    joinAsked = true;
+    joinRequest.set(accountId);
+  }
+  // Le compte posé change : la caméra est peut-être joignable, on relance.
+  $effect(() => {
+    void $joined;
+    untrack(() => {
+      joinAsked = false;
+      if (error === 'framing.camera_off_subnet' && !paused) void play();
+    });
+  });
   // Un flux qui tombe (caméra qui redémarre, réseau qui cligne) se relance seul
   // après ce délai ; une pause ou un changement de caméra l'annulent.
   const RELAUNCH_MS = 1500;
@@ -296,7 +315,8 @@
     {/if}
   {/if}
 </div>
-{#if error}<p class="err">{$_(error)}</p>{/if}
+{#if error}<p class="err">{$_(error)}{#if offSubnet && account}
+  <button class="btn" onclick={joinAccount} disabled={joinAsked}>{$_('free.join', { values: { name: account.name } })}</button>{/if}</p>{/if}
 {#if cam && notice}<p class="err note">{$_(notice)}</p>{/if}
 {#if !cam}
   <div class="none">{$_('framing.none')}</div>
