@@ -1,7 +1,7 @@
 //! Adresses libres du sous-réseau d'une interface : ping puis table ARP, les
 //! adresses sans réponse sont regroupées en plages.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,8 +101,8 @@ pub enum Reply {
 #[async_trait]
 pub trait FreeProbe: Send + Sync {
     async fn ping(&self, ip: Ipv4Addr) -> Reply;
-    /// Voisins ARP de l'interface, lus après les pings.
-    async fn neighbours(&self) -> HashSet<Ipv4Addr>;
+    /// Voisins ARP de l'interface (adresse → MAC), lus après les pings.
+    async fn neighbours(&self) -> HashMap<Ipv4Addr, String>;
 }
 
 /// Ping ICMP non privilégié (`ping-async`) depuis l'adresse de l'interface,
@@ -125,8 +125,8 @@ impl FreeProbe for SystemProbe {
         }
     }
 
-    async fn neighbours(&self) -> HashSet<Ipv4Addr> {
-        read_neighbours(&self.iface).await.into_keys().collect()
+    async fn neighbours(&self) -> HashMap<Ipv4Addr, String> {
+        read_neighbours(&self.iface).await
     }
 }
 
@@ -277,6 +277,58 @@ pub enum FreeError {
     PingUnavailable,
 }
 
+/// Ce que le ping de masse a appris : les adresses qui ont répondu, et celles
+/// dont le tir est parti sans réponse.
+pub struct Pinged {
+    pub alive: HashSet<Ipv4Addr>,
+    pub silent: HashSet<Ipv4Addr>,
+}
+
+/// Pingue `targets`, `CONCURRENCY` à la fois ; `progress(faits, total)` à
+/// chaque ping terminé. Plus d'un tir sur dix qui n'a pas pu partir :
+/// `PingUnavailable` (le résultat ne dirait rien du réseau).
+pub async fn ping_all(
+    targets: &[Ipv4Addr],
+    probe: &dyn FreeProbe,
+    progress: impl Fn(usize, usize),
+    cancel: &CancellationToken,
+) -> Result<Pinged, FreeError> {
+    let total = targets.len();
+    if cancel.is_cancelled() {
+        return Err(FreeError::Cancelled);
+    }
+    progress(0, total);
+    let mut alive: HashSet<Ipv4Addr> = HashSet::new();
+    let mut silent: HashSet<Ipv4Addr> = HashSet::new();
+    let mut unsent = 0usize;
+    let mut done = 0usize;
+    let mut replies = futures_util::stream::iter(targets.iter().copied())
+        .map(|a| async move { (a, probe.ping(a).await) })
+        .buffer_unordered(CONCURRENCY);
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(FreeError::Cancelled),
+            next = replies.next() => match next {
+                None => break,
+                Some((a, r)) => {
+                    done += 1;
+                    match r {
+                        Reply::Alive => { alive.insert(a); }
+                        Reply::Silent => { silent.insert(a); }
+                        Reply::Unsent => unsent += 1,
+                    }
+                    progress(done, total);
+                }
+            },
+        }
+    }
+    if unsent * 10 > total {
+        return Err(FreeError::PingUnavailable);
+    }
+    Ok(Pinged { alive, silent })
+}
+
 /// Balaie le sous-réseau de `iface` : ce qui répond au ping, figure dans la
 /// table ARP, est dans `exclude` ou est l'adresse du poste n'est pas libre.
 /// `own` : les adresses actuelles des caméras à réadresser, libres pour elles
@@ -295,45 +347,8 @@ pub async fn scan(
     let (all, truncated) = candidates(iface.ip, prefix);
     let (kept, targets): (Vec<Ipv4Addr>, Vec<Ipv4Addr>) =
         all.into_iter().filter(|a| *a != iface.ip && !exclude.contains(a)).partition(|a| own.contains(a));
-    let total = targets.len();
-    if cancel.is_cancelled() {
-        return Err(FreeError::Cancelled);
-    }
-    progress(0, total);
-
-    let mut taken: HashSet<Ipv4Addr> = HashSet::new();
-    let mut silent: HashSet<Ipv4Addr> = HashSet::new();
-    let mut unsent = 0usize;
-    let mut done = 0usize;
-    let mut replies = futures_util::stream::iter(targets.clone())
-        .map(|a| {
-            let probe = probe.clone();
-            async move { (a, probe.ping(a).await) }
-        })
-        .buffer_unordered(CONCURRENCY);
-    loop {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(FreeError::Cancelled),
-            next = replies.next() => match next {
-                None => break,
-                Some((a, r)) => {
-                    done += 1;
-                    match r {
-                        Reply::Alive => { taken.insert(a); }
-                        Reply::Silent => { silent.insert(a); }
-                        Reply::Unsent => unsent += 1,
-                    }
-                    progress(done, total);
-                }
-            },
-        }
-    }
-    // Plus d'un tir sur dix qui n'a pas pu partir : le résultat ne dirait rien du réseau.
-    if unsent * 10 > total {
-        return Err(FreeError::PingUnavailable);
-    }
-    taken.extend(probe.neighbours().await);
+    let Pinged { alive: mut taken, silent } = ping_all(&targets, probe.as_ref(), progress, &cancel).await?;
+    taken.extend(probe.neighbours().await.into_keys());
     // Libre = a reçu un ping resté sans réponse ET n'est pas dans l'ARP. Un tir
     // isolé qui n'a pas pu partir n'est jamais libre.
     let mut free: Vec<Ipv4Addr> = targets.into_iter().filter(|a| silent.contains(a) && !taken.contains(a)).collect();
@@ -438,11 +453,11 @@ mod tests {
                 Reply::Silent
             }
         }
-        async fn neighbours(&self) -> HashSet<Ipv4Addr> {
+        async fn neighbours(&self) -> HashMap<Ipv4Addr, String> {
             if let Some(n) = self.pings_before_arp {
                 assert_eq!(self.pinged.lock().unwrap().len(), n, "l'ARP se lit après tous les pings");
             }
-            self.neigh.clone()
+            self.neigh.iter().map(|a| (*a, "AA:BB:CC:00:00:01".to_string())).collect()
         }
     }
 

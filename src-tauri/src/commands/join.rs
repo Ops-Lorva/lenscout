@@ -635,7 +635,7 @@ mod tests {
             *n += 1;
             self.0.get(*n - 1).copied().unwrap_or(Reply::Silent)
         }
-        async fn neighbours(&self) -> std::collections::HashSet<Ipv4Addr> {
+        async fn neighbours(&self) -> std::collections::HashMap<Ipv4Addr, String> {
             Default::default()
         }
     }
