@@ -209,3 +209,19 @@ export const INITIAL_PREFILL: MaskGateway = { mask: DEFAULT_MASK, gateway: '' };
  * même vide : c'est un choix.
  */
 export const dnsFollowing = (dns: string, touched: boolean, gateway: string): string => (touched ? dns : gateway);
+
+/**
+ * Le compte retenu par une feuille IP doit-il être posé sur le PC avant le
+ * balayage des adresses libres ? Oui s'il a une IP de PC et que ce n'est pas
+ * lui qui est posé : sinon le balayage partait du réseau de l'interface (le
+ * DHCP du technicien) et proposait des adresses d'un autre réseau.
+ */
+export function needsJoin(account: Pick<Account, 'id' | 'pc_ip'> | null | undefined, j: Joined | null): boolean {
+  return !!account?.pc_ip && j?.account_id !== account.id;
+}
+
+/**
+ * Demande de poser un compte, venue d'une feuille IP : l'écran Réseau, seul
+ * à tenir le sélecteur de compte, la traite comme un choix dans ce sélecteur.
+ */
+export const joinRequest = writable<string | null>(null);

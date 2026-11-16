@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 import {
-  accountChoices, activeAddress, canScan, createJoinSwitch, DEFAULT_MASK, generations, joinReady, joinStep, maskOf, networkOf, prefillFor, shownAddress,
+  accountChoices, activeAddress, canScan, createJoinSwitch, DEFAULT_MASK, generations, joinReady, joinStep, needsJoin, maskOf, networkOf, prefillFor, shownAddress,
   type Joined,
 } from './net';
 
@@ -214,4 +214,18 @@ test('adresse affichée : celle posée, ou celle de l’interface avec la passer
   expect(shownAddress('g', routed, '10.0.8.235/24')).toEqual({ addr: '10.0.8.235/24', via: '10.0.8.1' });
   // Compte choisi, pas encore joint.
   expect(shownAddress('b', routed, '10.0.8.235/24')).toEqual({ addr: '', via: null });
+});
+
+test('une feuille IP ne balaie que le réseau du compte posé', () => {
+  const galleria = { id: 'g', pc_ip: '192.168.1.10/24' };
+  const posé = (id: string) => ({ account_id: id, iface: 'en7', ip: '192.168.1.10', mask: '255.255.255.0', cidr: '192.168.1.0/24' }) as Joined;
+  // Compte retenu dans la feuille, PC resté en DHCP : il faut poser le compte.
+  expect(needsJoin(galleria, null)).toBe(true);
+  // Un autre compte posé : pareil.
+  expect(needsJoin(galleria, posé('autre'))).toBe(true);
+  // Le compte retenu est celui posé : on balaie.
+  expect(needsJoin(galleria, posé('g'))).toBe(false);
+  // Compte sans réseau, ou pas de compte : le réseau de l'interface fait foi.
+  expect(needsJoin({ id: 'x' }, null)).toBe(false);
+  expect(needsJoin(null, null)).toBe(false);
 });

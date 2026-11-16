@@ -5,6 +5,8 @@
   "none": "Aucune adresse libre trouvée",
   "truncated": "Réseau trop grand : seules les {n} adresses proches du poste sont balayées.",
   "note": "Une adresse qui ne répond pas peut appartenir à un appareil éteint.",
+  "not_joined": "Ce PC n'est pas sur le réseau de {name} ({ip}).",
+  "join": "Passer sur {name}",
   "error": {
     "iface_unknown": "Interface inconnue",
     "iface_no_ipv4": "Interface sans adresse IPv4",

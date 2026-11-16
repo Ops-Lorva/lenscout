@@ -13,7 +13,7 @@
   import { actionResults, resultFor } from '#lib/api/configure.ts';
   import { accountList, ensureAccounts } from '#lib/stores/accounts.ts';
   import {
-    accountChoices, canScan, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, leaveNetwork, shownAddress, type JoinChoice,
+    accountChoices, canScan, createJoinSwitch, generations, joined, joinedNetwork, joinNetwork, joinReady, joinRequest, leaveNetwork, shownAddress, type JoinChoice,
   } from '#lib/api/net.ts';
 
   const IFACE_KEY = 'lenscout.iface';
@@ -267,7 +267,17 @@
 
   let barOpen = $state<'activate' | 'network' | 'batch' | 'time' | 'reset' | null>(null);
 
+  // Une feuille IP demande de poser son compte : même chemin qu'un choix
+  // dans le sélecteur « Compte » (IP du PC posée, puis scan du bon réseau).
+  const stopJoinRequests = joinRequest.subscribe((id) => {
+    if (!id) return;
+    joinRequest.set(null);
+    account = id;
+    void choose({ iface, account: id });
+  });
+
   onDestroy(() => {
+    stopJoinRequests();
     if (scanning) stop();
     clearStatusIf(scanStatus);
     clearStatusIf(failStatus);

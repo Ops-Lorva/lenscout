@@ -5,6 +5,8 @@
   "none": "Ninguna dirección libre encontrada",
   "truncated": "Red demasiado grande: solo se escanean las {n} direcciones más cercanas al equipo.",
   "note": "Una dirección que no responde puede pertenecer a un equipo apagado.",
+  "not_joined": "Este equipo no está en la red de {name} ({ip}).",
+  "join": "Pasar a {name}",
   "error": {
     "iface_unknown": "Interfaz desconocida",
     "iface_no_ipv4": "Interfaz sin dirección IPv4",
