@@ -12,6 +12,10 @@
     "iface_no_ipv4": "Interfaz sin dirección IPv4",
     "internal": "Error interno",
     "unknown": "Error",
-    "ping_unavailable": "No se puede hacer ping desde este equipo"
+    "ping_unavailable": "No se puede hacer ping desde este equipo",
+    "account_no_pc_ip": "Esta cuenta no tiene IP del PC",
+    "file_unwritable": "No se puede escribir el archivo elegido",
+    "not_found": "Cuenta o equipo no encontrado",
+    "not_on_account_network": "Fuera de la red de la cuenta"
   }
 }

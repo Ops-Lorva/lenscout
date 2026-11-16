@@ -2,12 +2,14 @@ mod commands;
 mod updater;
 
 use commands::accounts::{
-    StartupNotice, absorb_old_accounts, cmd_account_cameras, cmd_account_create, cmd_account_fill, cmd_account_forget_camera, cmd_account_password, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
+    StartupNotice, absorb_old_accounts, cmd_account_cameras, cmd_account_create, cmd_account_devices, cmd_account_forget_device, cmd_account_fill, cmd_account_forget_camera, cmd_account_password, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
     cmd_accounts_import_plan, cmd_account_update, cmd_accounts_list,
     cmd_accounts_startup, notice_code,
 };
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
 use commands::report::cmd_save_report;
+use commands::login_test::{LoginTestState, cmd_login_test, cmd_login_test_cancel};
+use commands::site_survey::{SiteSurveyState, cmd_site_survey, cmd_site_survey_cancel};
 use commands::ops::{OpsStore, cmd_ops_close, cmd_ops_creds_step, cmd_ops_preview, cmd_ops_step};
 use commands::stream::{StreamState, cmd_identify_camera, cmd_stream_ack, cmd_stream_start, cmd_stream_stop, cmd_stream_views};
 use commands::update::{cmd_apply_update, cmd_check_update};
@@ -43,6 +45,8 @@ pub fn run() {
         .manage(ScanState::default())
         .manage(StreamState::default())
         .manage(FreeIpsState::default())
+        .manage(LoginTestState::default())
+        .manage(SiteSurveyState::default())
         .manage(PreviewStore::default())
         .manage(OpsStore::default())
         .manage(JoinState::default())
@@ -79,6 +83,10 @@ pub fn run() {
             cmd_app_version,
             cmd_free_ips,
             cmd_free_ips_cancel,
+            cmd_site_survey,
+            cmd_site_survey_cancel,
+            cmd_login_test,
+            cmd_login_test_cancel,
             cmd_list_interfaces,
             cmd_interface_details,
             cmd_debug_get,
@@ -96,6 +104,8 @@ pub fn run() {
             cmd_account_cameras,
             cmd_account_fill,
             cmd_account_forget_camera,
+            cmd_account_devices,
+            cmd_account_forget_device,
             cmd_accounts_export,
             cmd_accounts_import_plan,
             cmd_accounts_import_apply,

@@ -12,6 +12,10 @@
     "iface_no_ipv4": "Interface has no IPv4 address",
     "internal": "Internal error",
     "unknown": "Error",
-    "ping_unavailable": "Ping is not possible from this computer"
+    "ping_unavailable": "Ping is not possible from this computer",
+    "account_no_pc_ip": "This account has no PC IP",
+    "file_unwritable": "Unable to write the chosen file",
+    "not_found": "Account or device not found",
+    "not_on_account_network": "Not on the account network"
   }
 }

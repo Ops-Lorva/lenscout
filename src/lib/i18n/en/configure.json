@@ -43,7 +43,8 @@
     "activation_cleartext": "HTTPS unavailable: password not sent",
     "not_new": "Camera not new: rescan",
     "mac_not_axis": "MAC seen on the network is not Axis: password not sent",
-    "declared_mac_not_axis": "MAC declared by the camera is not Axis: password not sent"
+    "declared_mac_not_axis": "MAC declared by the camera is not Axis: password not sent",
+    "file_unwritable": "Unable to write the chosen file"
   },
   "off_subnet": "Outside the subnet of {iface}",
   "invalid": {

@@ -66,9 +66,23 @@ const shown: Record<string, string[]> = {
       ...lock,
     ]),
   ].sort(),
-  free: codesIn(rust('src-tauri/src/commands/free_ips.rs')),
+  free: [
+    ...new Set([
+      ...codesIn(rust('src-tauri/src/commands/free_ips.rs')),
+      ...codesIn(rust('src-tauri/src/commands/site_survey.rs')),
+      ...codesIn(rust('src-tauri/src/commands/report.rs')),
+    ]),
+  ].sort(),
   configure: [
-    ...new Set([...codesIn(rust('src-tauri/src/commands/configure.rs')), ...codesIn(rust('src-tauri/src/commands/ops.rs')), ...credentials, ...lock, ...front]),
+    ...new Set([
+      ...codesIn(rust('src-tauri/src/commands/configure.rs')),
+      ...codesIn(rust('src-tauri/src/commands/ops.rs')),
+      ...codesIn(rust('src-tauri/src/commands/login_test.rs')),
+      ...codesIn(rust('src-tauri/src/commands/report.rs')),
+      ...credentials,
+      ...lock,
+      ...front,
+    ]),
   ].sort(),
 };
 
@@ -105,6 +119,8 @@ describe('codes d’erreur Rust ↔ clés i18n', () => {
     expect(batchCodes).toContain('ip_in_use');
     expect(conflictCodes).toContain('outside_account');
     expect(shown.free).toContain('ping_unavailable');
+    expect(shown.free).toContain('not_on_account_network');
+    expect(shown.configure).toContain('file_unwritable');
     expect(actionKeys).toContain('elevation.refused');
     expect(front).toEqual(['no_cameras', 'no_cameras']);
   });

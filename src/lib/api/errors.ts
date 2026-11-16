@@ -36,6 +36,7 @@ export const CODES = [
   'gateway_outside_network',
   'invalid_exclusions',
   'account_no_pc_ip',
+  'not_on_account_network',
   'pc_ip_prefix_unsupported',
   'already_in_network',
   'pc_ip_in_use',

@@ -166,9 +166,12 @@ pub async fn run_login_test(
 ) -> bool {
     use futures_util::StreamExt;
     let lock = || log.lock().unwrap_or_else(|e| e.into_inner());
-    let mut results = futures_util::stream::iter(cams.iter().enumerate())
-        .map(|(index, cam)| {
+    // Des indices plutôt que `cams.iter()` : le futur reste `Send` pour une
+    // commande Tauri (sinon « FnOnce is not general enough »).
+    let mut results = futures_util::stream::iter(0..cams.len())
+        .map(|index| {
             let cancel = cancel.clone();
+            let cam = &cams[index];
             async move {
                 if cancel.is_cancelled() {
                     return None;
