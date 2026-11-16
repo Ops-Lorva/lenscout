@@ -34,8 +34,8 @@ flux en direct pour les orienter et faire la mise au point pendant la pose — l
 une seule fenêtre, sur macOS, Windows et Linux. C’est un outil d’**installation** : pas de
 surveillance continue, pas d’enregistrement.
 
-L’interface tient en trois onglets — **Réseau**, **Cadrage**, **Comptes** — en français,
-en anglais et en espagnol.
+L’interface tient en quatre onglets — **Réseau**, **Cadrage**, **Comptes**, **Opérations** —
+en français, en anglais et en espagnol.
 
 ## Fonctionnalités
 
@@ -61,6 +61,22 @@ en anglais et en espagnol.
   ajoute temporairement à votre interface réseau une IP du bon sous-réseau (en demandant
   les droits administrateur), configure la caméra, puis retire cette IP — y compris après
   une erreur.
+
+### Opérations
+- Appliquer un même changement à toutes les caméras cochées : **garder les IP** (nouveau
+  masque, passerelle ou DNS, adresses inchangées), **renuméroter** à partir d’une
+  adresse de départ, **régler l’heure** (NTP et fuseau horaire) ou **changer les
+  identifiants** (Axis).
+- Un aperçu avant / après liste chaque caméra avec ce qui va changer, et signale les
+  lignes qui poseraient problème : adresse déjà prise, adresse de réseau ou de diffusion,
+  passerelle hors du sous-réseau, caméra en DHCP, hors du réseau du compte. Rien n’est
+  appliqué tant qu’une ligne bloque.
+- Application après une confirmation explicite, caméra par caméra, avec un bouton
+  **Arrêter** qui s’arrête après la caméra en cours, puis un rapport : réussies, en échec,
+  injoignables à la nouvelle adresse.
+- Changer les identifiants pose l’identifiant du compte choisi. Les mots de passe actuels
+  à essayer sont saisis pour cette fois seulement, jamais enregistrés ni journalisés, et
+  l’opération s’arrête sur une caméra dès que continuer risquerait de bloquer son compte.
 
 ### Comptes
 - Enregistrez des comptes nommés (par exemple « LORVA défaut » ou « Client X »), chacun

@@ -32,8 +32,8 @@ zone, and their credentials, then shows their live stream so you can aim and foc
 during the install — all from one window, on macOS, Windows, and Linux. It is an
 **installation** tool: no continuous monitoring, no recording.
 
-The interface is three tabs — **Network**, **Framing**, **Accounts** — in French,
-English, and Spanish.
+The interface is four tabs — **Network**, **Framing**, **Accounts**, **Operations** — in
+French, English, and Spanish.
 
 ## Features
 
@@ -58,6 +58,21 @@ English, and Spanish.
   temporarily adds an IP from the right subnet to your network interface (asking for
   admin rights), configures the camera, then removes that IP again — including after an
   error.
+
+### Operations
+- Run one change on every checked camera at once: **keep IPs** (new mask, gateway or
+  DNS, addresses untouched), **renumber** from a start address, **set time** (NTP and
+  time zone), or **change credentials** (Axis).
+- A before / after preview lists each camera with what will change, and flags the rows
+  that would break: address already taken, network or broadcast address, gateway
+  outside the subnet, camera on DHCP, outside the account's network. Nothing is applied
+  while a row blocks.
+- Apply after an explicit confirmation, camera by camera, with a **Stop** button that
+  halts after the current camera, then a report: succeeded, failed, unreachable at the
+  new address.
+- Change credentials sets the selected account's login. The current passwords to try
+  are typed for this run only, never saved or logged, and the run stops on a camera
+  when going on would risk locking its account.
 
 ### Accounts
 - Save named accounts (for example "LORVA default" or "Client X"), each with a login and

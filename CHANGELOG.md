@@ -11,7 +11,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 ### English
 
 - **First release of LenScout** — a desktop app (Tauri) to discover and configure network cameras on an installation site.
-- **Three tabs: Network, Framing, Accounts**, with the list of active interfaces and French / English / Spanish.
+- **Four tabs: Network, Framing, Accounts, Operations**, with the list of active interfaces and French / English / Spanish.
+- **Operations**: keep IPs, renumber, set time or change credentials (Axis) on every checked camera, with a before / after preview that flags conflicts, confirmation, camera-by-camera apply with Stop, and a report.
 - **Axis — full support**: discovery (layer-2 + routed scan + mDNS/WSD), activation, IP configuration (DHCP / static), credentials, time / NTP, and framing (multi-sensor views, zoom, focus).
 - **Hikvision / LTS**: SADP discovery and ISAPI identification; recognised on a routed scan, with LTS told apart from Hikvision. Activation and IP change over SADP are not yet enabled (no reliable public source for the SADP password encoding).
 - **Accounts**: optional PC IP (with prefix), network and gateway; stored and carried by export / import. A chosen account adds its PC IP to the interface and rescans.
@@ -20,7 +21,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 ### Français
 
 - **Première version de LenScout** — une application de bureau (Tauri) pour découvrir et configurer les caméras réseau sur un site d'installation.
-- **Trois onglets : Réseau, Cadrage, Comptes**, avec la liste des interfaces actives et le français / anglais / espagnol.
+- **Quatre onglets : Réseau, Cadrage, Comptes, Opérations**, avec la liste des interfaces actives et le français / anglais / espagnol.
+- **Opérations** : garder les IP, renuméroter, régler l’heure ou changer les identifiants (Axis) sur toutes les caméras cochées, avec un aperçu avant / après qui signale les conflits, une confirmation, une application caméra par caméra avec Arrêter, et un rapport.
 - **Axis — prise en charge complète** : découverte (couche 2 + balayage routé + mDNS/WSD), activation, configuration IP (DHCP / fixe), identifiants, heure / NTP, et cadrage (vues multicapteur, zoom, mise au point).
 - **Hikvision / LTS** : découverte SADP et identification ISAPI ; reconnues au balayage routé, LTS distinguée de Hikvision. L'activation et le changement d'IP par SADP ne sont pas encore activés (pas de source publique fiable pour le chiffrement du mot de passe SADP).
 - **Comptes** : IP du PC facultative (avec préfixe), réseau et passerelle ; conservés et transportés par l'export / import. Choisir un compte ajoute son IP PC à l'interface et relance le balayage.
