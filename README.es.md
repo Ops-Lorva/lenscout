@@ -82,11 +82,18 @@ en francés, inglés y español.
   actuales que hay que probar se escriben solo para esa ejecución, nunca se guardan ni se
   registran, y la ejecución se detiene en una cámara cuando seguir podría bloquear su
   cuenta.
+- **Probar el login** prueba la cuenta elegida en cada cámara marcada, en solo lectura
+  (Axis y Hikvision / LTS), y lista OK, rechazado, inalcanzable u otro equipo; una cámara
+  rechazada dos veces en 30 min no se vuelve a probar. Exportación CSV.
 
 ### Cuentas
 - Guarde cuentas con nombre (por ejemplo «LORVA por defecto» o «Cliente X»), cada una con
   usuario y contraseña, y elija la cuenta en cada acción que requiera autenticación: un
   cliente puede tener sus propias credenciales.
+- **Relevar** la red de la cuenta en el sitio (ping, ARP, nombres NetBIOS y mDNS): cada
+  equipo se guarda con su tipo, fabricante y nombre, cuenta como ocupado hasta
+  «Olvidar», y por encima del 80 % de uso LenScout propone una máscara más amplia.
+  Exportación CSV.
 
 ### Encuadre
 - Conéctese a una cámara con la cuenta elegida y vea su vídeo en directo, lo bastante

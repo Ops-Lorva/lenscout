@@ -83,11 +83,18 @@ en français, en anglais et en espagnol.
 - Changer les identifiants pose l’identifiant du compte choisi. Les mots de passe actuels
   à essayer sont saisis pour cette fois seulement, jamais enregistrés ni journalisés, et
   l’opération s’arrête sur une caméra dès que continuer risquerait de bloquer son compte.
+- **Tester le login** essaie le compte choisi sur chaque caméra cochée, en lecture seule
+  (Axis et Hikvision / LTS), et liste OK, refusé, injoignable ou autre appareil ; une
+  caméra refusée deux fois en 30 min n’est plus essayée. Export CSV.
 
 ### Comptes
 - Enregistrez des comptes nommés (par exemple « LORVA défaut » ou « Client X »), chacun
   avec un identifiant et un mot de passe, et choisissez le compte à chaque action qui
   demande une authentification — un client peut avoir ses propres identifiants.
+- **Relever** le réseau du compte sur place (ping, ARP, noms NetBIOS et mDNS) : chaque
+  appareil est retenu avec son type, son constructeur et son nom, compte comme pris
+  jusqu’à « Oublier », et au-delà de 80 % d’occupation LenScout propose un masque plus
+  large. Export CSV.
 
 ### Cadrage
 - Se connecter à une caméra avec le compte choisi et afficher son flux en direct, assez

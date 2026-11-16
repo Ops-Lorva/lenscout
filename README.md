@@ -78,11 +78,17 @@ French, English, and Spanish.
 - Change credentials sets the selected account's login. The current passwords to try
   are typed for this run only, never saved or logged, and the run stops on a camera
   when going on would risk locking its account.
+- **Test login** tries the chosen account on every checked camera, read-only (Axis
+  and Hikvision / LTS), and lists OK, denied, unreachable or another device; a camera
+  refused twice in 30 minutes is not tried again. Export to CSV.
 
 ### Accounts
 - Save named accounts (for example "LORVA default" or "Client X"), each with a login and
   password, and pick the account at each action that needs authentication — a client may
   have their own credentials.
+- **Survey** the account's network on site (ping, ARP, NetBIOS and mDNS names): every
+  device is kept with its type, vendor and name, counts as taken until forgotten, and
+  above 80 % use LenScout suggests a wider mask. Export to CSV.
 
 ### Framing
 - Connect to a camera with the chosen account and show its live stream, fluid enough to
