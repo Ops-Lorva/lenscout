@@ -15,6 +15,7 @@ pub mod imaging;
 #[allow(clippy::collapsible_if)]
 pub mod interfaces;
 pub mod isapi;
+pub mod login_test;
 pub mod migrate;
 pub mod mjpeg;
 pub mod model;
@@ -26,6 +27,7 @@ pub mod proc;
 pub mod route;
 pub mod seal;
 pub mod secret;
+pub mod site_survey;
 pub mod temp_ip;
 pub mod transport;
 pub mod vapix;

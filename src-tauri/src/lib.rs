@@ -7,6 +7,7 @@ use commands::accounts::{
     cmd_accounts_startup, notice_code,
 };
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
+use commands::report::cmd_save_report;
 use commands::ops::{OpsStore, cmd_ops_close, cmd_ops_creds_step, cmd_ops_preview, cmd_ops_step};
 use commands::stream::{StreamState, cmd_identify_camera, cmd_stream_ack, cmd_stream_start, cmd_stream_stop, cmd_stream_views};
 use commands::update::{cmd_apply_update, cmd_check_update};
@@ -98,6 +99,7 @@ pub fn run() {
             cmd_accounts_export,
             cmd_accounts_import_plan,
             cmd_accounts_import_apply,
+            cmd_save_report,
             cmd_join_network,
             cmd_join_ready,
             cmd_leave_network,
