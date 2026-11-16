@@ -1,6 +1,17 @@
+<p align="center"><b>English</b> · <a href="README.fr.md">Français</a></p>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-en-dark.png">
+  <img alt="LenScout — Find, activate and configure IP cameras on site." src="docs/assets/banner-en-light.png" width="100%">
+</picture>
+
 # LenScout
 
+[![Latest release](https://img.shields.io/github/v/release/Ops-Lorva/lenscout?style=flat-square&label=release&color=0462d3)](https://github.com/Ops-Lorva/lenscout/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0462d3?style=flat-square)](LICENSE)
+
 Find, activate, and configure IP cameras on an install site — without opening a single camera's web page.
+One desktop app on macOS, Windows, and Linux. Product page: [lorva.dev/lenscout](https://lorva.dev/lenscout/).
 
 <!-- screenshot: Network tab showing discovered cameras (brand, model, IP, MAC, state). Place image at docs/assets/lenscout-network.png -->
 
@@ -128,4 +139,8 @@ npm test
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+---
+
+<p align="center"><sub>LenScout is made by <a href="https://lorva.dev">LORVA</a>, an independent software studio.</sub></p>
