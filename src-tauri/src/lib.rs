@@ -15,11 +15,11 @@ use commands::imaging::{cmd_image_settings, cmd_optics, cmd_set_bdc, cmd_set_rot
 use commands::free_ips::{FreeIpsState, cmd_free_ips, cmd_free_ips_cancel};
 use commands::join::{JoinState, cmd_join_network, cmd_join_ready, cmd_joined_network, cmd_leave_network};
 use commands::discovery::{ScanState, cmd_open_camera_web, cmd_read_addressing, cmd_scan_cancel, cmd_scan_start};
-use lenscout_core::accounts::{KeyringStore, load_or_quarantine};
+use lenscout_core::accounts::load_or_quarantine;
 use lenscout_core::permissions::set_data_dir;
 use lenscout_core::temp_ip::{SystemElevator, cleanup_before_exit, cleanup_leftover};
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 
 /// Attente maximale, à la sortie, d'une IP temporaire en cours de retrait.
@@ -50,7 +50,7 @@ pub fn run() {
             updater::cleanup_old_updates();
             // Un accounts.json illisible est mis de côté, jamais écrasé ni bloquant.
             let config_dir = app.path().app_config_dir()?;
-            let (mut book, startup) = load_or_quarantine(config_dir.join("accounts.json"), Arc::new(KeyringStore));
+            let (mut book, startup) = load_or_quarantine(config_dir.join("accounts.json"));
             // Reprise d'une migration : les comptes de l'ancien carnet, posés à côté.
             let aside = config_dir.join(lenscout_core::migrate::set_aside_name("accounts.json"));
             migration_incomplete |= !absorb_old_accounts(&mut book, &aside);

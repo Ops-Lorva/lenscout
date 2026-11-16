@@ -25,7 +25,6 @@
     "duplicate_name": "Name already used",
     "not_found": "Account not found",
     "secret_missing": "Password must be re-entered",
-    "keyring": "Keychain unavailable",
     "io": "Accounts file unavailable",
     "internal": "Internal error",
     "unknown": "Error",

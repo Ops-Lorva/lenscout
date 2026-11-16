@@ -25,7 +25,6 @@
     "duplicate_name": "Nombre ya usado",
     "not_found": "Cuenta no encontrada",
     "secret_missing": "Hay que volver a introducir la contraseña",
-    "keyring": "Llavero inaccesible",
     "io": "Archivo de cuentas inaccesible",
     "internal": "Error interno",
     "unknown": "Error",

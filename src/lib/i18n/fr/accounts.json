@@ -25,7 +25,6 @@
     "duplicate_name": "Nom déjà utilisé",
     "not_found": "Compte introuvable",
     "secret_missing": "Mot de passe à ressaisir",
-    "keyring": "Trousseau inaccessible",
     "io": "Fichier des comptes inaccessible",
     "internal": "Erreur interne",
     "unknown": "Erreur",

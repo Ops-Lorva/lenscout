@@ -29,7 +29,7 @@ test('aucun compte : aucun choix', () => {
 });
 
 test('les codes de comptes ont leur libellé', () => {
-  for (const code of ['empty_field', 'duplicate_name', 'not_found', 'secret_missing', 'keyring', 'io']) {
+  for (const code of ['empty_field', 'duplicate_name', 'not_found', 'secret_missing', 'io']) {
     expect(errorKey(code)).toBe(`error.${code}`);
   }
 });

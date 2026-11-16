@@ -318,7 +318,7 @@ pub struct AddressingOut {
     pub addressing: Addressing,
 }
 
-/// Erreurs : `not_found`, `secret_missing`, `keyring` (compte).
+/// Erreurs : `not_found`, `secret_missing`, `internal` (compte).
 ///
 /// Après un scan : lit `Network.BootProto` des Axis activées avec le compte
 /// retenu, en parallèle borné. Le scan n'attend pas ces lectures ; une

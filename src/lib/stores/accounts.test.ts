@@ -30,8 +30,8 @@ test('après un ajout, un import ou une suppression, tous les sélecteurs voient
 });
 
 test('échec : l’erreur remonte, la liste reste', async () => {
-  invoke.mockResolvedValueOnce([a('x')]).mockRejectedValueOnce('keyring');
+  invoke.mockResolvedValueOnce([a('x')]).mockRejectedValueOnce('io');
   await refreshAccounts();
-  await expect(refreshAccounts()).rejects.toBe('keyring');
+  await expect(refreshAccounts()).rejects.toBe('io');
   expect(get(accountList)?.map((x) => x.id)).toEqual(['x']);
 });

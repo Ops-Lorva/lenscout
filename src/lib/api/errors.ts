@@ -25,7 +25,6 @@ export const CODES = [
   'setting_failed',
   'not_found',
   'secret_missing',
-  'keyring',
   'io',
   'import_invalid',
   'file_unwritable',

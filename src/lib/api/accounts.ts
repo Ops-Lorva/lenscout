@@ -37,7 +37,7 @@ export const pcIpError = (pcIp: string): string => {
   return s !== '' && !s.includes('/') ? 'error.missing_mask' : '';
 };
 
-/** Entrée de liste : `has_secret` dit seulement si le mot de passe est au trousseau. */
+/** Entrée de liste : `has_secret` faux = compte sans mot de passe, à ressaisir. */
 export interface AccountEntry extends Account {
   has_secret: boolean;
 }

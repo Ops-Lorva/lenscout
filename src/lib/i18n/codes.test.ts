@@ -97,10 +97,10 @@ const subkeys = (lang: string, key: string) => Object.keys((lookup(lang, key) as
 
 describe('codes d’erreur Rust ↔ clés i18n', () => {
   it('lit bien les sources (garde-fou du lecteur)', () => {
-    expect(shown.accounts).toContain('keyring');
+    expect(shown.accounts).toContain('secret_missing');
     expect(shown.network).toContain('local_network_denied');
     expect(shown.configure).toContain('preview_expired');
-    expect(credentials).toEqual(['keyring', 'not_found', 'secret_missing']);
+    expect(credentials).toEqual(['internal', 'not_found', 'secret_missing']);
     expect(reasons).toContain('gateway_is_ip');
     expect(batchCodes).toContain('ip_in_use');
     expect(conflictCodes).toContain('outside_account');

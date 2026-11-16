@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 /// Erreurs : codes stables (`empty_field`, `duplicate_name`, `not_found`,
-/// `secret_missing`, `keyring`, `io`, `import_invalid`, `file_unwritable`,
+/// `secret_missing`, `io`, `import_invalid`, `file_unwritable`,
 /// `file_unreadable`, `invalid_pc_ip`, `missing_mask`, `invalid_gateway`,
 /// `gateway_outside_network`, `invalid_exclusions`), traduits par le front. Le message de
 /// l'OS n'est pas renvoyé.
@@ -23,7 +23,6 @@ fn code(e: AccountError) -> String {
         AccountError::DuplicateName => "duplicate_name",
         AccountError::NotFound => "not_found",
         AccountError::SecretMissing => "secret_missing",
-        AccountError::Keyring(_) => "keyring",
         AccountError::Io(_) => "io",
         AccountError::ImportInvalid => "import_invalid",
         AccountError::InvalidPcIp => "invalid_pc_ip",
@@ -306,13 +305,13 @@ pub(crate) fn account_remove(book: &mut AccountBook, id: &str) -> Result<(), Str
 /// Identifiants d'un compte pour les commandes authentifiées (cadrage,
 /// configuration) : le mot de passe reste côté Rust.
 /// Pour une action ou un flux. Codes possibles (affichés par les pages
-/// Configuration et Cadrage) : `not_found`, `secret_missing`, `keyring`,
-/// `internal`. `AccountBook::credentials` ne rend rien d'autre.
+/// Configuration et Cadrage) : `not_found`, `secret_missing`, `internal`.
+/// `AccountBook::credentials` ne rend rien d'autre.
 pub(crate) fn credentials_for(state: &Mutex<AccountBook>, id: &str) -> Result<Credentials, String> {
     lock(state)?.credentials(id).map_err(|e| match e {
         AccountError::NotFound => "not_found".to_string(),
         AccountError::SecretMissing => "secret_missing".to_string(),
-        _ => "keyring".to_string(),
+        _ => "internal".to_string(),
     })
 }
 
@@ -371,8 +370,8 @@ pub(crate) fn remember_cameras(state: &Mutex<AccountBook>, id: &str, cameras: Ve
     }
 }
 
-// `async` : le trousseau peut bloquer (D-Bus, invite de l'OS), ce qui ne doit
-// pas geler le thread principal.
+// `async` : l'écriture du fichier des comptes ne doit pas geler le thread
+// principal.
 
 #[tauri::command]
 pub fn cmd_accounts_startup(notice: State<'_, StartupNotice>) -> Option<String> {
@@ -484,8 +483,6 @@ pub async fn cmd_accounts_import_apply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lenscout_core::accounts::{MemoryStore, SecretStore};
-    use std::sync::Arc;
 
     /// Dossier temporaire d'un test, retiré à sa fin (même en cas d'échec).
     struct TmpDir(std::path::PathBuf);
@@ -504,12 +501,12 @@ mod tests {
 
     fn book() -> (AccountBook, TmpDir) {
         let dir = tmp_dir();
-        let book = AccountBook::load(dir.0.join("accounts.json"), Arc::new(MemoryStore::default())).unwrap();
+        let book = AccountBook::load(dir.0.join("accounts.json")).unwrap();
         (book, dir)
     }
 
     fn book_at(path: &std::path::Path) -> AccountBook {
-        AccountBook::load(path.to_path_buf(), Arc::new(MemoryStore::default())).unwrap()
+        AccountBook::load(path.to_path_buf()).unwrap()
     }
 
     fn no_net() -> AccountNetwork {
@@ -664,20 +661,15 @@ mod tests {
 
     #[test]
     fn list_flags_accounts_without_secret() {
-        // Ancien format dont le trousseau a perdu un secret.
-        let store = Arc::new(MemoryStore::default());
+        // Ancien format : mots de passe hors du fichier, à ressaisir.
         let _dir = tmp_dir();
         let path = _dir.0.join("accounts.json");
-        std::fs::write(
-            &path,
-            r#"[{"id":"ok","name":"A","login":"r"},{"id":"lost","name":"B","login":"r"}]"#,
-        )
-        .unwrap();
-        store.set("ok", &Secret::new("x".into())).unwrap();
-        let book = AccountBook::load(path, store).unwrap();
+        std::fs::write(&path, r#"[{"id":"lost","name":"B","login":"r"}]"#).unwrap();
+        let mut book = AccountBook::load(path).unwrap();
+        let ok = account_create(&mut book, "A", "r", Secret::new("x".into()), no_net()).unwrap();
         let entries = accounts_list(&book);
         let flag = |id: &str| entries.iter().find(|e| e.id == id).unwrap().has_secret;
-        assert!(flag("ok"));
+        assert!(flag(&ok.id));
         assert!(!flag("lost"));
         let json = serde_json::to_string(&entries).unwrap();
         assert!(json.contains("\"has_secret\":false"));
@@ -755,12 +747,11 @@ mod tests {
 
     #[test]
     fn missing_secret_has_its_own_code() {
-        let store = Arc::new(MemoryStore::default());
         let _dir = tmp_dir();
         let path = _dir.0.join("accounts.json");
         std::fs::write(&path, r#"[{"id":"a","name":"A","login":"r"}]"#).unwrap();
-        // Trousseau sans le secret : compte repris « à ressaisir ».
-        let book = Mutex::new(AccountBook::load(path, store).unwrap());
+        // Ancien format : compte repris « à ressaisir ».
+        let book = Mutex::new(AccountBook::load(path).unwrap());
         assert_eq!(credentials_for(&book, "a").unwrap_err(), "secret_missing");
         assert_eq!(credentials_for(&book, "nope").unwrap_err(), "not_found");
     }

@@ -19,7 +19,6 @@ dirs-next = "2.0.0"
 ping-async = "1"
 futures-util = "0.3.34"
 hickory-proto = "0.26.3"
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 quick-xml = "0.42.0"
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "json"] }
