@@ -61,7 +61,7 @@ pub enum OpRequestDto {
         timezone: String,
     },
     /// Changer les identifiants : le nouvel identifiant visé est celui du
-    /// compte sélectionné (login + mot de passe au trousseau), pas un champ de
+    /// compte sélectionné (login + mot de passe scellé dans le fichier des comptes), pas un champ de
     /// la requête ; seuls voyagent les couples à essayer. Les mots de passe
     /// (`Secret`) ne sont jamais resérialisés : ils ne vivent qu'en mémoire.
     ChangeCredentials {
@@ -71,7 +71,7 @@ pub enum OpRequestDto {
 }
 
 /// Un couple identifiant / mot de passe à essayer. `Secret` : jamais écrit sur
-/// disque ni dans le trousseau, jamais resérialisé.
+/// disque, jamais resérialisé.
 #[derive(Deserialize, Debug)]
 pub struct CredentialPairDto {
     pub login: String,
@@ -259,7 +259,7 @@ pub async fn cmd_ops_preview(
         }
         OpRequestDto::ChangeCredentials { candidates } => {
             // Le nouvel identifiant visé EST celui du compte sélectionné
-            // (`creds`, login + secret au trousseau). L'aperçu N'ESSAIE AUCUN
+            // (`creds`, login + secret scellé dans le fichier des comptes). L'aperçu N'ESSAIE AUCUN
             // identifiant (pour ne pas doubler le risque de blocage) : il
             // n'annonce que l'intention, le test se fait à l'application. Les
             // mots de passe ne vivent que dans le plan gardé.
