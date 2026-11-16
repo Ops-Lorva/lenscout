@@ -83,7 +83,7 @@ en français, en anglais et en espagnol.
 - Changer les identifiants pose l’identifiant du compte choisi. Les mots de passe actuels
   à essayer sont saisis pour cette fois seulement, jamais enregistrés ni journalisés, et
   l’opération s’arrête sur une caméra dès que continuer risquerait de bloquer son compte.
-- **Tester le login** essaie le compte choisi sur chaque caméra cochée, en lecture seule
+- **Test de login** : essaie le compte choisi sur chaque caméra cochée, en lecture seule
   (Axis et Hikvision / LTS), et liste OK, refusé, injoignable ou autre appareil ; une
   caméra refusée deux fois en 30 min n’est plus essayée. Export CSV.
 

@@ -78,7 +78,7 @@ French, English, and Spanish.
 - Change credentials sets the selected account's login. The current passwords to try
   are typed for this run only, never saved or logged, and the run stops on a camera
   when going on would risk locking its account.
-- **Test login** tries the chosen account on every checked camera, read-only (Axis
+- **Login test** tries the chosen account on every checked camera, read-only (Axis
   and Hikvision / LTS), and lists OK, denied, unreachable or another device; a camera
   refused twice in 30 minutes is not tried again. Export to CSV.
 

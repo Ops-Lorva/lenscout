@@ -10,12 +10,12 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 
 ### English
 
-- **Operations — Test login**: tries the chosen account on the checked cameras, read-only, and lists OK, denied, unreachable, not activated or another device. A camera refused twice in 30 minutes is not tried again. CSV export.
+- **Operations — Login test**: tries the chosen account on the checked cameras, read-only, and lists OK, denied, unreachable, not activated or another device. A camera refused twice in 30 minutes is not tried again. CSV export.
 - **Accounts — Survey**: lists every device on the account's network (type, vendor, name), keeps it until forgotten, counts it as taken in the network bar and in the address sheets, and suggests a wider mask above 80 % use. CSV export.
 
 ### Français
 
-- **Opérations — Tester le login** : essaie le compte choisi sur les caméras cochées, en lecture seule, et liste OK, refusé, injoignable, non activée ou autre appareil. Une caméra refusée deux fois en 30 min n'est plus essayée. Export CSV.
+- **Opérations — Test de login** : essaie le compte choisi sur les caméras cochées, en lecture seule, et liste OK, refusé, injoignable, non activée ou autre appareil. Une caméra refusée deux fois en 30 min n'est plus essayée. Export CSV.
 - **Comptes — Relever** : liste les appareils du réseau du compte (type, constructeur, nom), les garde jusqu'à « Oublier », les compte pris dans la barre du réseau et les feuilles d'adresses, et propose un masque plus large au-delà de 80 % d'occupation. Export CSV.
 
 ## [0.2.0] - 2026-11-16

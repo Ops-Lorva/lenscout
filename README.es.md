@@ -82,7 +82,7 @@ en francés, inglés y español.
   actuales que hay que probar se escriben solo para esa ejecución, nunca se guardan ni se
   registran, y la ejecución se detiene en una cámara cuando seguir podría bloquear su
   cuenta.
-- **Probar el login** prueba la cuenta elegida en cada cámara marcada, en solo lectura
+- **Prueba de acceso**: prueba la cuenta elegida en cada cámara marcada, en solo lectura
   (Axis y Hikvision / LTS), y lista OK, rechazado, inalcanzable u otro equipo; una cámara
   rechazada dos veces en 30 min no se vuelve a probar. Exportación CSV.
 
