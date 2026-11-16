@@ -61,9 +61,12 @@ English, and Spanish.
 - Set the NTP server and time zone on one or several selected cameras.
 
 ### Security of updates and credentials
-- Passwords are kept in the operating system's keychain — Keychain on macOS, Credential
-  Manager on Windows, Secret Service on Linux — never written in clear text to an app
-  file or a log.
+- Passwords are sealed (XChaCha20-Poly1305) inside the app's accounts file, so the file
+  cannot be read or grepped in clear text, and they are never written to a log. The
+  sealing key ships with the open-source code: it keeps the file from being read at a
+  glance, it is not a vault. Protect the accounts file and its exports like the
+  passwords they hold. The OS keychain is only read once, to migrate accounts saved by
+  early builds.
 - LenScout checks for a newer release at startup. Every installer ships with a `.sig`
   minisign signature, which the app verifies before running anything it downloaded; a
   download that fails verification is not run.
