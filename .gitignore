@@ -25,3 +25,4 @@ Certificates.*
 
 # Réglages de compilation propres à la machine (jobs, cible).
 /.cargo/
+.release-lock/
