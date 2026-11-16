@@ -79,6 +79,8 @@ Un objet JSON : `netmask`, `pool` (IP libres pour les renumérotations), et
 | `users` | `{"root": "motdepasse"}` | identifiant(s) courant(s) ; vide si neuve |
 | `timezone` | `Europe/Paris` | fuseau par défaut |
 | `views` | liste `{source, name, resolution}` | multicapteur (voir P4705) |
+| `mac` | `44:19:b6:00:20:45` | Hikvision : `macAddress` rendue par l'ISAPI |
+| `lock_after`, `lock_minutes` | `3`, `30` | Hikvision : verrouillage après N échecs Digest, pendant M minutes (0 : jamais) |
 
 Parc par défaut : ~8 Axis (modèles variés, mélange neuve/activée et
 DHCP/fixe, **4 couples d'identifiants distincts** pour exercer la recherche de
@@ -99,7 +101,7 @@ mots de passe) + **1 Hikvision**. La **P4705-PLVE** a 2 capteurs et 3 vues
 | 8 | `GET …&group=Image` / `…&group=Properties.Image` | Digest | vues (multicapteur pour la P4705) |
 | 9 | `POST /axis-cgi/pwdgrp.cgi` `action=update`/`add` | Digest | change / crée un identifiant |
 | 10 | `POST /axis-cgi/lensparams/*`, `opticscontrol.cgi` | Digest | réponses de succès minimales (panneau cadrage) |
-| — | `GET /ISAPI/System/deviceInfo` (Hikvision) | anonyme | XML `<DeviceInfo>` → « non pris en charge » |
+| — | `GET /ISAPI/System/deviceInfo` (Hikvision) | **Digest** si activée | XML `<DeviceInfo>` (modèle, série, MAC) ; verrouillage, voir §5 bis |
 | — | tout autre chemin | — | **404** |
 
 Chaque requête est journalisée sur stdout (heure, IP caméra, IP client, méthode,
@@ -221,6 +223,28 @@ $ curl -s --digest -u … -X POST "…/axis-cgi/lensparams/getcapabilities.cgi" 
 </GetCapabilitiesSuccess></Success></LensParamsResponse>
 ```
 
+## 5 bis. Verrouillage Hikvision (test de login)
+
+Une Hikvision verrouille son compte après quelques échecs (5 à 7 selon le
+firmware, 30 min). Pour vérifier que LenScout ne l'y pousse pas, la caméra
+Hikvision du parc a `lock_after: 3` : au 3ᵉ échec Digest, elle répond 401 avec
+`<lockStatus>lock</lockStatus><unlockTime>…</unlockTime>` dans le corps,
+**même avec le bon mot de passe**, pendant `lock_minutes`. Un défi sans
+identifiant (premier aller du client Digest) ne compte pas. Le compteur est
+journalisé à chaque refus :
+
+```
+16:41:43  127.0.0.1  <- 127.0.0.1  GET  401 échecs=2/3          /ISAPI/System/deviceInfo
+16:41:43  127.0.0.1  <- 127.0.0.1  GET  401 VERROUILLÉE échecs=3 /ISAPI/System/deviceInfo
+```
+
+Auto-test, sans réseau ni root (loopback, port libre) :
+
+```sh
+python3 -I emulate.py --selftest
+# selftest OK : verrouillage après 3 échecs, bon mot de passe refusé
+```
+
 ## 6. Limites connues
 
 - **Digest.** L'émulateur n'advertise que le Digest (MD5, qop=auth), comme une
@@ -234,9 +258,9 @@ $ curl -s --digest -u … -X POST "…/axis-cgi/lensparams/getcapabilities.cgi" 
   (défaut 2,5 s). Après migration, l'ancienne IP est reversée au pool.
 - **TLS.** Pas d'https ; prévoir d'autoriser l'http clair côté LenScout pour
   l'activation (voir §2).
-- **Hikvision.** Seul `GET /ISAPI/System/deviceInfo` est imité (ce que lit
-  l'identification) ; le reste de l'ISAPI ne l'est pas — suffisant pour le test
-  « marque non prise en charge ».
+- **Hikvision.** Seul `GET /ISAPI/System/deviceInfo` est imité (ce que lisent
+  l'identification et le test de login), en Digest ; le reste de l'ISAPI ne
+  l'est pas. Pas de SADP : LenScout ne l'entend qu'au balayage HTTP.
 - **Port privilégié.** Le port 80 impose `sudo`. L'auto-test utilise `--port 8080`
   sur loopback, mais LenScout, lui, ne balaie **que** le port 80 : le vrai test
   se fait bien en `sudo … --config fleet.json`.

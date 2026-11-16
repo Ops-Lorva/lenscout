@@ -163,7 +163,10 @@
       "addressing": "dhcp",
       "users": {
         "admin": "HikPass#2026"
-      }
+      },
+      "mac": "44:19:b6:00:20:45",
+      "lock_after": 3,
+      "lock_minutes": 30
     }
   ]
 }

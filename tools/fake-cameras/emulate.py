@@ -126,6 +126,14 @@ class Camera:
         self.set_ntp = None
         # True une fois la caméra « disparue » après une migration hors pool.
         self.gone = False
+        # MAC annoncée par l'ISAPI (`macAddress`), en minuscules comme Hikvision.
+        self.mac = (cfg.get("mac") or "").lower() or None
+        # Verrouillage Hikvision : après `lock_after` échecs Digest, 401 pendant
+        # `lock_minutes`, même avec le bon mot de passe. 0 : jamais.
+        self.lock_after = int(cfg.get("lock_after", 0) or 0)
+        self.lock_minutes = float(cfg.get("lock_minutes", 30))
+        self.failures = 0
+        self.locked_until = 0.0
 
     def is_new(self):
         return self.state == "new" or not self.users
@@ -491,18 +499,56 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"apiVersion": "1.1", "data": {"needsetup": needsetup}})
         return f"anon-ok needsetup={needsetup}"
 
-    def _hik_device_info(self):
+    def _hik_auth(self):
+        """Digest d'une Hikvision activée, avec son verrouillage : rend None si
+        authentifié, sinon le résultat journalisé (401 déjà envoyé)."""
         cam = self.cam
+        if cam.is_new():
+            return None
+        now = time.time()
+        if cam.locked_until and now >= cam.locked_until:
+            cam.locked_until, cam.failures = 0.0, 0
+        fields = parse_authorization(self.headers.get("Authorization"))
+        if cam.locked_until:
+            # Verrouillée : 401 et l'état du verrou, même avec le bon mot de passe.
+            unlock = datetime.fromtimestamp(cam.locked_until, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            nonce = _md5(f"{now}:{id(self)}")
+            body = ('<?xml version="1.0" encoding="UTF-8"?>\n<userCheck><statusValue>401</statusValue>'
+                    f"<statusString>Unauthorized</statusString><lockStatus>lock</lockStatus>"
+                    f"<unlockTime>{unlock}</unlockTime><retryLoginTime>0</retryLoginTime></userCheck>\n")
+            self._send(401, body, XML, extra_headers=[
+                ("WWW-Authenticate", f'Digest realm="{cam.realm}", nonce="{nonce}", qop="auth"')])
+            return f"401 VERROUILLÉE échecs={cam.failures}"
+        ok, _login = self._authed()
+        if ok:
+            cam.failures = 0
+            return None
+        if fields:
+            # Un défi sans identifiant ne compte pas ; une réponse fausse, oui.
+            cam.failures += 1
+            if cam.lock_after and cam.failures >= cam.lock_after:
+                cam.locked_until = now + cam.lock_minutes * 60
+        self._challenge()
+        suffix = f"/{cam.lock_after}" if cam.lock_after else ""
+        return f"401 échecs={cam.failures}{suffix}"
+
+    def _hik_device_info(self):
+        refused = self._hik_auth()
+        if refused:
+            return refused
+        cam = self.cam
+        mac = f"<macAddress>{cam.mac}</macAddress>\n" if cam.mac else ""
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<DeviceInfo version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">\n'
             f"<model>{cam.model}</model>\n"
             f"<serialNumber>{cam.serial}</serialNumber>\n"
+            f"{mac}"
             f"<firmwareVersion>{cam.firmware}</firmwareVersion>\n"
             "</DeviceInfo>\n"
         )
         self._send(200, xml, XML)
-        return "anon-ok (hikvision)"
+        return "auth-ok (hikvision)"
 
     def _pwdgrp(self, method, query, body):
         form = parse_qs(body.decode("utf-8", "replace")) if body else {}
@@ -678,14 +724,77 @@ class Handler(BaseHTTPRequestHandler):
 # Entrée
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Auto-test (sans réseau ni root : loopback, port libre)
+# --------------------------------------------------------------------------
+
+def _digest_get(host, port, path, login, password):
+    """GET Digest minimal : un aller sans identifiant, puis la réponse au défi.
+    Rend (statut, corps) de la seconde réponse (ou de la première sans défi)."""
+    import http.client
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    conn.request("GET", path)
+    first = conn.getresponse()
+    body = first.read()
+    challenge = first.getheader("WWW-Authenticate") or ""
+    if first.status != 401 or not challenge.lower().startswith("digest"):
+        return first.status, body.decode("utf-8", "replace")
+    f = parse_authorization(challenge)
+    nc, cnonce = "00000001", "0a4f113b"
+    ha1 = _md5(f"{login}:{f['realm']}:{password}")
+    ha2 = _md5(f"GET:{path}")
+    resp = _md5(f"{ha1}:{f['nonce']}:{nc}:{cnonce}:auth:{ha2}")
+    hdr = (f'Digest username="{login}", realm="{f["realm"]}", nonce="{f["nonce"]}", uri="{path}", '
+           f'response="{resp}", qop=auth, nc={nc}, cnonce="{cnonce}"')
+    conn.request("GET", path, headers={"Authorization": hdr})
+    second = conn.getresponse()
+    out = second.status, second.read().decode("utf-8", "replace")
+    conn.close()
+    return out
+
+
+def selftest():
+    """Verrouillage Hikvision : 3 échecs (lock_after=3) puis le bon mot de
+    passe donnent toujours 401, avec `lockStatus` dans le corps."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    cfg = {"cameras": [{"ip": "127.0.0.1", "brand": "hikvision", "model": "DS-2CD2043G2-I",
+                        "serial": "SELFTEST1", "mac": "44:19:B6:00:00:01", "state": "activated",
+                        "users": {"admin": "Bon#1"}, "lock_after": 3, "lock_minutes": 30}]}
+    fleet = Fleet(cfg, port, 0)
+    fleet.start()
+    path = "/ISAPI/System/deviceInfo"
+    try:
+        ok = _digest_get("127.0.0.1", port, path, "admin", "Bon#1")
+        assert ok[0] == 200 and "<macAddress>44:19:b6:00:00:01</macAddress>" in ok[1], ok
+        for _ in range(3):
+            assert _digest_get("127.0.0.1", port, path, "admin", "Mauvais")[0] == 401
+        locked = _digest_get("127.0.0.1", port, path, "admin", "Bon#1")
+        assert locked[0] == 401, locked
+        assert "<lockStatus>lock</lockStatus>" in locked[1] and "<unlockTime>" in locked[1], locked
+        assert fleet.cameras[0].failures == 3, fleet.cameras[0].failures
+    finally:
+        for ip in list(fleet.servers):
+            fleet._unbind(ip)
+    print("selftest OK : verrouillage après 3 échecs, bon mot de passe refusé")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Émulateur de caméras Axis pour LenScout.")
-    ap.add_argument("--config", required=True, help="fichier JSON du parc")
+    ap.add_argument("--config", help="fichier JSON du parc")
+    ap.add_argument("--selftest", action="store_true",
+                    help="vérifie le verrouillage Hikvision sur loopback, puis sort")
     ap.add_argument("--port", type=int, default=80,
                     help="port d'écoute de chaque caméra (défaut 80 ; root requis)")
     ap.add_argument("--migration-delay", type=float, default=2.5,
                     help="délai (s) avant qu'une caméra reparaisse à sa nouvelle IP")
     args = ap.parse_args()
+    if args.selftest:
+        selftest()
+        return
+    if not args.config:
+        ap.error("--config est requis")
 
     with open(args.config, encoding="utf-8") as f:
         cfg = json.load(f)
