@@ -1,0 +1,27 @@
+{
+  "test": "Probar",
+  "stop": "Detener",
+  "progress": "{done} / {total}",
+  "stopped": "Detenido",
+  "all": "Todos",
+  "search": "IP, MAC, modelo",
+  "export": "Exportar",
+  "exported": "Exportado",
+  "none": "Sin resultados",
+  "col": {
+    "camera": "Cámara",
+    "ip": "IP",
+    "mac": "MAC",
+    "result": "Resultado"
+  },
+  "code": {
+    "ok": "OK",
+    "denied": "Denegado",
+    "unreachable": "Inalcanzable",
+    "not_activated": "No activada",
+    "unsupported": "Marca no compatible",
+    "other_device": "Otro dispositivo",
+    "held": "No probada"
+  },
+  "heldTitle": "Demasiados rechazos recientes"
+}

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { csvName, toCsv } from './csv';
+import { csvLang, csvName, toCsv } from './csv';
 
 const BOM = '﻿';
 
@@ -29,4 +29,12 @@ test('csv_name_is_safe_for_any_account_name', () => {
   expect(csvName('login', 'Mairie / Arles: bât A', d)).toBe('lenscout-login-Mairie-Arles-bât-A-2026-11-06.csv');
   expect(csvName('reseau', 'a\\b*c?"<>|', d)).toBe('lenscout-reseau-a-b-c-2026-11-06.csv');
   expect(csvName('reseau', '  ', d)).toBe('lenscout-reseau-2026-11-06.csv');
+});
+
+test('the_csv_language_follows_the_interface_locale', () => {
+  expect(csvLang('fr')).toBe('fr');
+  expect(csvLang('en-US')).toBe('en');
+  expect(csvLang('es')).toBe('es');
+  expect(csvLang(null)).toBe('fr');
+  expect(csvLang('de')).toBe('fr');
 });

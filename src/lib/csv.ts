@@ -28,3 +28,9 @@ export function csvName(kind: 'login' | 'reseau', account: string, d: Date): str
   const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   return ['lenscout', kind, safe, date].filter(Boolean).join('-') + '.csv';
 }
+
+/** La langue du CSV d'après celle de l'interface (`en-US` → `en`) ; inconnue : `fr`. */
+export function csvLang(locale: string | null | undefined): Lang {
+  const l = (locale ?? '').slice(0, 2);
+  return l === 'en' || l === 'es' ? l : 'fr';
+}

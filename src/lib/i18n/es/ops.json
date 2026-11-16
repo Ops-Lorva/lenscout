@@ -3,7 +3,8 @@
     "keep_ip": "Mantener las IP",
     "renumber": "Renumerar",
     "time": "Poner la hora",
-    "change_credentials": "Cambiar las credenciales"
+    "change_credentials": "Cambiar las credenciales",
+    "login_test": "Prueba de acceso"
   },
   "step": {
     "choose": "Elegir",

@@ -3,7 +3,8 @@
     "keep_ip": "Keep IPs",
     "renumber": "Renumber",
     "time": "Set time",
-    "change_credentials": "Change credentials"
+    "change_credentials": "Change credentials",
+    "login_test": "Login test"
   },
   "step": {
     "choose": "Choose",

@@ -18,14 +18,18 @@
   import { opsRequest, scanIface } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
   import FreeIps from './FreeIps.svelte';
+  import LoginTest from './LoginTest.svelte';
 
   // Flux sur une page : choisir (caméras cochées, partagées avec Réseau, et
   // l'opération), aperçu calculé par Rust, confirmation par le nombre de
   // caméras tapé, application caméra par caméra avec Arrêter, puis rapport.
-  const KINDS: OpKind[] = ['keep_ip', 'renumber', 'time', 'change_credentials'];
+  // « Test de login » n'écrit rien : ni aperçu ni confirmation, son résultat
+  // est rendu par `LoginTest` (api/ops.ts ne le connaît pas).
+  type Kind = OpKind | 'login_test';
+  const KINDS: Kind[] = ['keep_ip', 'renumber', 'time', 'change_credentials', 'login_test'];
   const zones = timeZones();
 
-  let kind = $state<OpKind>('keep_ip');
+  let kind = $state<Kind>('keep_ip');
   let start = $state('');
   let mask = $state('');
   let gateway = $state('');
@@ -59,7 +63,10 @@
   // Ordre affiché de Réseau (IP croissante) : celui du plan.
   const targets = $derived($cameras.filter((c) => $selection.has(cameraKey(c))));
   const others = $derived($cameras.filter((c) => !$selection.has(cameraKey(c))));
-  const fields = $derived<OpFields>({ kind, start, mask, gateway, dns, ntp, timezone });
+  const fields = $derived<OpFields>({ kind: kind as OpKind, start, mask, gateway, dns, ntp, timezone });
+  // Test de login en cours : la sélection et le choix d'opération restent figés.
+  let testing = $state(false);
+  let loginTest = $state<ReturnType<typeof LoginTest> | null>(null);
   const fingerprint = $derived(opsFingerprint(targets, fields, iface, accountId, kind === 'change_credentials' ? String(credsVersion) : ''));
 
   // L'aperçu garde l'empreinte de ce qui l'a produit et les caméras visées.
@@ -74,20 +81,21 @@
   // arme, le second applique.
   let confirming = $state(false);
   const running = $derived(!!run && !run.done);
+  const locked = $derived(running || testing);
   const table = $derived(run ?? (shown ? { rows: shown.data.rows, cams: shown.cams, kind: shown.kind, results: [] as (AnyResult | undefined)[], current: -1 } : null));
   const report = $derived(
     !run?.done ? null : run.kind === 'change_credentials' ? credSummarize(run.results as (CredResult | undefined)[], run.rows.length) : summarize(run.results as (StepResult | undefined)[], run.rows.length),
   );
   const applyOk = $derived(canApply(shown?.data ?? null, running));
   // Colonnes réseau seulement pour « garder les IP » et « renuméroter ».
-  const hasNetCols = (k: OpKind) => k === 'keep_ip' || k === 'renumber';
+  const hasNetCols = (k: Kind) => k === 'keep_ip' || k === 'renumber';
 
   // Raccourci de Réseau (« IP en lot ») : l'opération demandée, la sélection est déjà partagée.
   $effect(() => {
     const req = $opsRequest;
     if (!req) return;
     untrack(() => {
-      if (!running) {
+      if (!locked) {
         kind = req;
         run = null;
       }
@@ -123,8 +131,8 @@
     untrack(() => (dns = dnsFollowing(dns, dnsTouched, g)));
   });
 
-  function choose(k: OpKind) {
-    if (running) return;
+  function choose(k: Kind) {
+    if (locked) return;
     kind = k;
     run = null;
     error = null;
@@ -176,7 +184,7 @@
     confirming = false;
     const fp = fingerprint;
     const cams = targets;
-    const k = kind;
+    const k = kind as OpKind;
     // Les secrets partent à part : l'aperçu n'essaie rien, mais le plan gardé
     // par Rust doit recevoir le nouvel identifiant et les couples à essayer.
     const req: OpRequest = k === 'change_credentials' ? credsRequest(pairs) : (opRequest(fields) as OpRequest);
@@ -312,7 +320,7 @@
   <h4><b>1</b>{$_('ops.step.choose')}</h4>
   <div class="seg" role="radiogroup" aria-label={$_('ops.step.choose')}>
     {#each KINDS as k}
-      <label><input type="radio" name="op-kind" value={k} checked={kind === k} disabled={running} onchange={() => choose(k)} /><span>{$_(`ops.kind.${k}`)}</span></label>
+      <label><input type="radio" name="op-kind" value={k} checked={kind === k} disabled={locked} onchange={() => choose(k)} /><span>{$_(`ops.kind.${k}`)}</span></label>
     {/each}
   </div>
   <div class="form">
@@ -333,7 +341,7 @@
       <label for="o-ntp">{$_('configure.ntp')}</label><input id="o-ntp" class="m" type="text" bind:value={ntp} autocomplete="off" spellcheck="false" />
       <label for="o-tz">{$_('configure.timezone')}</label>
       <select id="o-tz" bind:value={timezone}>{#each zones as z}<option value={z}>{z}</option>{/each}</select>
-    {:else}
+    {:else if kind === 'change_credentials'}
       <span class="note">{$_('ops.cred.fromAccount')}</span>
       <span class="note">{$_('ops.cred.tryHint')}</span>
       <div class="pairs">
@@ -362,7 +370,7 @@
     <table>
       <thead>
         <tr>
-          <th class="chk"><input type="checkbox" checked={allChecked} onchange={toggleAll} disabled={running} aria-label={$_('network.selectAll')} /></th>
+          <th class="chk"><input type="checkbox" checked={allChecked} onchange={toggleAll} disabled={locked} aria-label={$_('network.selectAll')} /></th>
           <th>{$_('ops.col.camera')}</th>
           <th style="width:112px">{$_('ops.col.ip')}</th>
           <th style="width:136px">{$_('network.col.mac')}</th>
@@ -373,7 +381,7 @@
         {#each $cameras as c (cameraKey(c))}
           {@const mac = shownMac(c)}
           <tr>
-            <td class="chk"><input type="checkbox" checked={$selection.has(cameraKey(c))} onchange={() => toggle(c)} disabled={running} aria-label={$_('network.select')} /></td>
+            <td class="chk"><input type="checkbox" checked={$selection.has(cameraKey(c))} onchange={() => toggle(c)} disabled={locked} aria-label={$_('network.select')} /></td>
             <td class="grow" title={cameraName(c)}>{cameraName(c)}</td>
             <td class="m">{c.ip}</td>
             <td class="mac" class:dim-t={!mac.mac}>{mac.mac ?? '—'}</td>
@@ -386,12 +394,20 @@
   </div>
   <div class="foot">
     <span class="sum" class:e={!!error}>{error ? $_(error.key, { values: error.values }) : ''}</span>
-    <button class="btn" onclick={runPreview} disabled={!ready}>{#if busy}<span class="spin"></span>{/if}{$_('ops.preview')}</button>
+    {#if kind === 'login_test'}
+      <button class="btn" onclick={() => loginTest?.start()} disabled={!ready || testing}>{#if testing}<span class="spin"></span>{/if}{$_('logintest.test')}</button>
+    {:else}
+      <button class="btn" onclick={runPreview} disabled={!ready}>{#if busy}<span class="spin"></span>{/if}{$_('ops.preview')}</button>
+    {/if}
   </div>
 </section>
 
+{#if kind === 'login_test'}
+  <LoginTest bind:this={loginTest} cams={targets} {accountId} accountName={account?.name ?? ''} {iface} bind:running={testing} />
+{/if}
+
 <!-- 2. Aperçu, puis 4. état de chaque caméra pendant et après l'application -->
-{#if table}
+{#if table && kind !== 'login_test'}
   <section class="step">
     <h4><b>2</b>{$_('ops.step.preview')}</h4>
     <div class="scroll ptable">
