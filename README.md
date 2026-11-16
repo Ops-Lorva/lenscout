@@ -29,8 +29,13 @@ scales badly past a handful of cameras.
 LenScout is a desktop app for installers and integrators. It discovers the IP cameras on
 a network, activates new ones, sets their IP / mask / gateway / DNS, their NTP and time
 zone, and their credentials, then shows their live stream so you can aim and focus them
-during the install — all from one window, on macOS, Windows, and Linux. It is an
-**installation** tool: no continuous monitoring, no recording.
+during the install — all from one window, on macOS, Windows, and Linux.
+
+When a whole fleet needs the same change — a new addressing plan, another NTP server, a
+password rotation — the **Operations** tab applies it to every checked camera in one
+pass, after a before / after preview, instead of one web page per camera.
+
+It is an **installation** tool: no continuous monitoring, no recording.
 
 The interface is four tabs — **Network**, **Framing**, **Accounts**, **Operations** — in
 French, English, and Spanish.

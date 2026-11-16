@@ -31,8 +31,14 @@ LenScout est une application de bureau pour les installateurs et les intégrateu
 découvre les caméras IP d’un réseau, active les neuves, règle leur IP / masque /
 passerelle / DNS, leur NTP et leur fuseau horaire, et leurs identifiants, puis affiche leur
 flux en direct pour les orienter et faire la mise au point pendant la pose — le tout depuis
-une seule fenêtre, sur macOS, Windows et Linux. C’est un outil d’**installation** : pas de
-surveillance continue, pas d’enregistrement.
+une seule fenêtre, sur macOS, Windows et Linux.
+
+Quand tout un parc doit recevoir le même changement — un nouveau plan d’adressage, un
+autre serveur NTP, une rotation de mots de passe — l’onglet **Opérations** l’applique à
+toutes les caméras cochées en une seule passe, après un aperçu avant / après, au lieu
+d’une page web par caméra.
+
+C’est un outil d’**installation** : pas de surveillance continue, pas d’enregistrement.
 
 L’interface tient en quatre onglets — **Réseau**, **Cadrage**, **Comptes**, **Opérations** —
 en français, en anglais et en espagnol.
