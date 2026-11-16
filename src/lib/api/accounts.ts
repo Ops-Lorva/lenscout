@@ -72,7 +72,7 @@ export interface KnownCamera {
 
 /** Miroir de `Segment` : décalages depuis l'adresse de réseau. */
 export interface FillSegment {
-  kind: 'gateway' | 'pc' | 'excluded' | 'camera';
+  kind: 'gateway' | 'pc' | 'excluded' | 'camera' | 'device';
   first: number;
   last: number;
 }
@@ -90,6 +90,14 @@ export interface NetworkFill {
   /** Moins de 10 % d'adresses libres. */
   almost_full: boolean;
   segments: FillSegment[];
+  /** Appareils relevés, hors caméras connues, passerelle, PC et exclues. */
+  devices: number;
+  /** Adresses prises (exclues comprises), en %. */
+  used_pct: number;
+  /** `used_pct` ≥ 80. */
+  crowded: boolean;
+  /** Élargissement proposé si `crowded` : `192.168.0.0/23`. */
+  suggest: string | null;
 }
 
 /** Clé d'une caméra connue, comme Rust : le n° de série, sinon la MAC. */

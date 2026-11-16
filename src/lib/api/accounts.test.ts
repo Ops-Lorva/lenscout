@@ -221,11 +221,13 @@ test('caméras connues : lister, mesurer, oublier passent le compte à Rust', as
 const fill: NetworkFill = {
   network: '10.0.8.0/24', size: 256, usable: 254, gateway: 1, pc: 1, excluded: 9, cameras: 37, free: 206,
   almost_full: false, segments: [{ kind: 'gateway', first: 1, last: 1 }, { kind: 'excluded', first: 2, last: 9 }],
+  devices: 0, used_pct: 18, crowded: false, suggest: null,
 };
 
 test('barre du réseau : chaque portion à sa place, à l’échelle du réseau', () => {
   expect(segmentBox({ kind: 'excluded', first: 2, last: 9 }, 256)).toEqual({ left: 2 / 256 * 100, width: 8 / 256 * 100 });
   expect(segmentBox({ kind: 'pc', first: 250, last: 250 }, 256)).toEqual({ left: 250 / 256 * 100, width: 1 / 256 * 100 });
+  expect(segmentBox({ kind: 'device', first: 40, last: 42 }, 256)).toEqual({ left: 40 / 256 * 100, width: 3 / 256 * 100 });
 });
 
 test('légende : caméras et libres sur les adresses du réseau', () => {

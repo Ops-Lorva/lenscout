@@ -97,12 +97,6 @@ impl JoinState {
         self.routed_lock().take();
     }
 
-    /// Tests d'autres modules : pose un mode routé sans passer par la commande.
-    #[cfg(test)]
-    pub(crate) fn set_routed(&self, r: Option<RoutedJoin>) {
-        *self.routed_lock() = r;
-    }
-
     fn out(&self) -> Option<JoinedOut> {
         self.lock().as_ref().map(JoinedOut::new).or_else(|| self.routed_lock().as_ref().map(JoinedOut::routed))
     }
@@ -454,6 +448,15 @@ fn ready_log_line(t: &TempIp, service: &str, on: Option<&str>, r: &Result<(), St
 pub async fn cmd_joined_network(state: State<'_, JoinState>) -> Result<Option<JoinedOut>, String> {
     let _one = state.op.lock().await;
     Ok(state.out())
+}
+
+// Tests d'autres modules : pose un mode routé sans passer par la commande.
+// En fin de fichier : `codes.test.ts` lit le code jusqu'au premier attribut de test.
+#[cfg(test)]
+impl JoinState {
+    pub(crate) fn set_routed(&self, r: Option<RoutedJoin>) {
+        *self.routed_lock() = r;
+    }
 }
 
 #[cfg(test)]
