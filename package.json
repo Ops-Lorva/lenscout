@@ -30,6 +30,7 @@
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tauri-apps/cli": "^2.10.1",
     "@types/node": "^22",
+    "deepmerge": "file:./vendor/deepmerge-4.3.2-lorva.1.tgz",
     "svelte": "^5.57.3",
     "svelte-check": "^4.4.6",
     "typescript": "^6.0.2",
@@ -38,7 +39,7 @@
   },
   "overrides": {
     "esbuild": "^0.28.2",
-    "deepmerge": "file:./vendor/deepmerge"
+    "deepmerge": "$deepmerge"
   },
   "allowScripts": {
     "esbuild": true,
