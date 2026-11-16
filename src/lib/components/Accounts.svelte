@@ -362,12 +362,13 @@
               {#if fill.excluded}<li><i class="k-excluded"></i>{$_('accounts.net.excluded')} {fill.excluded}</li>{/if}
               <li><i class="k-camera"></i>{$_('accounts.net.cameras')}</li>
               {#if fill.devices}<li><i class="k-device"></i>{$_('accounts.net.devices')} {fill.devices}</li>{/if}
-              {#if counts}<li class="count">{$_('accounts.net.summary', { values: counts })}</li>{/if}
+              <!-- Avec des appareils relevés, la ligne d'occupation dit tout (pourcentage compris). -->
+              {#if counts && !(fill.devices || fill.crowded)}<li class="count">{$_('accounts.net.summary', { values: counts })}</li>{/if}
             </ul>
             {#if fill.devices || fill.crowded}
               <div class="used" class:warn={fill.crowded}>
                 <span>{$_('accounts.net.used', { values: { pct: fill.used_pct, free: fill.free, usable: fill.usable } })}</span>
-                {#if fill.suggest}<span class="m">{$_('accounts.net.crowded', { values: { prefix: fill.suggest.split('/')[1], mask: maskOf(fill.suggest) } })}</span>{/if}
+                {#if fill.suggest}<span>{$_('accounts.net.crowded', { values: { prefix: fill.suggest.split('/')[1], mask: maskOf(fill.suggest) } })}</span>{/if}
               </div>
             {/if}
             <SiteSurvey accountId={editing} accountName={name.trim()} pcIp={savedPcIp} iface={$scanIface} onDone={() => { if (editing) void loadNet(editing); }} />

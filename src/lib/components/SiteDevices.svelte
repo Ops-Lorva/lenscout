@@ -76,45 +76,47 @@
   }
 </script>
 
-<Dialog title={$_('sitenet.count', { values: { count: devices.length } })} subtitle={accountName} width={720} {onClose}>
+<Dialog title={$_('sitenet.count', { values: { count: devices.length } })} subtitle={accountName} width={880} {onClose}>
   <div class="bar">
     <div class="tabs">
-      <button class="tab" class:on={kinds.size === 0} onclick={() => (kinds = new Set())}>
+      <button class="tab" type="button" class:on={kinds.size === 0} onclick={() => (kinds = new Set())}>
         {$_('sitenet.all')} <span class="n">{devices.length}</span>
       </button>
       {#each DEVICE_KINDS as k (k)}
         {#if counts[k]}
-          <button class="tab" class:on={kinds.has(k)} onclick={() => toggle(k)} aria-pressed={kinds.has(k)}>
+          <button class="tab" type="button" class:on={kinds.has(k)} onclick={() => toggle(k)} aria-pressed={kinds.has(k)}>
             {$_(`sitenet.kind.${k}`)} <span class="n">{counts[k]}</span>
           </button>
         {/if}
       {/each}
     </div>
-    <input type="search" bind:value={query} placeholder={$_('sitenet.search')} aria-label={$_('sitenet.search')} spellcheck="false" />
+    <!-- La feuille s'ouvre dans le formulaire du compte : Entrée ne doit pas l'enregistrer. -->
+    <input type="search" bind:value={query} placeholder={$_('sitenet.search')} aria-label={$_('sitenet.search')} spellcheck="false"
+      onkeydown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} />
   </div>
   <div class="big">
     <table>
       <thead>
         <tr>
-          <th style="width:112px">{$_('sitenet.col.ip')}</th>
-          <th style="width:136px">{$_('sitenet.col.mac')}</th>
+          <th style="width:134px">{$_('sitenet.col.ip')}</th>
+          <th style="width:170px">{$_('sitenet.col.mac')}</th>
           <th>{$_('sitenet.col.vendor')}</th>
-          <th style="width:92px">{$_('sitenet.col.kind')}</th>
+          <th style="width:96px">{$_('sitenet.col.kind')}</th>
           <th>{$_('sitenet.col.name')}</th>
-          <th style="width:86px">{$_('sitenet.col.seen')}</th>
-          <th style="width:78px"></th>
+          <th style="width:104px">{$_('sitenet.col.seen')}</th>
+          <th style="width:88px"></th>
         </tr>
       </thead>
       <tbody>
         {#each shown as d (deviceKey(d))}
           {@const gone = absent(d, surveyedAt)}
           <tr class:gone>
-            <td class="mono">{d.ip}</td>
-            <td class="mono" class:dim-t={!d.mac}>{d.mac ?? '—'}</td>
+            <td class="mono cut">{d.ip}</td>
+            <td class="mono cut" class:dim-t={!d.mac}>{d.mac ?? '—'}</td>
             <td class="cut" title={d.vendor ?? ''}>{d.vendor ?? ''}</td>
-            <td>{$_(`sitenet.kind.${d.kind}`)}</td>
+            <td class="cut">{$_(`sitenet.kind.${d.kind}`)}</td>
             <td class="cut" title={deviceName(d)}>{deviceName(d)}</td>
-            <td class="dim-t" title={gone ? $_('sitenet.absent') : undefined}>{#if gone}<i class="absent" aria-label={$_('sitenet.absent')}></i>{/if}{seenOn(d.last_seen)}</td>
+            <td class="dim-t cut" title={gone ? $_('sitenet.absent') : undefined}>{#if gone}<i class="absent" aria-label={$_('sitenet.absent')}></i>{/if}{seenOn(d.last_seen)}</td>
             <td class="ra">
               <button class="mini" type="button" class:danger={forgetting === deviceKey(d)} onclick={() => forget(d)}>
                 {forgetting === deviceKey(d) ? $_('sitenet.confirmForget') : $_('sitenet.forget')}
@@ -148,6 +150,7 @@
   .big { max-height: 60vh; overflow-y: auto; }
   .big table { table-layout: fixed; width: 100%; }
   .big td { height: 34px; }
+  .big .mono { font-size: 12.5px; }
   .big tbody tr:last-child td { border-bottom: 0; }
   .cut { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   tr.gone td:not(:last-child) { color: var(--text-2); }
