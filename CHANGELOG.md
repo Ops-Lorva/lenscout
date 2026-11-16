@@ -6,17 +6,21 @@ All notable changes to LenScout are documented here (EN/FR).
 Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 `### English` et `### Français` par version. SemVer.
 
-## [Unreleased]
+## [0.2.1] - 2026-11-16
 
 ### English
 
 - **Operations — Login test**: tries the chosen account on the checked cameras, read-only, and lists OK, denied, unreachable, not activated or another device. A camera refused twice in 30 minutes is not tried again. CSV export.
 - **Accounts — Survey**: lists every device on the account's network (type, vendor, name), keeps it until forgotten, counts it as taken in the network bar and in the address sheets, and suggests a wider mask above 80 % use. CSV export.
+- **Fixed: the IP sheets no longer suggest free addresses from another network.** When the chosen account is not the one set on this computer, the sheet says so and offers to switch to it.
+- **Fixed: Framing offers to switch to the account's network** when the camera is outside this computer's network.
 
 ### Français
 
 - **Opérations — Test de login** : essaie le compte choisi sur les caméras cochées, en lecture seule, et liste OK, refusé, injoignable, non activée ou autre appareil. Une caméra refusée deux fois en 30 min n'est plus essayée. Export CSV.
 - **Comptes — Relever** : liste les appareils du réseau du compte (type, constructeur, nom), les garde jusqu'à « Oublier », les compte pris dans la barre du réseau et les feuilles d'adresses, et propose un masque plus large au-delà de 80 % d'occupation. Export CSV.
+- **Corrigé : les feuilles IP ne proposent plus d'adresses libres d'un autre réseau.** Si le compte choisi n'est pas celui posé sur ce PC, la feuille le dit et propose de passer dessus.
+- **Corrigé : le Cadrage propose de passer sur le réseau du compte** quand la caméra est hors du réseau de ce PC.
 
 ## [0.2.0] - 2026-11-16
 
