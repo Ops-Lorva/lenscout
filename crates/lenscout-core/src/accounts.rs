@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::seal;
+use crate::site_survey::device::SeenDevice;
 use crate::secret::Secret;
 use crate::transport::Credentials;
 
@@ -399,6 +400,16 @@ fn read_cameras(a: &serde_json::Value) -> Vec<KnownCamera> {
     out
 }
 
+/// Appareils relevés lus dans un objet JSON du carnet : une ligne illisible
+/// est ignorée, comme un champ qui n'est pas une liste.
+fn read_devices(a: &serde_json::Value) -> Vec<SeenDevice> {
+    let mut out = Vec::new();
+    let seen = a.get("devices").and_then(|v| v.as_array()).into_iter().flatten();
+    let list: Vec<SeenDevice> = seen.filter_map(|d| serde_json::from_value(d.clone()).ok()).collect();
+    crate::site_survey::device::merge_devices(&mut out, list);
+    out
+}
+
 /// Ce qu'occupe une portion de la barre du réseau d'un compte.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -407,6 +418,7 @@ pub enum SegmentKind {
     Pc,
     Excluded,
     Camera,
+    Device,
 }
 
 /// `first`..=`last` : décalages depuis l'adresse de réseau (0 = le réseau).
@@ -435,15 +447,62 @@ pub struct NetworkFill {
     pub almost_full: bool,
     /// Triés par adresse.
     pub segments: Vec<Segment>,
+    /// Appareils relevés (réseau du compte), hors caméras connues,
+    /// passerelle, PC et exclues.
+    pub devices: u32,
+    /// Part des adresses prises (exclues comprises), en %, arrondie vers le bas.
+    pub used_pct: u8,
+    /// `used_pct` ≥ 80 : un masque plus large est proposé.
+    pub crowded: bool,
+    /// Le plus petit élargissement qui ramène l'occupation à 50 % ou moins
+    /// (`192.168.0.0/23`) ; seulement si `crowded`.
+    pub suggest: Option<String>,
 }
+
 
 /// Seuil « bientôt complet » : moins d'une adresse libre sur dix.
 const ALMOST_FULL_RATIO: u32 = 10;
+/// Occupation à partir de laquelle un masque plus large est proposé.
+const CROWDED_PCT: u8 = 80;
+/// Occupation visée par l'élargissement proposé.
+const SUGGEST_TARGET_PCT: u64 = 50;
+/// Plus large réseau proposé.
+const SUGGEST_WIDEST: u8 = 16;
+
+/// Le plus petit réseau plus large que `base/prefix` (/n-1, /n-2… jusqu'à
+/// /16) où `used` adresses prises font 50 % ou moins des adresses d'hôte :
+/// `192.168.0.0/23`. `None` si même un /16 n'y suffit pas.
+pub fn suggest_network(base: Ipv4Addr, prefix: u8, used: u32) -> Option<String> {
+    (SUGGEST_WIDEST..prefix).rev().find_map(|p| {
+        let usable = (1u64 << (32 - u32::from(p))) - 2;
+        (u64::from(used) * 100 <= usable * SUGGEST_TARGET_PCT)
+            .then(|| format!("{}/{p}", Ipv4Addr::from(u32::from(base) & mask_bits(p))))
+    })
+}
+
+/// Suites d'adresses consécutives (triées, sans doublon) : une portion chacune.
+fn runs(sorted: &[u32]) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for n in sorted.iter().copied() {
+        match out.last_mut() {
+            Some((_, end)) if *end + 1 == n => *end = n,
+            _ => out.push((n, n)),
+        }
+    }
+    out
+}
 
 /// Remplissage du réseau de `net` avec les caméras `cameras` ; `own` : les
 /// adresses actuelles des caméras qu'on est en train de réadresser, libres
 /// pour elles (comme dans la recherche d'IP libres). `None` sans IP du PC.
 pub fn network_fill(net: &AccountNetwork, cameras: &[KnownCamera], own: &[Ipv4Addr]) -> Option<NetworkFill> {
+    network_fill_with(net, cameras, &[], own)
+}
+
+/// `network_fill`, plus les appareils relevés sur le réseau du compte : un
+/// appareil compte comme une caméra connue (pris, même absent du dernier
+/// relevé), une seule fois par adresse.
+pub fn network_fill_with(net: &AccountNetwork, cameras: &[KnownCamera], devices: &[SeenDevice], own: &[Ipv4Addr]) -> Option<NetworkFill> {
     let (pc, prefix) = parse_cidr(net.pc_ip.as_deref()?.trim())?;
     let mask = mask_bits(prefix);
     let base = u32::from(pc) & mask;
@@ -483,24 +542,30 @@ pub fn network_fill(net: &AccountNetwork, cameras: &[KnownCamera], own: &[Ipv4Ad
         .collect();
     cams.sort_unstable();
     cams.dedup();
+    let mut devs: Vec<u32> = devices
+        .iter()
+        .map(|d| u32::from(d.ip))
+        .filter(|&n| {
+            host(n) && !in_ex(n) && !special.contains(&Some(n)) && !own.contains(&Ipv4Addr::from(n)) && cams.binary_search(&n).is_err()
+        })
+        .collect();
+    devs.sort_unstable();
+    devs.dedup();
     let (n_gw, n_pc) = (gw.is_some() as u32, pc.is_some() as u32);
     let usable = size - 2;
-    let free = usable - n_gw - n_pc - excluded - cams.len() as u32;
+    let free = usable - n_gw - n_pc - excluded - cams.len() as u32 - devs.len() as u32;
+    let used = usable - free;
+    let used_pct = (u64::from(used) * 100 / u64::from(usable)) as u8;
+    let crowded = used_pct >= CROWDED_PCT;
 
     let mut segments: Vec<Segment> = Vec::new();
     let mut push = |kind, a: u32, b: u32| segments.push(Segment { kind, first: a - base, last: b - base });
     gw.into_iter().for_each(|g| push(SegmentKind::Gateway, g, g));
     pc.into_iter().for_each(|p| push(SegmentKind::Pc, p, p));
     merged.iter().for_each(|&(a, b)| push(SegmentKind::Excluded, a, b));
-    // Caméras consécutives : une seule portion.
-    let mut runs: Vec<(u32, u32)> = Vec::new();
-    for n in cams.iter().copied() {
-        match runs.last_mut() {
-            Some((_, end)) if *end + 1 == n => *end = n,
-            _ => runs.push((n, n)),
-        }
-    }
-    runs.into_iter().for_each(|(a, b)| push(SegmentKind::Camera, a, b));
+    // Caméras (puis appareils) consécutives : une seule portion.
+    runs(&cams).into_iter().for_each(|(a, b)| push(SegmentKind::Camera, a, b));
+    runs(&devs).into_iter().for_each(|(a, b)| push(SegmentKind::Device, a, b));
     segments.sort_by_key(|s| s.first);
     Some(NetworkFill {
         network: format!("{}/{prefix}", Ipv4Addr::from(base)),
@@ -513,6 +578,10 @@ pub fn network_fill(net: &AccountNetwork, cameras: &[KnownCamera], own: &[Ipv4Ad
         free,
         almost_full: free * ALMOST_FULL_RATIO < usable,
         segments,
+        devices: devs.len() as u32,
+        used_pct,
+        crowded,
+        suggest: if crowded { suggest_network(Ipv4Addr::from(base), prefix, used) } else { None },
     })
 }
 
@@ -566,6 +635,10 @@ struct Entry {
     password: Option<Secret>,
     // Caméras vues ou adressées avec ce compte (voir `KnownCamera`).
     cameras: Vec<KnownCamera>,
+    // Réseau du compte : appareils relevés et date du dernier relevé. Hors
+    // de l'export : l'inventaire se refait sur place en quelques secondes.
+    devices: Vec<SeenDevice>,
+    surveyed_at: Option<u64>,
 }
 
 pub struct AccountBook {
@@ -805,6 +878,8 @@ impl AccountBook {
                     account,
                     password: None,
                     cameras: Vec::new(),
+                    devices: Vec::new(),
+                    surveyed_at: None,
                 })
                 .collect();
             return Ok(book);
@@ -837,6 +912,8 @@ impl AccountBook {
                 },
                 password: Some(Secret::new(text("password")?)).filter(|p| !p.expose().is_empty()),
                 cameras: read_cameras(a),
+                devices: read_devices(a),
+                surveyed_at: a.get("surveyed_at").and_then(serde_json::Value::as_u64),
             };
             book.entries.push(entry);
         }
@@ -911,6 +988,8 @@ impl AccountBook {
             account: account.clone(),
             password: Some(password),
             cameras: Vec::new(),
+            devices: Vec::new(),
+            surveyed_at: None,
         });
         self.write(&next)?;
         self.entries = next;
@@ -1050,6 +1129,8 @@ impl AccountBook {
                 },
                 password: imp.password,
                 cameras: imp.cameras,
+                devices: Vec::new(),
+                surveyed_at: None,
             };
             let Some(i) = position_of(&next, &imp.name) else {
                 next.push(fresh(imp.name.clone(), imp));
@@ -1140,9 +1221,45 @@ impl AccountBook {
     }
 
     /// Remplissage du réseau du compte (voir `network_fill`) ; `None` sans IP du PC.
+    /// Retient un relevé du réseau du compte, daté `at` : fusion par appareil
+    /// (`merge_devices`). Un appareil absent du relevé reste, compté pris,
+    /// jusqu'à `forget_device`.
+    pub fn record_survey(&mut self, id: &str, seen: Vec<SeenDevice>, at: u64) -> Result<(), AccountError> {
+        let index = self.index_of(id)?;
+        let mut next = self.entries.clone();
+        crate::site_survey::device::merge_devices(&mut next[index].devices, seen);
+        next[index].surveyed_at = Some(at);
+        self.write(&next)?;
+        self.entries = next;
+        Ok(())
+    }
+
+    /// Inventaire du compte et date du dernier relevé (`None` : jamais relevé).
+    pub fn devices(&self, id: &str) -> Result<(Vec<SeenDevice>, Option<u64>), AccountError> {
+        let e = &self.entries[self.index_of(id)?];
+        Ok((e.devices.clone(), e.surveyed_at))
+    }
+
+    /// Oublie l'appareil de clé `key` (MAC, sinon IP, comme `device_key` ;
+    /// casse ignorée). `NotFound` : compte ou appareil inconnus.
+    pub fn forget_device(&mut self, id: &str, key: &str) -> Result<(), AccountError> {
+        let index = self.index_of(id)?;
+        let key = key.trim().to_uppercase();
+        let at = self.entries[index]
+            .devices
+            .iter()
+            .position(|d| crate::site_survey::device::device_key(d) == key)
+            .ok_or(AccountError::NotFound)?;
+        let mut next = self.entries.clone();
+        next[index].devices.remove(at);
+        self.write(&next)?;
+        self.entries = next;
+        Ok(())
+    }
+
     pub fn fill(&self, id: &str, own: &[Ipv4Addr]) -> Result<Option<NetworkFill>, AccountError> {
         let e = &self.entries[self.index_of(id)?];
-        Ok(network_fill(&e.account.net, &e.cameras, own))
+        Ok(network_fill_with(&e.account.net, &e.cameras, &e.devices, own))
     }
 
     fn index_of(&self, id: &str) -> Result<usize, AccountError> {
@@ -1180,6 +1297,12 @@ impl AccountBook {
                 if !e.cameras.is_empty() {
                     a["cameras"] = serde_json::to_value(&e.cameras).expect("json");
                 }
+                if !e.devices.is_empty() {
+                    a["devices"] = serde_json::to_value(&e.devices).expect("json");
+                }
+                if let Some(at) = e.surveyed_at {
+                    a["surveyed_at"] = at.into();
+                }
                 a
             })
             .collect();
@@ -1205,6 +1328,7 @@ impl AccountBook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::site_survey::device::DeviceKind;
 
     const PWD: &str = "S3cr3t-Unique!";
 
@@ -1588,6 +1712,172 @@ mod tests {
         let big = with_exclusions(net("10.0.0.250/8", "", ""), "10.0.0.0-10.255.255.255");
         let f = network_fill(&big.validated().unwrap(), &[], &[]).unwrap();
         assert_eq!((f.usable, f.excluded, f.free), (16_777_214, 16_777_213, 0));
+    }
+
+    // ---- Réseau du compte : inventaire relevé ----
+
+    fn device(ip_: &str, mac: Option<&str>, at: u64) -> SeenDevice {
+        SeenDevice { ip: ip(ip_), mac: mac.map(str::to_string), vendor: None, kind: DeviceKind::Unknown, name: None, model: None, first_seen: at, last_seen: at }
+    }
+
+    #[test]
+    fn survey_is_saved_and_reloaded_with_its_date() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        assert_eq!(book.devices(&acc.id).unwrap(), (vec![], None));
+        book.record_survey(&acc.id, vec![device("10.0.8.30", Some("AA:BB:CC:00:00:30"), 100)], 100).unwrap();
+        book.record_survey(&acc.id, vec![device("10.0.8.31", None, 200)], 200).unwrap();
+        let (list, at) = fx.book().devices(&acc.id).unwrap();
+        assert_eq!(at, Some(200));
+        // Absent du dernier relevé, l'appareil reste (jusqu'à « Oublier »).
+        assert_eq!(list.iter().map(|d| (d.ip, d.last_seen)).collect::<Vec<_>>(), [(ip("10.0.8.30"), 100), (ip("10.0.8.31"), 200)]);
+        assert!(matches!(book.record_survey("zzz", vec![], 1), Err(AccountError::NotFound)));
+        // Un mot de passe reste scellé : rien du relevé n'y touche.
+        assert!(!fx.raw().contains(PWD));
+    }
+
+    #[test]
+    fn old_file_without_devices_loads() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        assert!(!fx.raw().contains("devices") && !fx.raw().contains("surveyed_at"));
+        assert_eq!(fx.book().devices(&acc.id).unwrap(), (vec![], None));
+    }
+
+    #[test]
+    fn bad_device_line_is_ignored_not_fatal() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.record_survey(&acc.id, vec![device("10.0.8.30", None, 1)], 1).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&fx.raw()).unwrap();
+        v["accounts"][0]["devices"].as_array_mut().unwrap().push(serde_json::json!({"ip": "x", "kind": "camera"}));
+        v["accounts"][0]["devices"].as_array_mut().unwrap().push(serde_json::json!({"ip": "10.0.8.31", "kind": "grille-pain", "first_seen": 1, "last_seen": 1}));
+        std::fs::write(fx.path(), v.to_string()).unwrap();
+        assert_eq!(fx.book().devices(&acc.id).unwrap().0.len(), 1);
+        v["accounts"][0]["devices"] = "pas une liste".into();
+        v["accounts"][0]["surveyed_at"] = "hier".into();
+        std::fs::write(fx.path(), v.to_string()).unwrap();
+        assert_eq!(fx.book().devices(&acc.id).unwrap(), (vec![], None));
+    }
+
+    #[test]
+    fn export_never_contains_devices() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.record_survey(&acc.id, vec![device("10.0.8.30", Some("AA:BB:CC:00:00:30"), 1)], 1).unwrap();
+        let data = book.export();
+        assert!(!data.contains("devices") && !data.contains("surveyed_at") && !data.contains("AA:BB:CC:00:00:30"));
+    }
+
+    #[test]
+    fn import_replace_keeps_local_devices() {
+        let (mut src, _fx_src) = empty_book();
+        src.create("Site", "admin", pwd(PWD), site()).unwrap();
+        let data = src.export();
+        let (mut dst, _fx_dst) = empty_book();
+        let b = dst.create("Site", "root", pwd(PWD), site()).unwrap();
+        dst.record_survey(&b.id, vec![device("10.0.8.30", None, 1)], 7).unwrap();
+        assert!(matches!(dst.import_plan(&data).unwrap().items[0].kind, ImportKind::Differs { .. }));
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        assert_eq!(dst.list()[0].login, "admin");
+        assert_eq!(dst.devices(&b.id).unwrap(), (vec![device("10.0.8.30", None, 1)], Some(7)));
+    }
+
+    #[test]
+    fn forget_device_by_mac_or_ip() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.record_survey(&acc.id, vec![device("10.0.8.30", Some("AA:BB:CC:00:00:30"), 1), device("10.0.8.31", None, 1)], 1).unwrap();
+        book.forget_device(&acc.id, "aa:bb:cc:00:00:30").unwrap();
+        book.forget_device(&acc.id, "10.0.8.31").unwrap();
+        assert!(book.devices(&acc.id).unwrap().0.is_empty());
+        assert!(matches!(book.forget_device(&acc.id, "10.0.8.31"), Err(AccountError::NotFound)));
+        assert!(matches!(book.forget_device("zzz", "x"), Err(AccountError::NotFound)));
+    }
+
+    #[test]
+    fn fill_counts_devices_once() {
+        // Passerelle .1, PC .250, exclues .2–.9 et .100, caméra connue .20.
+        let cams = [known("10.0.8.20", Some("A"), None, 1)];
+        let devs = [
+            device("10.0.8.1", None, 1),
+            device("10.0.8.250", None, 1),
+            device("10.0.8.5", None, 1),
+            device("10.0.8.20", None, 1),
+            device("10.0.8.40", None, 1),
+            device("10.0.8.40", Some("AA:BB:CC:00:00:40"), 1),
+            device("10.0.8.41", None, 1),
+            device("192.168.0.9", None, 1),
+        ];
+        let f = network_fill_with(&site().validated().unwrap(), &cams, &devs, &[]).unwrap();
+        assert_eq!((f.cameras, f.devices, f.free), (1, 2, 254 - 1 - 1 - 9 - 1 - 2));
+        // Une adresse qu'on réadresse compte libre, appareil compris.
+        let f = network_fill_with(&site().validated().unwrap(), &cams, &devs, &[ip("10.0.8.41")]).unwrap();
+        assert_eq!(f.devices, 1);
+    }
+
+    #[test]
+    fn fill_device_segments_are_merged_runs() {
+        let devs: Vec<_> = ["10.0.8.40", "10.0.8.41", "10.0.8.42", "10.0.8.60"].iter().map(|a| device(a, None, 1)).collect();
+        let f = network_fill_with(&net("10.0.8.250/24", "", "").validated().unwrap(), &[], &devs, &[]).unwrap();
+        let segs: Vec<_> = f.segments.iter().filter(|s| s.kind == SegmentKind::Device).map(|s| (s.first, s.last)).collect();
+        assert_eq!(segs, [(40, 42), (60, 60)]);
+        assert_eq!(serde_json::to_value(SegmentKind::Device).unwrap(), "device");
+    }
+
+    #[test]
+    fn used_pct_counts_excluded_as_taken() {
+        // /24, PC .250, exclues .1–.100 : 101 prises sur 254 → 39 %.
+        let n = with_exclusions(net("10.0.8.250/24", "", ""), "10.0.8.1-100").validated().unwrap();
+        let f = network_fill_with(&n, &[], &[], &[]).unwrap();
+        assert_eq!((f.free, f.used_pct, f.crowded, f.suggest.as_deref()), (153, 39, false, None));
+    }
+
+    #[test]
+    fn crowded_at_80_percent() {
+        // 204 prises sur 254 = 80,3 % ; 203 = 79,9 %.
+        let n = |last: u8| with_exclusions(net("10.0.8.250/24", "", ""), &format!("10.0.8.1-{last}")).validated().unwrap();
+        let f = network_fill_with(&n(203), &[], &[], &[]).unwrap();
+        assert_eq!((f.used_pct, f.crowded), (80, true));
+        assert_eq!(f.suggest.as_deref(), Some("10.0.8.0/23"));
+        let f = network_fill_with(&n(202), &[], &[], &[]).unwrap();
+        assert_eq!((f.used_pct, f.crowded, f.suggest), (79, false, None));
+        // « Bientôt complet » reste sa propre règle.
+        assert!(!f.almost_full);
+    }
+
+    #[test]
+    fn suggest_23_for_180_used_in_a_24() {
+        assert_eq!(suggest_network(ip("192.168.1.0"), 24, 180).as_deref(), Some("192.168.0.0/23"));
+        // 300 prises : un /23 (510) serait à 59 % ; un /22 (1 022) à 29 %.
+        assert_eq!(suggest_network(ip("192.168.1.0"), 24, 300).as_deref(), Some("192.168.0.0/22"));
+    }
+
+    #[test]
+    fn suggest_none_when_not_crowded_and_stops_at_16() {
+        let f = network_fill_with(&site().validated().unwrap(), &[], &[], &[]).unwrap();
+        assert_eq!(f.suggest, None);
+        assert_eq!(suggest_network(ip("10.1.0.0"), 16, 60_000), None);
+        assert_eq!(suggest_network(ip("10.1.0.0"), 17, 60_000), None);
+        assert_eq!(suggest_network(ip("10.1.0.0"), 17, 30_000).as_deref(), Some("10.1.0.0/16"));
+    }
+
+    #[test]
+    fn network_fill_without_devices_is_unchanged() {
+        let cams = [known("10.0.8.20", Some("A"), None, 1), known("10.0.8.21", Some("B"), None, 1)];
+        let n = site().validated().unwrap();
+        let a = network_fill(&n, &cams, &[ip("10.0.8.21")]).unwrap();
+        let b = network_fill_with(&n, &cams, &[], &[ip("10.0.8.21")]).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.devices, 0);
+        // Le carnet compte ses appareils relevés.
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.record_survey(&acc.id, vec![device("10.0.8.40", None, 1)], 1).unwrap();
+        assert_eq!(book.fill(&acc.id, &[]).unwrap().unwrap().devices, 1);
     }
 
     // ---- Champs réseau ----
