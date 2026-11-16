@@ -6,6 +6,18 @@ All notable changes to LenScout are documented here (EN/FR).
 Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 `### English` et `### Français` par version. SemVer.
 
+## [0.2.0] - 2026-11-16
+
+### English
+
+- **Accounts**: passwords live only in the app's accounts file; the system keychain is no longer used. Accounts saved by the very first builds open without their password: type it again once.
+- **Signed macOS builds**: the macOS app and installer are signed and notarised, and update themselves like on Windows and Linux.
+
+### Français
+
+- **Comptes** : les mots de passe ne sont plus que dans le fichier des comptes de l'app ; le trousseau du système n'est plus utilisé. Les comptes enregistrés par les toutes premières versions s'ouvrent sans leur mot de passe : ressaisissez-le une fois.
+- **Versions macOS signées** : l'app et l'installeur macOS sont signés et notarisés, et se mettent à jour comme sous Windows et Linux.
+
 ## [0.1.0] - 2026-11-15
 
 ### English
