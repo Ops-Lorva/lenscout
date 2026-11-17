@@ -8,23 +8,24 @@
   import { cameras } from '#lib/stores/cameras.ts';
   import SiteDevices from './SiteDevices.svelte';
 
-  // Relevé du réseau du compte, dans « Le réseau de ce compte » : bouton,
-  // progression, date du dernier relevé, lien vers l'inventaire. `onDone` :
-  // l'occupation a changé (relevé ou appareil oublié).
+  // Relevé du réseau du compte, dans la page Site : bouton, progression,
+  // date du dernier relevé, puis l'inventaire en dessous. `onDone` :
+  // l'occupation a changé (relevé ou appareil oublié). `onFrame` : une
+  // caméra de l'inventaire part au Cadrage.
   let {
     accountId,
     accountName = '',
     pcIp,
     iface,
     onDone,
-  }: { accountId: string; accountName?: string; pcIp: string | null; iface: string; onDone: () => void } = $props();
+    onFrame,
+  }: { accountId: string; accountName?: string; pcIp: string | null; iface: string; onDone: () => void; onFrame: (ip: string) => void } = $props();
 
   let devices = $state<SeenDevice[]>([]);
   let surveyedAt = $state<number | null>(null);
   let run = $state<{ id: number; done: number; total: number } | null>(null);
   let truncated = $state(false);
   let error = $state('');
-  let listing = $state(false);
 
   let details = $state<{ ip: string | null; subnet: string | null } | null>(null);
   $effect(() => {
@@ -51,7 +52,6 @@
     surveyedAt = null;
     error = '';
     truncated = false;
-    listing = false;
     void load(id);
   });
 
@@ -98,9 +98,7 @@
     <button class="mini" type="button" onclick={stop}>{$_('sitenet.stop')}</button>
   {:else}
     <span class="dim-t">{surveyedAt === null ? $_('sitenet.never') : $_('sitenet.surveyed', { values: { date: when } })}</span>
-    {#if devices.length > 0}
-      <button class="link" type="button" onclick={() => (listing = true)}>{$_('sitenet.count', { values: { count: devices.length } })}</button>
-    {/if}
+    {#if devices.length > 0}<span class="dim-t">{$_('sitenet.count', { values: { count: devices.length } })}</span>{/if}
     {#if truncated}<span class="warn">{$_('sitenet.truncated')}</span>{/if}
     <span class="grow"></span>
     {#if !here}<span class="dim-t off">{$_('sitenet.offNetwork')}</span>{/if}
@@ -109,9 +107,8 @@
 </div>
 {#if error}<p class="err">{$_(error)}</p>{/if}
 
-{#if listing}
-  <SiteDevices {accountId} {accountName} {devices} {surveyedAt}
-    onClose={() => (listing = false)}
+{#if devices.length > 0}
+  <SiteDevices {accountId} {accountName} {devices} {surveyedAt} {onFrame}
     onForgot={async () => { await load(accountId); onDone(); }} />
 {/if}
 
@@ -120,8 +117,5 @@
   .survey .grow { flex: 1; }
   .survey .warn { color: var(--warn); }
   .off { font-size: 12px; }
-  .link { padding: 0; border: 0; background: none; color: var(--act); font: inherit; cursor: pointer; }
-  .link:hover { text-decoration: underline; }
-  .link:focus-visible { outline: 2px solid var(--act); outline-offset: 2px; border-radius: 3px; }
   .err { margin: 0; color: var(--err); font-size: 12.5px; }
 </style>

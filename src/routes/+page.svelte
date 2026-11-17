@@ -3,6 +3,7 @@
   import Network from '#lib/components/Network.svelte';
   import Framing from '#lib/components/Framing.svelte';
   import Accounts from '#lib/components/Accounts.svelte';
+  import Site from '#lib/components/Site.svelte';
   import Operations from '#lib/components/Operations.svelte';
   import Settings from '#lib/components/Settings.svelte';
   import UpdateBanner from '#lib/components/UpdateBanner.svelte';
@@ -20,6 +21,7 @@
       <section class="page" hidden={$page !== 'network'}><Network /></section>
       <section class="page" hidden={$page !== 'framing'}><Framing /></section>
       <section class="page" hidden={$page !== 'accounts'}><Accounts /></section>
+      <section class="page" hidden={$page !== 'site'}><Site /></section>
       <section class="page" hidden={$page !== 'operations'}><Operations /></section>
       <section class="page" hidden={$page !== 'settings'}><Settings /></section>
     </main>

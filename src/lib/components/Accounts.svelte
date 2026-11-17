@@ -1,20 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { _, locale } from 'svelte-i18n';
+  import { _ } from 'svelte-i18n';
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
-    accountCameras, accountFill, accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts, fillLabel, forgetCamera,
-    importPlan, knownKey, netIn, networkEnds, noticeKey, passwordRequired, passwordToSend, pcIpError, removeAccount, segmentBox, sortKnown, updateAccount,
-    withExtension, type AccountEntry, type ImportPlan, type ImportSummary, type KnownCamera, type KnownSortColumn, type NetworkFill,
+    accountFill, accountPassword, accountsStartup, createAccount, EXPORT_EXT, EXPORT_NAME, exportAccounts,
+    importPlan, netIn, noticeKey, passwordRequired, passwordToSend, pcIpError, removeAccount, updateAccount,
+    withExtension, type AccountEntry, type ImportPlan, type ImportSummary,
   } from '#lib/api/accounts.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { accountList, refreshAccounts } from '#lib/stores/accounts.ts';
-  import { clearStatusIf, page, status, type Status } from '#lib/stores/nav.ts';
+  import { clearStatusIf, openSite, page, status, type Status } from '#lib/stores/nav.ts';
   import ImportSheet from './ImportSheet.svelte';
-  import Dialog from './Dialog.svelte';
-  import SiteSurvey from './SiteSurvey.svelte';
-  import { maskOf } from '#lib/api/net.ts';
-  import { scanIface } from '#lib/stores/nav.ts';
 
   // Liste partagée avec les sélecteurs des autres écrans.
   const accounts = $derived<AccountEntry[]>($accountList ?? []);
@@ -36,29 +32,6 @@
   let exclusions = $state('');
   let confirming = $state('');
   let needPassword = $state(true);
-  // Réseau du compte modifié, tel qu'enregistré : remplissage et caméras connues.
-  let fill = $state<NetworkFill | null>(null);
-  let known = $state<KnownCamera[]>([]);
-  // Clé de la caméra dont l'oubli attend sa confirmation.
-  let forgetting = $state('');
-  // Liste des caméras connues ouverte en grand, pour tout voir à l'aise.
-  let expanded = $state(false);
-  // Tri de la modale (local, par IP croissante au départ) : clic sur un en-tête
-  // trie, re-clic inverse le sens.
-  let knownSort = $state<{ col: KnownSortColumn; dir: 'asc' | 'desc' }>({ col: 'ip', dir: 'asc' });
-  const sortedKnown = $derived(sortKnown(known, knownSort));
-  const toggleKnownSort = (col: KnownSortColumn) =>
-    (knownSort = knownSort.col === col ? { col, dir: knownSort.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' });
-  const knownAria = (col: KnownSortColumn): 'ascending' | 'descending' | 'none' =>
-    knownSort.col === col ? (knownSort.dir === 'asc' ? 'ascending' : 'descending') : 'none';
-  const knownArrow = (col: KnownSortColumn): string => (knownSort.col === col ? (knownSort.dir === 'asc' ? '▲' : '▼') : '');
-  const ends = $derived(fill ? networkEnds(fill.network) : null);
-  // IP du PC enregistrée (pas celle en cours de saisie) : c'est elle que le relevé balaie.
-  const savedPcIp = $derived(accounts.find((a) => a.id === editing)?.pc_ip ?? null);
-  const counts = $derived(fill ? fillLabel(fill) : null);
-  const seenOn = (c: KnownCamera) => new Date(c.last_seen * 1000).toLocaleDateString($locale ?? undefined);
-  // Type d'identité affiché : numéro de série sinon adresse MAC, comme `knownKey`.
-  const idType = (c: KnownCamera) => $_(c.serial ? 'accounts.net.serial' : 'accounts.net.mac');
 
   const nameError = $derived(errorCode === 'error.duplicate_name' ? error : '');
   // Masque manquant : vu dès la saisie, ou rendu par Rust (même clé).
@@ -156,40 +129,7 @@
     pcIp = a?.pc_ip ?? '';
     gateway = a?.gateway ?? '';
     exclusions = a?.exclusions ?? '';
-    fill = null;
-    known = [];
-    forgetting = '';
-    expanded = false;
     if (a?.has_secret) void reveal(a.id);
-    if (a) void loadNet(a.id);
-  }
-
-  /** Remplissage et caméras du compte ; ignoré si la fiche a changé entre-temps. Un échec laisse le bloc caché. */
-  async function loadNet(id: string) {
-    try {
-      const [f, k] = await Promise.all([accountFill(id), accountCameras(id)]);
-      if (editing !== id) return;
-      fill = f;
-      known = [...k].sort((a, b) => b.last_seen - a.last_seen);
-    } catch {}
-  }
-
-  /** Deux clics, comme Supprimer : le premier demande confirmation. */
-  async function forget(c: KnownCamera) {
-    const key = knownKey(c);
-    if (forgetting !== key) {
-      forgetting = key;
-      return;
-    }
-    forgetting = '';
-    const id = editing;
-    if (!id) return;
-    try {
-      await forgetCamera(id, key);
-    } catch (e) {
-      fail(e);
-    }
-    await loadNet(id);
   }
 
   /** Préremplit le mot de passe (masqué) ; ignoré si la fiche a changé ou a été fermée entre-temps, ou déjà saisi. */
@@ -209,7 +149,6 @@
     password = '';
     prefilled = '';
     showPassword = false;
-    expanded = false;
     error = '';
     errorCode = '';
   }
@@ -312,7 +251,11 @@
 
   {#if editing !== null}
     <aside class="editpanel">
-      <div class=" phead"><h2>{editing ? (name.trim() || $_('accounts.edit')) : $_('accounts.add')}</h2></div>
+      <!-- Le réseau du compte (occupation, relevé, inventaire) vit dans l'onglet Site. -->
+      <div class="phead">
+        <h2>{editing ? (name.trim() || $_('accounts.edit')) : $_('accounts.add')}</h2>
+        {#if editing}<button class="mini" type="button" onclick={() => { if (editing) openSite(editing); }}>{$_('accounts.viewSite')}</button>{/if}
+      </div>
     <form onsubmit={(e) => { e.preventDefault(); if (ready) void save(); }}>
       <div class="form">
         <label for="a-name">{$_('accounts.field.name')}</label>
@@ -342,71 +285,6 @@
         <label for="a-excl">{$_('accounts.field.exclusions')}</label>
         <input id="a-excl" class="m" type="text" bind:value={exclusions} placeholder="192.168.1.2-192.168.1.9, 192.168.1.100" autocomplete="off" spellcheck="false" />
       </div>
-      {#if editing && (fill || known.length > 0)}
-        <section class="subnet">
-          <div class="sh">
-            <span>{$_('accounts.net.title')}</span>
-            {#if fill?.almost_full}<span class="warn">{$_('accounts.net.almostFull')}</span>{/if}
-          </div>
-          {#if fill}
-            <div class="strip" role="img" aria-label={fill.network}>
-              {#each fill.segments as seg (`${seg.kind}-${seg.first}`)}
-                {@const b = segmentBox(seg, fill.size)}
-                <span class="k-{seg.kind}" style="left:{b.left}%;width:{b.width}%"></span>
-              {/each}
-            </div>
-            {#if ends}<div class="ends"><span class="m">{ends[0]}</span><span class="m">{ends[1]}</span></div>{/if}
-            <ul class="legend">
-              {#if fill.gateway}<li><i class="k-gateway"></i>{$_('accounts.net.gateway')}</li>{/if}
-              <li><i class="k-pc"></i>{$_('accounts.net.pc')}</li>
-              {#if fill.excluded}<li><i class="k-excluded"></i>{$_('accounts.net.excluded')} {fill.excluded}</li>{/if}
-              <li><i class="k-camera"></i>{$_('accounts.net.cameras')}{#if fill.cameras} {fill.cameras}{/if}</li>
-              {#if fill.devices}<li><i class="k-device"></i>{$_('accounts.net.devices')} {fill.devices}</li>{/if}
-              <!-- Avec des appareils relevés, la ligne d'occupation dit tout (pourcentage compris). -->
-              {#if counts && !(fill.devices || fill.crowded)}<li class="count">{$_('accounts.net.summary', { values: counts })}</li>{/if}
-            </ul>
-            {#if fill.devices || fill.crowded}
-              <div class="used" class:warn={fill.crowded}>
-                <span>{$_('accounts.net.used', { values: { pct: fill.used_pct, free: fill.free, usable: fill.usable } })}</span>
-                {#if fill.suggest}<span>{$_('accounts.net.crowded', { values: { prefix: fill.suggest.split('/')[1], mask: maskOf(fill.suggest) } })}</span>{/if}
-              </div>
-            {/if}
-            <SiteSurvey accountId={editing} accountName={name.trim()} pcIp={savedPcIp} iface={$scanIface} onDone={() => { if (editing) void loadNet(editing); }} />
-          {/if}
-          {#if known.length > 0}
-            <details>
-              <summary>
-                <span>{$_('accounts.net.known', { values: { count: known.length } })}</span>
-                <button class="expand" type="button" aria-label={$_('accounts.net.expand')} title={$_('accounts.net.expand')}
-                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); knownSort = { col: 'ip', dir: 'asc' }; expanded = true; }}>
-                  <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4" />
-                  </svg>
-                </button>
-              </summary>
-              <div class="known">
-                <table>
-                  <tbody>
-                    {#each known as c (knownKey(c))}
-                      <tr>
-                        <td class="mono">{c.ip}</td>
-                        <td class="grow" title={c.model ?? ''}>{c.model ?? ''}</td>
-                        <td class="mono dim-t" title={knownKey(c)}>{knownKey(c)}</td>
-                        <td class="dim-t">{$_('accounts.net.seen', { values: { date: seenOn(c) } })}</td>
-                        <td class="ra">
-                          <button class="mini" type="button" class:danger={forgetting === knownKey(c)} onclick={() => forget(c)}>
-                            {forgetting === knownKey(c) ? $_('accounts.net.confirmForget') : $_('accounts.net.forget')}
-                          </button>
-                        </td>
-                      </tr>
-                    {/each}
-                  </tbody>
-                </table>
-              </div>
-            </details>
-          {/if}
-        </section>
-      {/if}
       <div class="foot">
         <span class="sum" class:e={!!otherError}>{otherError ? $_(otherError) : ''}</span>
         <button class="btn" type="button" onclick={close}>{$_('accounts.cancel')}</button>
@@ -421,45 +299,6 @@
   <ImportSheet path={importing.path} plan={importing.plan} existing={accounts.map((a) => a.name)} onClose={() => (importing = null)} onDone={imported} />
 {/if}
 
-{#if expanded && editing}
-  <Dialog title={$_('accounts.net.known', { values: { count: known.length } })} subtitle={name.trim()} width={720} onClose={() => (expanded = false)}>
-    <div class="bigknown">
-      <table>
-        <thead>
-          <tr>
-            <th aria-sort={knownAria('ip')}><button class="sort" class:on={knownSort.col === 'ip'} onclick={() => toggleKnownSort('ip')}>{$_('accounts.net.colIp')}<span class="arr" aria-hidden="true">{knownArrow('ip')}</span></button></th>
-            <th aria-sort={knownAria('id')}><button class="sort" class:on={knownSort.col === 'id'} onclick={() => toggleKnownSort('id')}>{$_('accounts.net.colId')}<span class="arr" aria-hidden="true">{knownArrow('id')}</span></button></th>
-            <th aria-sort={knownAria('type')}><button class="sort" class:on={knownSort.col === 'type'} onclick={() => toggleKnownSort('type')}>{$_('accounts.net.colType')}<span class="arr" aria-hidden="true">{knownArrow('type')}</span></button></th>
-            <th class="grow" aria-sort={knownAria('model')}><button class="sort" class:on={knownSort.col === 'model'} onclick={() => toggleKnownSort('model')}>{$_('accounts.net.colModel')}<span class="arr" aria-hidden="true">{knownArrow('model')}</span></button></th>
-            <th aria-sort={knownAria('seen')}><button class="sort" class:on={knownSort.col === 'seen'} onclick={() => toggleKnownSort('seen')}>{$_('accounts.net.colSeen')}<span class="arr" aria-hidden="true">{knownArrow('seen')}</span></button></th>
-            <th class="acts"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each sortedKnown as c (knownKey(c))}
-            <tr>
-              <td class="mono">{c.ip}</td>
-              <td class="mono dim-t" title={knownKey(c)}>{knownKey(c)}</td>
-              <td class="dim-t">{idType(c)}</td>
-              <td class="grow" title={c.model ?? ''}>{c.model ?? ''}</td>
-              <td class="dim-t">{seenOn(c)}</td>
-              <td class="ra">
-                <button class="mini" type="button" class:danger={forgetting === knownKey(c)} onclick={() => forget(c)}>
-                  {forgetting === knownKey(c) ? $_('accounts.net.confirmForget') : $_('accounts.net.forget')}
-                </button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-    <div class="foot">
-      <span class="sum"></span>
-      <button class="btn def" type="button" onclick={() => (expanded = false)}>{$_('accounts.net.close')}</button>
-    </div>
-  </Dialog>
-{/if}
-
 <style>
   /* Le tableau à gauche, le panneau d'édition ancré à droite (comme la maquette). */
   /* Le panneau prend toute la hauteur disponible, le tableau à côté. */
@@ -469,7 +308,8 @@
   .list table td:first-child, .list table th:first-child { padding-left: 0; }
   .list table td:last-child, .list table th:last-child { padding-right: 0; }
   .editpanel { flex: none; width: 360px; display: flex; flex-direction: column; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--win); overflow: auto; }
-  .editpanel .phead h2 { margin: 0 0 14px; font-size: 16px; font-weight: 600; color: var(--text); }
+  .editpanel .phead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 14px; }
+  .editpanel .phead h2 { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 600; color: var(--text); }
   form { margin: 0; }
   /* Boutons groupés à côté du titre : ils ne suivent pas le bord de la fenêtre. */
   .tools .title { flex: none; margin-right: 6px; }
@@ -484,48 +324,5 @@
   }
   .eye:hover { color: var(--text); }
   .eye:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
-  /* Le réseau du compte : barre à l'échelle du réseau, libres = le fond.
-     Passerelle en bleu froid (mesurée), PC en ambre (posé par la personne). */
-  .subnet { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--win); }
-  .subnet .sh { display: flex; justify-content: space-between; gap: 8px; font-weight: 500; font-size: 14px; }
-  .subnet .sh .warn { color: var(--warn); font-weight: 500; }
-  .strip { position: relative; height: 28px; border-radius: 4px; background: var(--page); border: 1px solid var(--line); overflow: hidden; }
-  .strip span { position: absolute; top: 0; bottom: 0; min-width: 3px; }
-  .k-gateway { background: var(--cool); }
-  .k-pc { background: var(--act); }
-  .k-camera { background: var(--ok); }
-  .k-device { background: var(--text-2); }
-  .used { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--text-ink2); font-size: 13px; }
-  .used.warn { color: var(--warn); }
-  .k-excluded { background: repeating-linear-gradient(135deg, var(--line-2) 0 2px, transparent 2px 5px); }
-  .legend .k-excluded { border: 1px solid var(--line-2); }
-  .ends { display: flex; justify-content: space-between; color: var(--text-2); font-size: 12px; }
-  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; color: var(--text-ink2); font-size: 13px; }
-  .legend li { display: inline-flex; align-items: center; gap: 8px; }
-  .legend i { width: 12px; height: 12px; border-radius: 2px; }
-  .legend .count { margin-left: auto; color: var(--text-2); }
-  .subnet summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
-  /* Titre « N caméras connues » et bouton Agrandir sur la même ligne. */
-  .subnet summary { display: flex; align-items: center; gap: 8px; }
-  .subnet summary > span { flex: 1; }
-  .expand {
-    flex: none; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 5px;
-    background: transparent; color: var(--text-2); cursor: pointer;
-    display: inline-flex; align-items: center; justify-content: center;
-  }
-  .expand:hover { color: var(--text); }
-  .expand:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
-  .expand svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
-  .known { max-height: 180px; overflow-y: auto; margin-top: 4px; }
-  .known td { height: 36px; }
-  .known tbody tr:last-child td { border-bottom: 0; }
-  /* Liste en grand : toute la largeur de la feuille, hauteur plafonnée et défilante. */
-  .bigknown { max-height: 60vh; overflow-y: auto; }
-  .bigknown td { height: 36px; }
-  .bigknown tbody tr:last-child td { border-bottom: 0; }
   .eye svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
-  /* En-tête triable de la modale : le bouton hérite de la typo de `th`. */
-  .bigknown .sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
-  .bigknown .sort:hover, .bigknown .sort.on { color: var(--text); }
-  .bigknown .sort .arr { font-size: 9px; color: var(--act); }
 </style>

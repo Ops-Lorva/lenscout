@@ -2,7 +2,7 @@ import { writable } from 'svelte/store';
 import type { Camera } from '#lib/api/types.ts';
 import type { OpKind } from '#lib/api/ops.ts';
 
-export const PAGES = ['network', 'framing', 'accounts', 'operations', 'settings'] as const;
+export const PAGES = ['network', 'framing', 'accounts', 'site', 'operations', 'settings'] as const;
 export type Page = (typeof PAGES)[number];
 
 /** `#comptes`-style deep link : `index.html#settings` ouvre l'onglet (captures, essais). */
@@ -15,6 +15,26 @@ export const page = writable<Page>(initialPage(typeof location === 'undefined' ?
 
 /** Caméra à cadrer, posée par l'onglet Réseau avant de passer à Cadrage. */
 export const framingTarget = writable<Camera | null>(null);
+
+/**
+ * Caméra du relevé à cadrer (onglet Site) : le relevé ne connaît que son IP,
+ * pas un objet `Camera` complet. Cadrage prend le compte du site, identifie
+ * l'IP avec lui (comme l'ouverture par IP), puis vide la demande.
+ */
+export const framingRequest = writable<{ ip: string; accountId: string } | null>(null);
+
+export function openFraming(ip: string, accountId: string): void {
+  framingRequest.set({ ip, accountId });
+  page.set('framing');
+}
+
+/** Compte à afficher dans Site (« Voir le site » de la fiche) ; Site le reprend puis la vide. */
+export const siteRequest = writable<string | null>(null);
+
+export function openSite(accountId: string): void {
+  siteRequest.set(accountId);
+  page.set('site');
+}
 
 /** Opération demandée par un raccourci de Réseau ; l'onglet Opérations la reprend puis la vide. */
 export const opsRequest = writable<OpKind | null>(null);

@@ -3,6 +3,7 @@
     "network": "Network",
     "framing": "Framing",
     "accounts": "Accounts",
+    "site": "Site",
     "operations": "Operations",
     "settings": "Settings"
   },

@@ -1,6 +1,8 @@
 import { get } from 'svelte/store';
 import { beforeEach, expect, test } from 'vitest';
-import { clearStatusIf, initialPage, openOperations, opsRequest, page, PAGES, status, suspendStep, type Status } from './nav';
+import {
+  clearStatusIf, framingRequest, initialPage, openFraming, openOperations, openSite, opsRequest, page, PAGES, siteRequest, status, suspendStep, type Status,
+} from './nav';
 
 beforeEach(() => status.set(null));
 
@@ -8,6 +10,7 @@ test('initialPage lit le fragment, sinon Réseau', () => {
   expect(initialPage('#settings')).toBe('settings');
   expect(initialPage('#accounts')).toBe('accounts');
   expect(initialPage('#operations')).toBe('operations');
+  expect(initialPage('#site')).toBe('site');
   expect(initialPage('#ailleurs')).toBe('network');
   expect(initialPage('')).toBe('network');
 });
@@ -35,8 +38,25 @@ test('flux du Cadrage : suspendu quand l’onglet se cache, repris au retour', (
   expect(suspendStep(true, false, false)).toBe('none');
 });
 
-test('Opérations vient juste après Comptes', () => {
-  expect(PAGES.indexOf('operations')).toBe(PAGES.indexOf('accounts') + 1);
+test('Site entre Comptes et Opérations', () => {
+  expect(PAGES.indexOf('site')).toBe(PAGES.indexOf('accounts') + 1);
+  expect(PAGES.indexOf('operations')).toBe(PAGES.indexOf('site') + 1);
+});
+
+test('« Voir le site » ouvre Site sur ce compte', () => {
+  page.set('accounts');
+  siteRequest.set(null);
+  openSite('acc-1');
+  expect(get(page)).toBe('site');
+  expect(get(siteRequest)).toBe('acc-1');
+});
+
+test('une caméra du relevé ouvre Cadrage avec son IP et le compte du site', () => {
+  page.set('site');
+  framingRequest.set(null);
+  openFraming('192.168.1.64', 'acc-1');
+  expect(get(page)).toBe('framing');
+  expect(get(framingRequest)).toEqual({ ip: '192.168.1.64', accountId: 'acc-1' });
 });
 
 test('« IP en lot » ouvre Opérations sur Renuméroter', () => {

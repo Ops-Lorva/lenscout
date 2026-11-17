@@ -3,6 +3,7 @@
     "network": "Red",
     "framing": "Encuadre",
     "accounts": "Cuentas",
+    "site": "Sitio",
     "operations": "Operaciones",
     "settings": "Ajustes"
   },

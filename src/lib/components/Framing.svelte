@@ -4,7 +4,7 @@
   import { _ } from 'svelte-i18n';
   import { errorKey } from '#lib/api/errors.ts';
   import { ackFrame, FramePresenter, identifyCamera, identityChanged, listViews, relaunchAfter, needsIdentify, noticeKey, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
-  import { framingTarget, page, suspendStep } from '#lib/stores/nav.ts';
+  import { framingRequest, framingTarget, page, suspendStep } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
   import { joined, joinRequest, needsJoin } from '#lib/api/net.ts';
   import { accountList } from '#lib/stores/accounts.ts';
@@ -74,6 +74,21 @@
       identifying = false;
     }
   }
+
+  // Caméra du relevé (onglet Site) : IP seule, à ouvrir avec le compte du
+  // site, comme une IP saisie. L'ancienne cible tombe d'abord : son flux ne
+  // repart pas avec un compte qui n'est pas le sien (un essai refusé de plus).
+  $effect(() => {
+    const req = $framingRequest;
+    if (!req) return;
+    untrack(() => {
+      framingRequest.set(null);
+      accountId = req.accountId;
+      typedIp = req.ip;
+      framingTarget.set(null);
+      void openTyped();
+    });
+  });
 
   // Le flux est-il encore voulu ? (caméra et compte là, onglet visible, ni
   // suspendu par l'onglet caché, ni mis en pause à la main.)

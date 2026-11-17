@@ -58,6 +58,9 @@ export const deviceKey = (d: SeenDevice): string => d.mac?.toUpperCase() ?? d.ip
 /** Nom affiché : celui annoncé sur le réseau, sinon le modèle de caméra. */
 export const deviceName = (d: SeenDevice): string => d.name ?? d.model ?? '';
 
+/** IP à ouvrir au Cadrage depuis le relevé : les caméras seulement. */
+export const frameIp = (d: SeenDevice): string | null => (d.kind === 'camera' ? d.ip : null);
+
 /** Pas entendu au dernier relevé : reste compté pris jusqu'à « Oublier ». */
 export const absent = (d: SeenDevice, surveyedAt: number | null): boolean => surveyedAt !== null && d.last_seen < surveyedAt;
 

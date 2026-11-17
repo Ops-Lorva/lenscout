@@ -8,7 +8,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 import {
-  absent, accountDevices, cancelSurvey, devicesCsvRows, filterDevices, forgetDevice, onAccountNetwork, startSurvey,
+  absent, accountDevices, cancelSurvey, devicesCsvRows, filterDevices, forgetDevice, frameIp, onAccountNetwork, startSurvey,
   type SeenDevice,
 } from './siteNet';
 import { activeAddress, type Joined } from './net';
@@ -87,4 +87,12 @@ test('on_account_network_true_for_same_network_or_joined_account_false_otherwise
   expect(onAccountNetwork(activeAddress('eth1', eth, j), account)).toBe(false);
   expect(onAccountNetwork(activeAddress('eth0', eth, j), { pc_ip: null })).toBe(false);
   expect(onAccountNetwork({ ip: null, mask: null }, account)).toBe(false);
+});
+
+test('frame_ip_only_for_cameras', () => {
+  // Seule une caméra s'ouvre au Cadrage ; le NVR, le switch ou l'inconnu, non.
+  expect(frameIp(dev('192.168.1.64', 'camera'))).toBe('192.168.1.64');
+  expect(frameIp(dev('192.168.1.10', 'nvr'))).toBeNull();
+  expect(frameIp(dev('192.168.1.2', 'switch'))).toBeNull();
+  expect(frameIp(dev('192.168.1.9', 'unknown'))).toBeNull();
 });

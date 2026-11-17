@@ -4,27 +4,27 @@
   import { errorKey } from '#lib/api/errors.ts';
   import { saveReport } from '#lib/api/report.ts';
   import {
-    absent, DEVICE_KINDS, deviceKey, deviceName, devicesCsvRows, filterDevices, forgetDevice, type DeviceKind, type SeenDevice,
+    absent, DEVICE_KINDS, deviceKey, deviceName, devicesCsvRows, filterDevices, forgetDevice, frameIp, type DeviceKind, type SeenDevice,
   } from '#lib/api/siteNet.ts';
   import { csvLang, csvName, toCsv } from '#lib/csv.ts';
-  import Dialog from './Dialog.svelte';
 
-  // Inventaire du réseau du compte, en grand : filtre par type, recherche,
-  // export de la vue, Oublier en deux clics (comme les caméras connues).
+  // Inventaire du réseau du compte, dans la page Site : filtre par type,
+  // recherche, export de la vue, Oublier en deux clics (comme les caméras
+  // connues). `onFrame` : une caméra (ligne cliquée ou Cadrer) part au Cadrage.
   let {
     accountId,
     accountName = '',
     devices,
     surveyedAt,
-    onClose,
     onForgot,
+    onFrame,
   }: {
     accountId: string;
     accountName?: string;
     devices: SeenDevice[];
     surveyedAt: number | null;
-    onClose: () => void;
     onForgot: () => Promise<void> | void;
+    onFrame: (ip: string) => void;
   } = $props();
 
   let kinds = $state<Set<DeviceKind>>(new Set());
@@ -76,7 +76,7 @@
   }
 </script>
 
-<Dialog title={$_('sitenet.count', { values: { count: devices.length } })} subtitle={accountName} width={880} {onClose}>
+<div class="devices">
   <div class="bar">
     <div class="tabs">
       <button class="tab" type="button" class:on={kinds.size === 0} onclick={() => (kinds = new Set())}>
@@ -90,10 +90,12 @@
         {/if}
       {/each}
     </div>
-    <!-- La feuille s'ouvre dans le formulaire du compte : Entrée ne doit pas l'enregistrer. -->
-    <input type="search" bind:value={query} placeholder={$_('sitenet.search')} aria-label={$_('sitenet.search')} spellcheck="false"
-      onkeydown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} />
+    <input type="search" bind:value={query} placeholder={$_('sitenet.search')} aria-label={$_('sitenet.search')} spellcheck="false" />
+    <button class="btn" type="button" onclick={doExport} disabled={shown.length === 0}>{$_('sitenet.export')}</button>
   </div>
+  {#if error || exported}
+    <p class="sum" class:e={!!error}>{#if error}{$_(error)}{:else}{$_('sitenet.exported')} : <span class="m">{exported}</span>{/if}</p>
+  {/if}
   <div class="big">
     <table>
       <thead>
@@ -104,13 +106,16 @@
           <th style="width:96px">{$_('sitenet.col.kind')}</th>
           <th>{$_('sitenet.col.name')}</th>
           <th style="width:104px">{$_('sitenet.col.seen')}</th>
-          <th style="width:88px"></th>
+          <th style="width:176px"></th>
         </tr>
       </thead>
       <tbody>
         {#each shown as d (deviceKey(d))}
           {@const gone = absent(d, surveyedAt)}
-          <tr class:gone>
+          {@const ip = frameIp(d)}
+          <!-- Clic sur la ligne d'une caméra : le Cadrage. Au clavier, le bouton Cadrer de la ligne. -->
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+          <tr class:gone class:frame={ip !== null} onclick={() => { if (ip !== null) onFrame(ip); }}>
             <td class="mono cut">{d.ip}</td>
             <td class="mono cut" class:dim-t={!d.mac}>{d.mac ?? '—'}</td>
             <td class="cut" title={d.vendor ?? ''}>{d.vendor ?? ''}</td>
@@ -118,7 +123,8 @@
             <td class="cut" title={deviceName(d)}>{deviceName(d)}</td>
             <td class="dim-t cut" title={gone ? $_('sitenet.absent') : undefined}>{#if gone}<i class="absent" aria-label={$_('sitenet.absent')}></i>{/if}{seenOn(d.last_seen)}</td>
             <td class="ra">
-              <button class="mini" type="button" class:danger={forgetting === deviceKey(d)} onclick={() => forget(d)}>
+              {#if ip !== null}<button class="mini" type="button" onclick={(e) => { e.stopPropagation(); onFrame(ip); }}>{$_('network.frame')}</button>{/if}
+              <button class="mini" type="button" class:danger={forgetting === deviceKey(d)} onclick={(e) => { e.stopPropagation(); void forget(d); }}>
                 {forgetting === deviceKey(d) ? $_('sitenet.confirmForget') : $_('sitenet.forget')}
               </button>
             </td>
@@ -128,16 +134,10 @@
     </table>
     {#if shown.length === 0}<div class="none">{$_('sitenet.none')}</div>{/if}
   </div>
-  <div class="foot">
-    <span class="sum" class:e={!!error}>
-      {#if error}{$_(error)}{:else if exported}{$_('sitenet.exported')} : <span class="m">{exported}</span>{/if}
-    </span>
-    <button class="btn" type="button" onclick={doExport} disabled={shown.length === 0}>{$_('sitenet.export')}</button>
-    <button class="btn def" type="button" onclick={onClose}>{$_('sitenet.close')}</button>
-  </div>
-</Dialog>
+</div>
 
 <style>
+  .devices { display: flex; flex-direction: column; min-height: 0; }
   .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; }
   .bar input { flex: 1; min-width: 180px; }
   .tabs { display: flex; flex-wrap: wrap; gap: 2px; }
@@ -147,13 +147,15 @@
   .tab .n { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-2); }
   .tab.on .n { color: var(--act); }
   .tab:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
-  .big { max-height: 60vh; overflow-y: auto; }
   .big table { table-layout: fixed; width: 100%; }
   .big td { height: 34px; }
   .big .mono { font-size: 12.5px; }
   .big tbody tr:last-child td { border-bottom: 0; }
   .cut { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   tr.gone td:not(:last-child) { color: var(--text-2); }
+  tr.frame { cursor: pointer; }
+  .sum { margin: 0 0 8px; color: var(--text-2); font-size: 13px; }
+  .sum.e { color: var(--err); }
   .absent { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; border: 1px solid var(--warn); vertical-align: 1px; }
   .none { padding: 16px 0; color: var(--text-2); text-align: center; }
 </style>
