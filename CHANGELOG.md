@@ -6,6 +6,18 @@ All notable changes to LenScout are documented here (EN/FR).
 Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 `### English` et `### Français` par version. SemVer.
 
+## [0.2.4] - 2026-11-17
+
+### English
+
+- **Fixed: free IP search when the network card already has an address in the account's network.** LenScout no longer asks to switch to the account and scans right away.
+- **Fixed: free IP search in Operations** never started.
+
+### Français
+
+- **Corrigé : recherche d'IP libres quand la carte a déjà une adresse dans le réseau du compte.** LenScout ne demande plus de basculer sur le compte et balaie directement.
+- **Corrigé : la recherche d'IP libres dans Opérations** ne démarrait jamais.
+
 ## [0.2.3] - 2026-11-17
 
 ### English
