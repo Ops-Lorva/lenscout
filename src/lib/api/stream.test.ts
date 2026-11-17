@@ -1,8 +1,8 @@
-import { expect, test, vi } from 'vitest';
+import { describe, expect, it, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
-import { FramePresenter, identifyCamera, identityChanged, listViews, needsIdentify, noticeKey, startStream, viewLabel } from './stream';
+import { FramePresenter, identifyCamera, identityChanged, listViews, needsIdentify, noticeKey, relaunchAfter, startStream, viewLabel } from './stream';
 import type { Camera } from './types';
 
 function setup() {
@@ -140,4 +140,13 @@ test('message visible d’un échec : identifiants refusés distingués du reste
   expect(noticeKey('unreachable')).toBe('framing.notice.unavailable');
   expect(noticeKey('not_a_camera')).toBe('framing.notice.unavailable');
   expect(noticeKey(new Error('boum'))).toBe('framing.notice.unavailable');
+});
+
+describe('relaunchAfter', () => {
+  it('ne relance jamais après un refus : chaque essai rapproche du verrouillage', () => {
+    for (const code of ['auth_failed', 'auth_insecure', 'camera_off_subnet', 'unsupported_brand', 'secret_missing']) expect(relaunchAfter(code)).toBe(false);
+  });
+  it('relance après une coupure, la caméra redémarre peut-être', () => {
+    for (const code of ['unreachable', 'stream_failed', 'io', new Error('x')]) expect(relaunchAfter(code)).toBe(true);
+  });
 });

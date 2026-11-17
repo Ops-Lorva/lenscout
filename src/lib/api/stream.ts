@@ -79,6 +79,15 @@ export const noticeKey = (e: unknown): string =>
   e === 'auth_failed' || e === 'auth_insecure' ? 'framing.notice.authRefused' : 'framing.notice.unavailable';
 
 /** Une image a été traitée (affichée ou abandonnée) : Rust peut en envoyer une autre. */
+/** Erreurs de flux qu'une relance ne réparera pas. Un refus surtout : relancer
+ * brûle les essais et verrouille la caméra (Hikvision : 7 échecs → 30 min,
+ * le bon mot de passe compris). Le reste (injoignable, flux coupé) peut venir
+ * d'une caméra qui redémarre : on relance. */
+const FINAL_STREAM_ERRORS = ['auth_failed', 'auth_insecure', 'camera_off_subnet', 'unsupported_brand', 'not_a_camera', 'not_found', 'secret_missing'];
+
+/** Le Cadrage peut-il relancer le flux après cette erreur ? */
+export const relaunchAfter = (e: unknown): boolean => !(typeof e === 'string' && FINAL_STREAM_ERRORS.includes(e));
+
 export const ackFrame = () => invoke<void>('cmd_stream_ack');
 
 type Schedule = (fn: () => void) => void;

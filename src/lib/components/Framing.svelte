@@ -3,7 +3,7 @@
   import { get } from 'svelte/store';
   import { _ } from 'svelte-i18n';
   import { errorKey } from '#lib/api/errors.ts';
-  import { ackFrame, FramePresenter, identifyCamera, identityChanged, listViews, needsIdentify, noticeKey, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
+  import { ackFrame, FramePresenter, identifyCamera, identityChanged, listViews, relaunchAfter, needsIdentify, noticeKey, startStream, stopStream, viewLabel, type View } from '#lib/api/stream.ts';
   import { framingTarget, page, suspendStep } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
   import { joined, joinRequest, needsJoin } from '#lib/api/net.ts';
@@ -111,7 +111,8 @@
       // relance quand même (la caméra redémarre peut-être).
       if (mine === generation) {
         error = `framing.${errorKey(e)}`;
-        if (wantsStream()) { scheduleRelaunch(); return; }
+        // Jamais après un refus : chaque relance coûte un essai de connexion.
+        if (wantsStream() && relaunchAfter(e)) { scheduleRelaunch(); return; }
       }
     }
     if (mine === generation) {
