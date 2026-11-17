@@ -185,7 +185,7 @@ async fn read_arp_table(iface: &ScanInterface) -> HashMap<String, String> {
     {
         if let Ok(o) = async_cmd("arp").arg("-a").output().await {
             let text = String::from_utf8_lossy(&o.stdout).into_owned();
-            parse_windows_arp(&text, &mut map, Some(iface.ip));
+            parse_windows_arp(&text, &mut map, Some((iface.ip, iface.mask)));
         }
     }
 
@@ -248,29 +248,40 @@ fn parse_ip_neigh(text: &str, map: &mut HashMap<String, String>, iface: Option<&
 /// Parse `arp -a` de Windows, bloc par bloc. Chaque bloc est introduit par
 /// `Interface: <ip locale> --- 0x…` : c'est le seul moyen de rattacher une
 /// entrée à une interface, `arp` ne prenant pas de nom d'interface.
+///
+/// `iface` : (IP, masque) de l'interface. Si un bloc porte cette IP, lui seul
+/// compte. Sinon l'IP est un alias (IP d'un compte ajoutée à la carte), que
+/// Windows range sous l'adresse principale : on garde alors, dans tous les
+/// blocs, les voisins de son sous-réseau.
 #[allow(dead_code)]
-fn parse_windows_arp(text: &str, map: &mut HashMap<String, String>, iface_ip: Option<Ipv4Addr>) {
-    let mut dans_le_bon_bloc = iface_ip.is_none();
+fn parse_windows_arp(text: &str, map: &mut HashMap<String, String>, iface: Option<(Ipv4Addr, Ipv4Addr)>) {
+    let mut blocks: Vec<(Option<Ipv4Addr>, Vec<(Ipv4Addr, String)>)> = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("Interface:") {
-            let bloc_ip = rest
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse::<Ipv4Addr>().ok());
-            dans_le_bon_bloc = match iface_ip {
-                None => true,
-                Some(want) => bloc_ip == Some(want),
-            };
-            continue;
-        }
-        if !dans_le_bon_bloc {
+            blocks.push((rest.split_whitespace().next().and_then(|s| s.parse().ok()), Vec::new()));
             continue;
         }
         // "  192.0.2.1   11-22-33-44-55-66   dynamic"
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 && parts[0].contains('.') && parts[1].contains('-') {
-            map.insert(parts[0].to_string(), parts[1].replace('-', ":"));
+        if parts.len() >= 2 && parts[1].contains('-') {
+            if let (Ok(ip), Some(block)) = (parts[0].parse::<Ipv4Addr>(), blocks.last_mut()) {
+                block.1.push((ip, parts[1].replace('-', ":")));
+            }
+        }
+    }
+    let exact = iface.is_some_and(|(ip, _)| blocks.iter().any(|(head, _)| *head == Some(ip)));
+    let net = |a: Ipv4Addr, m: Ipv4Addr| u32::from(a) & u32::from(m);
+    for (head, entries) in blocks {
+        for (ip, mac) in entries {
+            let keep = match iface {
+                None => true,
+                Some((want, _)) if exact => head == Some(want),
+                Some((want, mask)) => net(ip, mask) == net(want, mask),
+            };
+            if keep {
+                map.insert(ip.to_string(), mac);
+            }
         }
     }
 }
@@ -464,7 +475,7 @@ mod tests {
                     Internet Address      Physical Address      Type\r\n\
                     192.0.2.2             aa-bb-cc-dd-ee-ff     dynamic\r\n";
         let mut map = HashMap::new();
-        parse_windows_arp(text, &mut map, Some(Ipv4Addr::new(192, 0, 2, 10)));
+        parse_windows_arp(text, &mut map, Some((Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(255, 255, 255, 0))));
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("192.0.2.1").map(String::as_str), Some("11:22:33:44:55:66"));
     }
@@ -493,6 +504,23 @@ mod tests {
                     \r\nInterface: 192.168.0.20 --- 0x9\r\n\
                     192.168.0.90          ac-cc-8e-12-34-56     dynamic\r\n";
         assert_eq!(windows_macs_of(text, Ipv4Addr::new(192, 168, 0, 90)), ["AA:BB:CC:DD:EE:FF", "AC:CC:8E:12:34:56"]);
+    }
+
+    /// IP du compte posée en alias : aucun bloc ne porte son adresse, les
+    /// voisins de son sous-réseau se lisent sous l'adresse principale.
+    #[test]
+    fn windows_ip_en_alias_lit_les_voisins_de_son_reseau_dans_tous_les_blocs() {
+        let text = "\r\nInterface: 10.0.50.2 --- 0x5\r\n\
+                    Internet Address      Physical Address      Type\r\n\
+                    10.0.50.1             11-22-33-44-55-66     dynamic\r\n\
+                    192.168.1.90          ac-cc-8e-12-34-56     dynamic\r\n\
+                    \r\nInterface: 198.51.100.5 --- 0x9\r\n\
+                    192.168.1.91          aa-bb-cc-dd-ee-ff     dynamic\r\n";
+        let mut map = HashMap::new();
+        parse_windows_arp(text, &mut map, Some((Ipv4Addr::new(192, 168, 1, 2), Ipv4Addr::new(255, 255, 255, 0))));
+        assert_eq!(map.get("192.168.1.90").map(String::as_str), Some("ac:cc:8e:12:34:56"));
+        assert_eq!(map.get("192.168.1.91").map(String::as_str), Some("aa:bb:cc:dd:ee:ff"));
+        assert!(!map.contains_key("10.0.50.1"));
     }
 
     #[test]
