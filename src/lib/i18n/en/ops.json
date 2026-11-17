@@ -64,5 +64,41 @@
     "gateway_out_of_subnet": "Gateway {ip} outside the subnet",
     "gateway_is_ip": "Gateway {ip} = camera address",
     "outside_account": "Outside the account network ({network})"
+  },
+  "xlsx": {
+    "export": "Export",
+    "exported": "Exported",
+    "sheet": "Operations",
+    "info": "Info",
+    "ok": "OK",
+    "ko": "KO",
+    "yes": "Yes",
+    "no": "No",
+    "notDone": "Not done",
+    "col": {
+      "result": "Result",
+      "detail": "Detail",
+      "nvr": "To change in the NVR",
+      "oldIp": "Old IP",
+      "newIp": "New IP",
+      "ip": "IP",
+      "mask": "Mask",
+      "gateway": "Gateway",
+      "dns": "DNS",
+      "login": "Username set",
+      "brand": "Brand",
+      "model": "Model",
+      "mac": "MAC",
+      "serial": "Serial number"
+    },
+    "infoCol": {
+      "account": "Account",
+      "operation": "Operation",
+      "date": "Date",
+      "ok": "Succeeded",
+      "failed": "Failed",
+      "notDone": "Not done",
+      "nvr": "To change in the NVR"
+    }
   }
 }

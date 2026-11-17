@@ -20,6 +20,8 @@ ping-async = "1"
 futures-util = "0.3.34"
 hickory-proto = "0.26.3"
 quick-xml = "0.42.0"
+# Rapports Excel (export des opérations).
+rust_xlsxwriter = "0.102.0"
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -41,3 +43,5 @@ libc = "0.2"
 [dev-dependencies]
 # Temps virtuel (`tokio::time::pause`) pour les tests du scanner.
 tokio = { version = "1.54.1", features = ["test-util"] }
+# Relire les .xlsx produits (`xlsx.rs`).
+zip = { version = "9.6.1", default-features = false, features = ["deflate"] }

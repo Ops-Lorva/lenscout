@@ -64,5 +64,41 @@
     "gateway_out_of_subnet": "Passerelle {ip} hors du sous-réseau",
     "gateway_is_ip": "Passerelle {ip} = adresse de la caméra",
     "outside_account": "Hors du réseau du compte ({network})"
+  },
+  "xlsx": {
+    "export": "Exporter",
+    "exported": "Exporté",
+    "sheet": "Opérations",
+    "info": "Infos",
+    "ok": "OK",
+    "ko": "KO",
+    "yes": "Oui",
+    "no": "Non",
+    "notDone": "Non faite",
+    "col": {
+      "result": "Résultat",
+      "detail": "Détail",
+      "nvr": "À changer dans le NVR",
+      "oldIp": "Ancienne IP",
+      "newIp": "Nouvelle IP",
+      "ip": "IP",
+      "mask": "Masque",
+      "gateway": "Passerelle",
+      "dns": "DNS",
+      "login": "Identifiant posé",
+      "brand": "Marque",
+      "model": "Modèle",
+      "mac": "MAC",
+      "serial": "N° de série"
+    },
+    "infoCol": {
+      "account": "Compte",
+      "operation": "Opération",
+      "date": "Date",
+      "ok": "Réussies",
+      "failed": "Échouées",
+      "notDone": "Non faites",
+      "nvr": "À changer dans le NVR"
+    }
   }
 }

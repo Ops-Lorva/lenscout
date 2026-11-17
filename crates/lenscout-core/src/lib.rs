@@ -31,6 +31,7 @@ pub mod site_survey;
 pub mod temp_ip;
 pub mod transport;
 pub mod vapix;
+pub mod xlsx;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

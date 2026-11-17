@@ -64,5 +64,41 @@
     "gateway_out_of_subnet": "Puerta de enlace {ip} fuera de la subred",
     "gateway_is_ip": "Puerta de enlace {ip} = dirección de la cámara",
     "outside_account": "Fuera de la red de la cuenta ({network})"
+  },
+  "xlsx": {
+    "export": "Exportar",
+    "exported": "Exportado",
+    "sheet": "Operaciones",
+    "info": "Información",
+    "ok": "OK",
+    "ko": "KO",
+    "yes": "Sí",
+    "no": "No",
+    "notDone": "No realizada",
+    "col": {
+      "result": "Resultado",
+      "detail": "Detalle",
+      "nvr": "A cambiar en el NVR",
+      "oldIp": "IP anterior",
+      "newIp": "IP nueva",
+      "ip": "IP",
+      "mask": "Máscara",
+      "gateway": "Puerta de enlace",
+      "dns": "DNS",
+      "login": "Usuario configurado",
+      "brand": "Marca",
+      "model": "Modelo",
+      "mac": "MAC",
+      "serial": "N.º de serie"
+    },
+    "infoCol": {
+      "account": "Cuenta",
+      "operation": "Operación",
+      "date": "Fecha",
+      "ok": "Correctas",
+      "failed": "Fallidas",
+      "notDone": "No realizadas",
+      "nvr": "A cambiar en el NVR"
+    }
   }
 }

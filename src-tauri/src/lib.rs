@@ -7,7 +7,7 @@ use commands::accounts::{
     cmd_accounts_startup, notice_code,
 };
 use commands::configure::{PreviewStore, TempIpJournal, cmd_apply_action, cmd_batch_apply, cmd_batch_preview};
-use commands::report::cmd_save_report;
+use commands::report::{cmd_save_report, cmd_save_xlsx};
 use commands::login_test::{LoginTestState, cmd_login_test, cmd_login_test_cancel};
 use commands::site_survey::{SiteSurveyState, cmd_site_survey, cmd_site_survey_cancel};
 use commands::ops::{OpsStore, cmd_ops_close, cmd_ops_creds_step, cmd_ops_preview, cmd_ops_step};
@@ -113,6 +113,7 @@ pub fn run() {
             cmd_accounts_import_plan,
             cmd_accounts_import_apply,
             cmd_save_report,
+            cmd_save_xlsx,
             cmd_join_network,
             cmd_join_ready,
             cmd_leave_network,

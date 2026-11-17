@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { _ } from 'svelte-i18n';
+  import { save as saveFile } from '@tauri-apps/plugin-dialog';
   import { accountFill, type Account, type NetworkFill } from '#lib/api/accounts.ts';
   import { batchErrorMessage, clearResults, defaultTimeZone, resultMessage, setResults, timeZones } from '#lib/api/configure.ts';
   import { interfaceDetails } from '#lib/api/core.ts';
@@ -13,6 +14,8 @@
     opsCredsStep, opsFingerprint, opsPreview, opsStep, runSteps, summarize,
     type AnyResult, type CredResult, type OpFields, type OpKind, type OpRequest, type OpRow, type OpsPreview, type StepResult,
   } from '#lib/api/ops.ts';
+  import { opsXlsx, xlsxName } from '#lib/api/opsReport.ts';
+  import { saveXlsx } from '#lib/api/report.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { cameraKey, cameras, markAddressing, selection } from '#lib/stores/cameras.ts';
   import { opsRequest, scanIface } from '#lib/stores/nav.ts';
@@ -75,7 +78,13 @@
   const blocked = $derived(shown ? shown.data.rows.filter((r) => r.conflicts.some(isBlocking)).length : 0);
 
   // Une application en cours ou finie : figée, un rescan de Réseau ne la retire pas.
-  let run = $state<{ id: string; rows: OpRow[]; cams: Camera[]; kind: OpKind; results: (AnyResult | undefined)[]; current: number; stopping: boolean; done: boolean } | null>(null);
+  // `account` et `at` : ce que le rapport Excel en dira (le compte peut changer ensuite).
+  let run = $state<{
+    id: string; rows: OpRow[]; cams: Camera[]; kind: OpKind; results: (AnyResult | undefined)[]; current: number; stopping: boolean; done: boolean;
+    account: { name: string; login: string }; at: Date;
+  } | null>(null);
+  let exported = $state('');
+  let exportError = $state('');
   let stopFlag = false;
   // Confirmation en deux clics (comme Supprimer dans Comptes) : le premier clic
   // arme, le second applique.
@@ -215,7 +224,11 @@
     const forAccount = accountId;
     const via = iface;
     const k = shown.kind;
-    run = { id, rows: shown.data.rows, cams: shown.cams, kind: k, results: [], current: -1, stopping: false, done: false };
+    run = {
+      id, rows: shown.data.rows, cams: shown.cams, kind: k, results: [], current: -1, stopping: false, done: false,
+      account: { name: account?.name ?? '', login: account?.login ?? '' }, at: new Date(),
+    };
+    exported = exportError = '';
     preview = null;
     error = null;
     stopFlag = false;
@@ -257,6 +270,19 @@
     // technicien rafraîchit avec le bouton Rescanner de Réseau).
     if (r.kind !== 'time' && done.some((x) => x.ok)) {
       markAddressing(done, 'static', movedIps(r.rows, r.results as (StepResult | undefined)[]));
+    }
+  }
+
+  async function doExport() {
+    if (!run?.done) return;
+    const r = run;
+    exported = exportError = '';
+    try {
+      const path = await saveFile({ defaultPath: xlsxName(r.account.name, r.at), filters: [{ name: 'Excel', extensions: ['xlsx'] }] });
+      if (!path) return;
+      exported = await saveXlsx(path, opsXlsx(r, r.account, (k, v) => $_(k, { values: v })));
+    } catch (e) {
+      exportError = `configure.${errorKey(e)}`;
     }
   }
 
@@ -481,8 +507,10 @@
           <span>{$_('ops.report', { values: report })}</span>
         {/if}
         {#if report.skipped > 0}<span class="dim-t">{$_('ops.skipped', { values: { count: report.skipped } })}</span>{/if}
+        <button class="btn" onclick={doExport}>{$_('ops.xlsx.export')}</button>
       {/if}
     </div>
+    {#if exportError}<p class="err">{$_(exportError)}</p>{:else if exported}<p class="dim-t note">{$_('ops.xlsx.exported')} : <span class="m">{exported}</span></p>{/if}
   </section>
 {/if}
 
