@@ -379,9 +379,9 @@ pub(crate) fn account_reservations(book: &AccountBook, id: &str) -> Result<Vec<R
 }
 
 /// Réserve une adresse (libellé facultatif), datée de maintenant. Adresse
-/// illisible : `invalid_ip`.
+/// illisible : `bad_ip`.
 pub(crate) fn account_reserve(book: &mut AccountBook, id: &str, ip: &str, label: Option<String>) -> Result<(), String> {
-    let ip: Ipv4Addr = ip.trim().parse().map_err(|_| "invalid_ip".to_string())?;
+    let ip: Ipv4Addr = ip.trim().parse().map_err(|_| "bad_ip".to_string())?;
     book.reserve(id, ip, label.as_deref(), unix_now()).map_err(code)
 }
 
@@ -726,7 +726,7 @@ mod tests {
     fn reservations_are_listed_made_and_released_with_stable_codes() {
         let (mut book, _g_book) = book();
         let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), site()).unwrap();
-        assert_eq!(account_reserve(&mut book, &acc.id, "pas une ip", None).unwrap_err(), "invalid_ip");
+        assert_eq!(account_reserve(&mut book, &acc.id, "pas une ip", None).unwrap_err(), "bad_ip");
         account_reserve(&mut book, &acc.id, " 10.0.8.60 ", Some("Cam 110".into())).unwrap();
         let json = serde_json::to_value(account_reservations(&book, &acc.id).unwrap()).unwrap();
         assert_eq!((json[0]["ip"].as_str(), json[0]["label"].as_str()), (Some("10.0.8.60"), Some("Cam 110")));

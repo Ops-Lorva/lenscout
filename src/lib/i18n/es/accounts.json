@@ -37,7 +37,7 @@
     "invalid_gateway": "Puerta de enlace no válida",
     "gateway_outside_network": "La puerta de enlace no está en la red",
     "invalid_exclusions": "IP excluidas ilegibles (p. ej. 192.168.1.2-9, 192.168.1.100)",
-    "invalid_ip": "Dirección IP no válida"
+    "bad_ip": "Dirección IP no válida"
   },
   "notice": {
     "quarantined": "Archivo de cuentas ilegible, apartado",
@@ -83,6 +83,7 @@
     "gateway": "Puerta de enlace",
     "pc": "PC",
     "excluded": "Excluidas",
+    "reserved": "Reservadas",
     "cameras": "Cámaras",
     "summary": "{cameras, plural, one {# cámara} other {# cámaras}} · {free} libres de {total}",
     "almostFull": "Casi llena",

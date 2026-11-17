@@ -61,6 +61,56 @@ export const deviceName = (d: SeenDevice): string => d.name ?? d.model ?? '';
 /** IP à ouvrir au Cadrage depuis le relevé : les caméras seulement. */
 export const frameIp = (d: SeenDevice): string | null => (d.kind === 'camera' ? d.ip : null);
 
+/**
+ * Au-delà, un appareil relevé muet ne compte plus pris (miroir de
+ * `STALE_DEVICE_SECS`, accounts.rs) ; il reste dans l'inventaire.
+ */
+export const STALE_DAYS = 180;
+export const stale = (d: SeenDevice, now: number): boolean => now - d.last_seen > STALE_DAYS * 24 * 3600;
+
+/** Miroir de `ReservedIp` : une adresse réservée à la main dans le réseau du compte. */
+export interface ReservedIp {
+  ip: string;
+  label?: string | null;
+  /** Secondes depuis l'époque Unix. */
+  at: number;
+}
+
+export const accountReservations = (id: string) => invoke<ReservedIp[]>('cmd_account_reservations', { id });
+/** Libellé vide : pas de libellé. */
+export const reserveIp = (id: string, ip: string, label: string) =>
+  invoke<void>('cmd_account_reserve', { id, ip, label: label.trim() || null });
+export const releaseIp = (id: string, ip: string) => invoke<void>('cmd_account_release', { id, ip });
+
+/**
+ * Adresses libres du réseau, d'après la barre : les hôtes hors de toute
+ * portion (passerelle, PC, exclues, réservées, caméras, appareils). Au plus
+ * `cap` (un /16 en compte des dizaines de milliers) ; `more` : il en reste.
+ * `query` filtre sur le texte de l'adresse.
+ */
+export function freeAddresses(fill: NetworkFill, query: string, cap: number): { ips: string[]; more: boolean } {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/\d+$/.exec(fill.network);
+  if (!m) return { ips: [], more: false };
+  const base = m.slice(1, 5).reduce((n, x) => n * 256 + Number(x), 0);
+  const segs = [...fill.segments].sort((a, b) => a.first - b.first);
+  const q = query.trim();
+  const ips: string[] = [];
+  let s = 0;
+  for (let off = 1; off <= fill.size - 2; off++) {
+    while (s < segs.length && segs[s].last < off) s++;
+    if (s < segs.length && segs[s].first <= off) {
+      off = segs[s].last;
+      continue;
+    }
+    const n = base + off;
+    const ip = [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+    if (q && !ip.includes(q)) continue;
+    if (ips.length === cap) return { ips, more: true };
+    ips.push(ip);
+  }
+  return { ips, more: false };
+}
+
 /** Pas entendu au dernier relevé : reste compté pris jusqu'à « Oublier ». */
 export const absent = (d: SeenDevice, surveyedAt: number | null): boolean => surveyedAt !== null && d.last_seen < surveyedAt;
 

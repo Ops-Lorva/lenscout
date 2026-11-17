@@ -72,7 +72,7 @@ export interface KnownCamera {
 
 /** Miroir de `Segment` : décalages depuis l'adresse de réseau. */
 export interface FillSegment {
-  kind: 'gateway' | 'pc' | 'excluded' | 'camera' | 'device';
+  kind: 'gateway' | 'pc' | 'excluded' | 'reserved' | 'camera' | 'device';
   first: number;
   last: number;
 }
@@ -85,6 +85,8 @@ export interface NetworkFill {
   gateway: number;
   pc: number;
   excluded: number;
+  /** Réservées à la main, hors passerelle, PC et exclues. */
+  reserved: number;
   cameras: number;
   free: number;
   /** Moins de 10 % d'adresses libres. */

@@ -4,7 +4,7 @@
   import { errorKey } from '#lib/api/errors.ts';
   import { saveReport } from '#lib/api/report.ts';
   import {
-    absent, DEVICE_KINDS, deviceKey, deviceName, devicesCsvRows, filterDevices, forgetDevice, frameIp, type DeviceKind, type SeenDevice,
+    absent, DEVICE_KINDS, deviceKey, deviceName, devicesCsvRows, filterDevices, forgetDevice, frameIp, stale, type DeviceKind, type SeenDevice,
   } from '#lib/api/siteNet.ts';
   import { csvLang, csvName, toCsv } from '#lib/csv.ts';
 
@@ -37,6 +37,8 @@
   const sorted = $derived([...devices].sort((a, b) => ipNum(a.ip) - ipNum(b.ip)));
   const shown = $derived(filterDevices(sorted, kinds, query));
   const counts = $derived(devices.reduce<Partial<Record<DeviceKind, number>>>((m, d) => ((m[d.kind] = (m[d.kind] ?? 0) + 1), m), {}));
+  // Vu il y a plus de six mois : ne compte plus pris, atténué comme un absent.
+  const now = Date.now() / 1000;
   const seenOn = (unix: number) => new Date(unix * 1000).toLocaleDateString($locale ?? undefined);
 
   function toggle(k: DeviceKind) {
@@ -105,7 +107,7 @@
           <th>{$_('sitenet.col.vendor')}</th>
           <th style="width:96px">{$_('sitenet.col.kind')}</th>
           <th>{$_('sitenet.col.name')}</th>
-          <th style="width:104px">{$_('sitenet.col.seen')}</th>
+          <th style="width:120px">{$_('sitenet.col.seen')}</th>
           <th style="width:176px"></th>
         </tr>
       </thead>
@@ -115,7 +117,7 @@
           {@const ip = frameIp(d)}
           <!-- Clic sur la ligne d'une caméra : le Cadrage. Au clavier, le bouton Cadrer de la ligne. -->
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-          <tr class:gone class:frame={ip !== null} onclick={() => { if (ip !== null) onFrame(ip); }}>
+          <tr class:gone={gone || stale(d, now)} class:frame={ip !== null} onclick={() => { if (ip !== null) onFrame(ip); }}>
             <td class="mono cut">{d.ip}</td>
             <td class="mono cut" class:dim-t={!d.mac}>{d.mac ?? '—'}</td>
             <td class="cut" title={d.vendor ?? ''}>{d.vendor ?? ''}</td>

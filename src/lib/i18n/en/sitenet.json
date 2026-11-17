@@ -34,5 +34,19 @@
     "gateway": "Gateway",
     "this_pc": "This PC",
     "unknown": "Unknown"
+  },
+  "tab": {
+    "devices": "Devices",
+    "free": "Free IPs"
+  },
+  "free": {
+    "reserve": "Reserve",
+    "release": "Release",
+    "cancel": "Cancel",
+    "label": "Label",
+    "at": "Reserved on",
+    "search": "Search an IP",
+    "none": "No free address",
+    "reserved": "{count, plural, one {# reserved IP} other {# reserved IPs}}"
   }
 }

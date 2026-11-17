@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { _ } from 'svelte-i18n';
   import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
   import {
@@ -187,6 +187,12 @@
     }
     await refresh();
   }
+
+  // Retour sur l'onglet : la colonne « Libres » suit ce que Site a changé
+  // (relevé, IP réservée ou libérée).
+  $effect(() => {
+    if ($page === 'accounts') untrack(() => void loadFills());
+  });
 
   // Onglet quitté (il reste monté) : son message quitte la barre d'état.
   $effect(() => {

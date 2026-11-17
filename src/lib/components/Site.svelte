@@ -7,10 +7,12 @@
   } from '#lib/api/accounts.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { maskOf } from '#lib/api/net.ts';
+  import { accountReservations, type ReservedIp } from '#lib/api/siteNet.ts';
   import { openFraming, scanIface, siteRequest } from '#lib/stores/nav.ts';
   import AccountPicker from './AccountPicker.svelte';
   import Dialog from './Dialog.svelte';
   import SiteSurvey from './SiteSurvey.svelte';
+  import SiteFree from './SiteFree.svelte';
 
   // Le site d'un client = le réseau de son compte : occupation, caméras
   // connues, relevé et inventaire. Sorti de la fiche du compte pour avoir
@@ -32,6 +34,9 @@
   // Réseau du compte choisi, tel qu'enregistré : remplissage et caméras connues.
   let fill = $state<NetworkFill | null>(null);
   let known = $state<KnownCamera[]>([]);
+  let reservations = $state<ReservedIp[]>([]);
+  // Sous-onglet sous la barre : l'inventaire relevé, ou les IP libres et réservées.
+  let view = $state<'devices' | 'free'>('devices');
   // Clé de la caméra dont l'oubli attend sa confirmation.
   let forgetting = $state('');
   // Liste des caméras connues ouverte en grand, pour tout voir à l'aise.
@@ -54,10 +59,11 @@
   /** Remplissage et caméras du compte ; ignoré si le compte a changé entre-temps. Un échec laisse le bloc caché. */
   async function loadNet(id: string) {
     try {
-      const [f, k] = await Promise.all([accountFill(id), accountCameras(id)]);
+      const [f, k, r] = await Promise.all([accountFill(id), accountCameras(id), accountReservations(id)]);
       if (accountId !== id) return;
       fill = f;
       known = [...k].sort((a, b) => b.last_seen - a.last_seen);
+      reservations = r;
     } catch {}
   }
 
@@ -67,6 +73,7 @@
     untrack(() => {
       fill = null;
       known = [];
+      reservations = [];
       forgetting = '';
       expanded = false;
       error = '';
@@ -120,7 +127,8 @@
             {#if fill.gateway}<li><i class="k-gateway"></i>{$_('accounts.net.gateway')}</li>{/if}
             <li><i class="k-pc"></i>{$_('accounts.net.pc')}</li>
             {#if fill.excluded}<li><i class="k-excluded"></i>{$_('accounts.net.excluded')} {fill.excluded}</li>{/if}
-            <li><i class="k-camera"></i>{$_('accounts.net.cameras')}{#if fill.cameras} {fill.cameras}{/if}</li>
+            {#if fill.reserved}<li><i class="k-reserved"></i>{$_('accounts.net.reserved')} {fill.reserved}</li>{/if}
+            <li><i class="k-camera"></i>{$_('accounts.net.cameras')}{#if fill.cameras}{' '}{fill.cameras}{/if}</li>
             {#if fill.devices}<li><i class="k-device"></i>{$_('accounts.net.devices')} {fill.devices}</li>{/if}
             <!-- Avec des appareils relevés, la ligne d'occupation dit tout (pourcentage compris). -->
             {#if counts && !(fill.devices || fill.crowded)}<li class="count">{$_('accounts.net.summary', { values: counts })}</li>{/if}
@@ -166,12 +174,27 @@
         {/if}
       </section>
     {/if}
-    <!-- Relevé et inventaire : visibles même sans IP du PC (le relevé dit alors « hors du réseau »). -->
-    <section class="survey">
+    <!-- IP libres : seulement avec un réseau (IP du PC) à mesurer. -->
+    {#if fill}
+      <div class="tabs">
+        <button class="tab" type="button" class:on={view === 'devices'} onclick={() => (view = 'devices')}>{$_('sitenet.tab.devices')}</button>
+        <button class="tab" type="button" class:on={view === 'free'} onclick={() => (view = 'free')}>
+          {$_('sitenet.tab.free')} <span class="n">{fill.free}</span>
+        </button>
+      </div>
+    {/if}
+    <!-- Relevé et inventaire : visibles même sans IP du PC (le relevé dit alors « hors du réseau »).
+         Caché, pas démonté : un relevé en cours continue pendant qu'on regarde les IP libres. -->
+    <section class="survey" hidden={!!fill && view !== 'devices'}>
       <SiteSurvey accountId={account.id} accountName={account.name} pcIp={account.pc_ip ?? null} iface={$scanIface}
         onDone={() => { if (account) void loadNet(account.id); }}
         onFrame={(ip) => { if (account) openFraming(ip, account.id); }} />
     </section>
+    {#if fill && view === 'free'}
+      <section class="survey">
+        <SiteFree accountId={account.id} {fill} {reservations} onChange={async () => { if (account) await loadNet(account.id); }} />
+      </section>
+    {/if}
   </div>
 {/if}
 
@@ -218,6 +241,14 @@
   .tools .title { flex: none; margin-right: 6px; }
   .site { display: flex; flex-direction: column; gap: 16px; padding: 16px 24px 0; }
   .survey { display: flex; flex-direction: column; gap: 12px; }
+  .survey[hidden] { display: none; }
+  .tabs { display: flex; gap: 2px; margin-bottom: -4px; }
+  .tab { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 0; border-radius: 6px; background: none; color: var(--text-2); font: inherit; font-weight: 500; cursor: pointer; }
+  .tab:hover { background: var(--hover); color: var(--text); }
+  .tab.on { background: var(--sel); color: var(--text); }
+  .tab .n { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-2); }
+  .tab.on .n { color: var(--act); }
+  .tab:focus-visible { outline: 2px solid var(--act); outline-offset: 1px; }
   /* Le réseau du compte : barre à l'échelle du réseau, libres = le fond.
      Passerelle en bleu froid (mesurée), PC en ambre (posé par la personne). */
   .subnet { display: flex; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--win); }
@@ -234,6 +265,9 @@
   .used.warn { color: var(--warn); }
   .k-excluded { background: repeating-linear-gradient(135deg, var(--line-2) 0 2px, transparent 2px 5px); }
   .legend .k-excluded { border: 1px solid var(--line-2); }
+  /* Réservée : une caméra à venir, hachurée dans la couleur des caméras. */
+  .k-reserved { background: repeating-linear-gradient(135deg, var(--ok) 0 2px, transparent 2px 5px); }
+  .legend .k-reserved { border: 1px solid var(--ok); }
   .ends { display: flex; justify-content: space-between; color: var(--text-2); font-size: 12px; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; color: var(--text-ink2); font-size: 13px; }
   .legend li { display: inline-flex; align-items: center; gap: 8px; }

@@ -34,5 +34,19 @@
     "gateway": "Passerelle",
     "this_pc": "Ce PC",
     "unknown": "Inconnu"
+  },
+  "tab": {
+    "devices": "Appareils",
+    "free": "IP libres"
+  },
+  "free": {
+    "reserve": "Réserver",
+    "release": "Libérer",
+    "cancel": "Annuler",
+    "label": "Libellé",
+    "at": "Réservée le",
+    "search": "Rechercher une IP",
+    "none": "Aucune adresse libre",
+    "reserved": "{count, plural, one {# IP réservée} other {# IP réservées}}"
   }
 }

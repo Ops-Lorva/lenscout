@@ -221,7 +221,7 @@ test('caméras connues : lister, mesurer, oublier passent le compte à Rust', as
 const fill: NetworkFill = {
   network: '10.0.8.0/24', size: 256, usable: 254, gateway: 1, pc: 1, excluded: 9, cameras: 37, free: 206,
   almost_full: false, segments: [{ kind: 'gateway', first: 1, last: 1 }, { kind: 'excluded', first: 2, last: 9 }],
-  devices: 0, used_pct: 18, crowded: false, suggest: null,
+  devices: 0, used_pct: 18, crowded: false, suggest: null, reserved: 0,
 };
 
 test('barre du réseau : chaque portion à sa place, à l’échelle du réseau', () => {

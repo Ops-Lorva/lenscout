@@ -34,5 +34,19 @@
     "gateway": "Puerta de enlace",
     "this_pc": "Este PC",
     "unknown": "Desconocido"
+  },
+  "tab": {
+    "devices": "Dispositivos",
+    "free": "IP libres"
+  },
+  "free": {
+    "reserve": "Reservar",
+    "release": "Liberar",
+    "cancel": "Cancelar",
+    "label": "Etiqueta",
+    "at": "Reservada el",
+    "search": "Buscar una IP",
+    "none": "Ninguna dirección libre",
+    "reserved": "{count, plural, one {# IP reservada} other {# IP reservadas}}"
   }
 }

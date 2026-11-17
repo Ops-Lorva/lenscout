@@ -8,10 +8,12 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 import {
-  absent, accountDevices, cancelSurvey, devicesCsvRows, filterDevices, forgetDevice, frameIp, onAccountNetwork, startSurvey,
+  absent, accountDevices, accountReservations, cancelSurvey, devicesCsvRows, filterDevices, forgetDevice, frameIp, freeAddresses, onAccountNetwork,
+  releaseIp, reserveIp, stale, STALE_DAYS, startSurvey,
   type SeenDevice,
 } from './siteNet';
 import { activeAddress, type Joined } from './net';
+import type { NetworkFill } from './accounts';
 
 const dev = (ip: string, kind: SeenDevice['kind'], extra: Partial<SeenDevice> = {}): SeenDevice => ({
   ip, kind, first_seen: 100, last_seen: 200, ...extra,
@@ -95,4 +97,42 @@ test('frame_ip_only_for_cameras', () => {
   expect(frameIp(dev('192.168.1.10', 'nvr'))).toBeNull();
   expect(frameIp(dev('192.168.1.2', 'switch'))).toBeNull();
   expect(frameIp(dev('192.168.1.9', 'unknown'))).toBeNull();
+});
+
+test('reservations_call_their_commands', async () => {
+  invoke.mockResolvedValue([]);
+  await accountReservations('acc');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_reservations', { id: 'acc' });
+  await reserveIp('acc', '192.168.1.110', 'Cam 110');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_reserve', { id: 'acc', ip: '192.168.1.110', label: 'Cam 110' });
+  // Libellé vide : pas de libellé.
+  await reserveIp('acc', '192.168.1.111', '  ');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_reserve', { id: 'acc', ip: '192.168.1.111', label: null });
+  await releaseIp('acc', '192.168.1.110');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_account_release', { id: 'acc', ip: '192.168.1.110' });
+});
+
+const fill = (network: string, size: number, segments: NetworkFill['segments'], free: number): NetworkFill => ({
+  network, size, usable: size - 2, gateway: 0, pc: 0, excluded: 0, reserved: 0, cameras: 0, free,
+  almost_full: false, segments, devices: 0, used_pct: 0, crowded: false, suggest: null,
+});
+
+test('free_addresses_are_the_hosts_outside_every_segment', () => {
+  // /29 : hôtes .1 à .6 ; passerelle .1, réservées .3–.4, PC .6.
+  const f = fill('10.0.8.0/29', 8, [
+    { kind: 'gateway', first: 1, last: 1 }, { kind: 'reserved', first: 3, last: 4 }, { kind: 'pc', first: 6, last: 6 },
+  ], 2);
+  expect(freeAddresses(f, '', 100)).toEqual({ ips: ['10.0.8.2', '10.0.8.5'], more: false });
+  // Recherche dans l'adresse ; plafond : le reste est signalé, pas affiché.
+  expect(freeAddresses(f, '.5', 100)).toEqual({ ips: ['10.0.8.5'], more: false });
+  expect(freeAddresses(f, '', 1)).toEqual({ ips: ['10.0.8.2'], more: true });
+  expect(freeAddresses(fill('pas un réseau', 8, [], 0), '', 10)).toEqual({ ips: [], more: false });
+});
+
+test('a_device_unseen_for_over_180_days_is_stale', () => {
+  const day = 24 * 3600;
+  const now = 1000 * day;
+  expect(STALE_DAYS).toBe(180);
+  expect(stale(dev('192.168.1.9', 'unknown', { last_seen: now - 181 * day }), now)).toBe(true);
+  expect(stale(dev('192.168.1.9', 'unknown', { last_seen: now - 179 * day }), now)).toBe(false);
 });

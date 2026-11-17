@@ -37,7 +37,7 @@
     "invalid_gateway": "Passerelle invalide",
     "gateway_outside_network": "La passerelle n'est pas dans le réseau",
     "invalid_exclusions": "IP exclues illisibles (ex. 192.168.1.2-9, 192.168.1.100)",
-    "invalid_ip": "Adresse IP invalide"
+    "bad_ip": "Adresse IP invalide"
   },
   "notice": {
     "quarantined": "Fichier des comptes illisible, mis de côté",
@@ -83,6 +83,7 @@
     "gateway": "Passerelle",
     "pc": "PC",
     "excluded": "Exclues",
+    "reserved": "Réservées",
     "cameras": "Caméras",
     "summary": "{cameras, plural, one {# caméra} other {# caméras}} · {free} libres sur {total}",
     "almostFull": "Bientôt complet",
