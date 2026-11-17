@@ -410,6 +410,60 @@ fn read_devices(a: &serde_json::Value) -> Vec<SeenDevice> {
     out
 }
 
+/// Adresse réservée à la main dans le réseau d'un compte : une caméra posée
+/// là mais pas encore joignable (switch pas configuré), donc absente des
+/// relevés. Comptée prise partout (barre, IP libres, feuilles) jusqu'à
+/// « Libérer », ou jusqu'à ce qu'un relevé l'entende (`record_survey`) :
+/// l'appareil relevé porte alors l'adresse. Distincte des exclusions, qui
+/// sont les plages données par le client.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct ReservedIp {
+    pub ip: Ipv4Addr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Date de la réservation, en secondes depuis l'époque Unix.
+    pub at: u64,
+}
+
+/// Réservations lues dans un objet JSON (carnet, import) : une ligne
+/// illisible est ignorée, une adresse en double aussi (la première reste).
+fn read_reservations(a: &serde_json::Value) -> Vec<ReservedIp> {
+    let mut out: Vec<ReservedIp> = Vec::new();
+    for r in a.get("reserved").and_then(|v| v.as_array()).into_iter().flatten() {
+        if let Ok(r) = serde_json::from_value::<ReservedIp>(r.clone()) {
+            if !out.iter().any(|o| o.ip == r.ip) {
+                out.push(r);
+            }
+        }
+    }
+    out.sort_by_key(|r| u32::from(r.ip));
+    out
+}
+
+/// Ajoute à `list` les réservations d'`incoming` dont l'adresse n'y est pas ;
+/// une réservation déjà là garde son libellé et sa date. `true` si `list` change.
+fn merge_reservations(list: &mut Vec<ReservedIp>, incoming: Vec<ReservedIp>) -> bool {
+    let before = list.len();
+    for r in incoming {
+        if !list.iter().any(|o| o.ip == r.ip) {
+            list.push(r);
+        }
+    }
+    list.sort_by_key(|r| u32::from(r.ip));
+    list.len() != before
+}
+
+/// Au-delà, un appareil relevé qui n'a plus répondu ne compte plus pris :
+/// matériel démonté depuis longtemps, son adresse redevient proposable. Il
+/// reste dans l'inventaire (« Oublier » le retire).
+pub const STALE_DEVICE_SECS: u64 = 180 * 24 * 3600;
+
+/// Les appareils relevés qui comptent encore pris à l'instant `now` : vus il
+/// y a au plus `STALE_DEVICE_SECS`.
+pub fn current_devices(devices: &[SeenDevice], now: u64) -> Vec<SeenDevice> {
+    devices.iter().filter(|d| now.saturating_sub(d.last_seen) <= STALE_DEVICE_SECS).cloned().collect()
+}
+
 /// Ce qu'occupe une portion de la barre du réseau d'un compte.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -417,6 +471,7 @@ pub enum SegmentKind {
     Gateway,
     Pc,
     Excluded,
+    Reserved,
     Camera,
     Device,
 }
@@ -431,7 +486,7 @@ pub struct Segment {
 
 /// Remplissage du réseau d'un compte. `usable` = adresses d'hôte (sans réseau
 /// ni diffusion) ; chacune n'est comptée qu'une fois, dans cet ordre :
-/// passerelle, PC, exclues, caméras connues, libres.
+/// passerelle, PC, exclues, réservées, caméras connues, appareils, libres.
 #[derive(Serialize, Clone, PartialEq, Debug)]
 pub struct NetworkFill {
     pub network: String,
@@ -441,6 +496,8 @@ pub struct NetworkFill {
     pub gateway: u32,
     pub pc: u32,
     pub excluded: u32,
+    /// Réservées à la main (`ReservedIp`), hors passerelle, PC et exclues.
+    pub reserved: u32,
     pub cameras: u32,
     pub free: u32,
     /// Moins de 10 % d'adresses libres.
@@ -503,6 +560,19 @@ pub fn network_fill(net: &AccountNetwork, cameras: &[KnownCamera], own: &[Ipv4Ad
 /// appareil compte comme une caméra connue (pris, même absent du dernier
 /// relevé), une seule fois par adresse.
 pub fn network_fill_with(net: &AccountNetwork, cameras: &[KnownCamera], devices: &[SeenDevice], own: &[Ipv4Addr]) -> Option<NetworkFill> {
+    network_fill_full(net, cameras, devices, &[], own)
+}
+
+/// `network_fill_with`, plus les adresses réservées `reserved` : prises comme
+/// des exclues (une adresse qu'on réadresse ne les libère pas), comptées
+/// avant les caméras et les appareils.
+pub fn network_fill_full(
+    net: &AccountNetwork,
+    cameras: &[KnownCamera],
+    devices: &[SeenDevice],
+    reserved: &[Ipv4Addr],
+    own: &[Ipv4Addr],
+) -> Option<NetworkFill> {
     let (pc, prefix) = parse_cidr(net.pc_ip.as_deref()?.trim())?;
     let mask = mask_bits(prefix);
     let base = u32::from(pc) & mask;
@@ -535,6 +605,11 @@ pub fn network_fill_with(net: &AccountNetwork, cameras: &[KnownCamera], devices:
     let special = [gw, pc];
     let excluded: u32 = merged.iter().map(|&(a, b)| b - a + 1).sum::<u32>()
         - special.iter().flatten().filter(|&&n| in_ex(n)).count() as u32;
+    let mut held: Vec<u32> =
+        reserved.iter().map(|&a| u32::from(a)).filter(|&n| host(n) && !in_ex(n) && !special.contains(&Some(n))).collect();
+    held.sort_unstable();
+    held.dedup();
+    let is_held = |n: u32| held.binary_search(&n).is_ok();
     // Caméras connues, plus celles que le relevé a reconnues comme caméras.
     let surveyed = devices.iter().filter(|d| d.kind == DeviceKind::Camera).map(|d| d.ip);
     let mut cams: Vec<u32> = cameras
@@ -542,7 +617,7 @@ pub fn network_fill_with(net: &AccountNetwork, cameras: &[KnownCamera], devices:
         .map(|c| c.ip)
         .chain(surveyed)
         .map(u32::from)
-        .filter(|&n| host(n) && !in_ex(n) && !special.contains(&Some(n)) && !own.contains(&Ipv4Addr::from(n)))
+        .filter(|&n| host(n) && !in_ex(n) && !is_held(n) && !special.contains(&Some(n)) && !own.contains(&Ipv4Addr::from(n)))
         .collect();
     cams.sort_unstable();
     cams.dedup();
@@ -550,14 +625,19 @@ pub fn network_fill_with(net: &AccountNetwork, cameras: &[KnownCamera], devices:
         .iter()
         .map(|d| u32::from(d.ip))
         .filter(|&n| {
-            host(n) && !in_ex(n) && !special.contains(&Some(n)) && !own.contains(&Ipv4Addr::from(n)) && cams.binary_search(&n).is_err()
+            host(n)
+                && !in_ex(n)
+                && !is_held(n)
+                && !special.contains(&Some(n))
+                && !own.contains(&Ipv4Addr::from(n))
+                && cams.binary_search(&n).is_err()
         })
         .collect();
     devs.sort_unstable();
     devs.dedup();
     let (n_gw, n_pc) = (gw.is_some() as u32, pc.is_some() as u32);
     let usable = size - 2;
-    let free = usable - n_gw - n_pc - excluded - cams.len() as u32 - devs.len() as u32;
+    let free = usable - n_gw - n_pc - excluded - held.len() as u32 - cams.len() as u32 - devs.len() as u32;
     let used = usable - free;
     let used_pct = (u64::from(used) * 100 / u64::from(usable)) as u8;
     let crowded = used_pct >= CROWDED_PCT;
@@ -567,6 +647,7 @@ pub fn network_fill_with(net: &AccountNetwork, cameras: &[KnownCamera], devices:
     gw.into_iter().for_each(|g| push(SegmentKind::Gateway, g, g));
     pc.into_iter().for_each(|p| push(SegmentKind::Pc, p, p));
     merged.iter().for_each(|&(a, b)| push(SegmentKind::Excluded, a, b));
+    runs(&held).into_iter().for_each(|(a, b)| push(SegmentKind::Reserved, a, b));
     // Caméras (puis appareils) consécutives : une seule portion.
     runs(&cams).into_iter().for_each(|(a, b)| push(SegmentKind::Camera, a, b));
     runs(&devs).into_iter().for_each(|(a, b)| push(SegmentKind::Device, a, b));
@@ -578,6 +659,7 @@ pub fn network_fill_with(net: &AccountNetwork, cameras: &[KnownCamera], devices:
         gateway: n_gw,
         pc: n_pc,
         excluded,
+        reserved: held.len() as u32,
         cameras: cams.len() as u32,
         free,
         almost_full: free * ALMOST_FULL_RATIO < usable,
@@ -643,6 +725,8 @@ struct Entry {
     // de l'export : l'inventaire se refait sur place en quelques secondes.
     devices: Vec<SeenDevice>,
     surveyed_at: Option<u64>,
+    // Adresses réservées à la main (voir `ReservedIp`), rangées par adresse.
+    reservations: Vec<ReservedIp>,
 }
 
 pub struct AccountBook {
@@ -749,6 +833,7 @@ struct Imported {
     net: AccountNetwork,
     gateway_dropped: bool,
     cameras: Vec<KnownCamera>,
+    reservations: Vec<ReservedIp>,
 }
 
 /// Écriture atomique d'un fichier lisible par l'utilisateur seul (0600 sous
@@ -821,6 +906,7 @@ fn parse_import(data: &str) -> Result<Vec<Imported>, AccountError> {
             net,
             gateway_dropped,
             cameras: read_cameras(a),
+            reservations: read_reservations(a),
         });
     }
     Ok(out)
@@ -884,6 +970,7 @@ impl AccountBook {
                     cameras: Vec::new(),
                     devices: Vec::new(),
                     surveyed_at: None,
+                    reservations: Vec::new(),
                 })
                 .collect();
             return Ok(book);
@@ -918,6 +1005,7 @@ impl AccountBook {
                 cameras: read_cameras(a),
                 devices: read_devices(a),
                 surveyed_at: a.get("surveyed_at").and_then(serde_json::Value::as_u64),
+                reservations: read_reservations(a),
             };
             book.entries.push(entry);
         }
@@ -994,6 +1082,7 @@ impl AccountBook {
             cameras: Vec::new(),
             devices: Vec::new(),
             surveyed_at: None,
+            reservations: Vec::new(),
         });
         self.write(&next)?;
         self.entries = next;
@@ -1082,6 +1171,10 @@ impl AccountBook {
                 if !e.cameras.is_empty() {
                     a["cameras"] = serde_json::to_value(&e.cameras).expect("json");
                 }
+                // Décision de l'installateur, comme les exclusions : elle voyage.
+                if !e.reservations.is_empty() {
+                    a["reserved"] = serde_json::to_value(&e.reservations).expect("json");
+                }
                 a
             })
             .collect();
@@ -1135,6 +1228,7 @@ impl AccountBook {
                 cameras: imp.cameras,
                 devices: Vec::new(),
                 surveyed_at: None,
+                reservations: imp.reservations,
             };
             let Some(i) = position_of(&next, &imp.name) else {
                 next.push(fresh(imp.name.clone(), imp));
@@ -1142,8 +1236,9 @@ impl AccountBook {
                 continue;
             };
             if classify(&next[i], &imp) == ImportKind::Identical {
-                // Un compte identique reçoit quand même les caméras du fichier.
+                // Un compte identique reçoit quand même les caméras et réservations du fichier.
                 cameras_changed |= merge_cameras(&mut next[i].cameras, imp.cameras);
+                cameras_changed |= merge_reservations(&mut next[i].reservations, imp.reservations);
                 summary.identical += 1;
                 continue;
             }
@@ -1153,6 +1248,7 @@ impl AccountBook {
                     next[i].account.login = imp.login;
                     next[i].account.net.merge(imp.net);
                     cameras_changed |= merge_cameras(&mut next[i].cameras, imp.cameras);
+                    cameras_changed |= merge_reservations(&mut next[i].reservations, imp.reservations);
                     if imp.password.is_some() {
                         next[i].password = imp.password;
                     }
@@ -1227,10 +1323,12 @@ impl AccountBook {
     /// Remplissage du réseau du compte (voir `network_fill`) ; `None` sans IP du PC.
     /// Retient un relevé du réseau du compte, daté `at` : fusion par appareil
     /// (`merge_devices`). Un appareil absent du relevé reste, compté pris,
-    /// jusqu'à `forget_device`.
+    /// jusqu'à `forget_device`. Une adresse réservée qui répond n'est plus
+    /// réservée : l'appareil relevé la porte désormais.
     pub fn record_survey(&mut self, id: &str, seen: Vec<SeenDevice>, at: u64) -> Result<(), AccountError> {
         let index = self.index_of(id)?;
         let mut next = self.entries.clone();
+        next[index].reservations.retain(|r| !seen.iter().any(|d| d.ip == r.ip));
         crate::site_survey::device::merge_devices(&mut next[index].devices, seen);
         next[index].surveyed_at = Some(at);
         self.write(&next)?;
@@ -1261,9 +1359,48 @@ impl AccountBook {
         Ok(())
     }
 
+    /// Appareils relevés vus depuis moins de `STALE_DEVICE_SECS` et adresses
+    /// réservées comprises.
     pub fn fill(&self, id: &str, own: &[Ipv4Addr]) -> Result<Option<NetworkFill>, AccountError> {
         let e = &self.entries[self.index_of(id)?];
-        Ok(network_fill_with(&e.account.net, &e.cameras, &e.devices, own))
+        let devices = current_devices(&e.devices, unix_now());
+        let reserved: Vec<Ipv4Addr> = e.reservations.iter().map(|r| r.ip).collect();
+        Ok(network_fill_full(&e.account.net, &e.cameras, &devices, &reserved, own))
+    }
+
+    /// Adresses réservées du compte, rangées par adresse.
+    pub fn reservations(&self, id: &str) -> Result<Vec<ReservedIp>, AccountError> {
+        Ok(self.entries[self.index_of(id)?].reservations.clone())
+    }
+
+    /// Réserve `ip` (libellé facultatif, `at` : la date). Déjà réservée : le
+    /// libellé change, la date reste.
+    pub fn reserve(&mut self, id: &str, ip: Ipv4Addr, label: Option<&str>, at: u64) -> Result<(), AccountError> {
+        let index = self.index_of(id)?;
+        let label = label.map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
+        let mut next = self.entries.clone();
+        let list = &mut next[index].reservations;
+        match list.iter_mut().find(|r| r.ip == ip) {
+            Some(r) => r.label = label,
+            None => {
+                list.push(ReservedIp { ip, label, at });
+                list.sort_by_key(|r| u32::from(r.ip));
+            }
+        }
+        self.write(&next)?;
+        self.entries = next;
+        Ok(())
+    }
+
+    /// Libère `ip`. `NotFound` : compte inconnu ou adresse non réservée.
+    pub fn release(&mut self, id: &str, ip: Ipv4Addr) -> Result<(), AccountError> {
+        let index = self.index_of(id)?;
+        let at = self.entries[index].reservations.iter().position(|r| r.ip == ip).ok_or(AccountError::NotFound)?;
+        let mut next = self.entries.clone();
+        next[index].reservations.remove(at);
+        self.write(&next)?;
+        self.entries = next;
+        Ok(())
     }
 
     fn index_of(&self, id: &str) -> Result<usize, AccountError> {
@@ -1306,6 +1443,9 @@ impl AccountBook {
                 }
                 if let Some(at) = e.surveyed_at {
                     a["surveyed_at"] = at.into();
+                }
+                if !e.reservations.is_empty() {
+                    a["reserved"] = serde_json::to_value(&e.reservations).expect("json");
                 }
                 a
             })
@@ -1880,7 +2020,9 @@ mod tests {
         // Le carnet compte ses appareils relevés.
         let (mut book, _fx) = empty_book();
         let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
-        book.record_survey(&acc.id, vec![device("10.0.8.40", None, 1)], 1).unwrap();
+        // Relevé du jour : un appareil vu il y a plus de six mois ne compterait plus.
+        let now = unix_now();
+        book.record_survey(&acc.id, vec![device("10.0.8.40", None, now)], now).unwrap();
         assert_eq!(book.fill(&acc.id, &[]).unwrap().unwrap().devices, 1);
     }
 
@@ -2902,4 +3044,154 @@ mod tests {
         let mode = std::fs::metadata(fx.path()).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
     }
+
+    // ---- IP réservées ----
+
+    fn held(ip_: &str, label: Option<&str>, at: u64) -> ReservedIp {
+        ReservedIp { ip: ip(ip_), label: label.map(str::to_string), at }
+    }
+
+    #[test]
+    fn reservations_are_stored_dated_labelled_and_released() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        assert!(book.reservations(&acc.id).unwrap().is_empty());
+        book.reserve(&acc.id, ip("10.0.8.60"), Some("  Cam 110 "), 100).unwrap();
+        book.reserve(&acc.id, ip("10.0.8.50"), Some("   "), 101).unwrap();
+        // Rangées par adresse ; libellé vide = pas de libellé.
+        assert_eq!(fx.book().reservations(&acc.id).unwrap(), [held("10.0.8.50", None, 101), held("10.0.8.60", Some("Cam 110"), 100)]);
+        // Réserver à nouveau : le libellé change, la date reste, pas de doublon.
+        book.reserve(&acc.id, ip("10.0.8.60"), Some("Cam 111"), 300).unwrap();
+        assert_eq!(book.reservations(&acc.id).unwrap()[1], held("10.0.8.60", Some("Cam 111"), 100));
+        book.release(&acc.id, ip("10.0.8.60")).unwrap();
+        assert_eq!(fx.book().reservations(&acc.id).unwrap(), [held("10.0.8.50", None, 101)]);
+        assert!(matches!(book.release(&acc.id, ip("10.0.8.60")), Err(AccountError::NotFound)));
+        assert!(matches!(book.reserve("zzz", ip("10.0.8.60"), None, 1), Err(AccountError::NotFound)));
+        assert!(matches!(book.reservations("zzz"), Err(AccountError::NotFound)));
+        // Une mise à jour du compte garde ses réservations.
+        book.update(&acc.id, "Site", "root", None, site()).unwrap();
+        assert_eq!(book.reservations(&acc.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn older_file_without_reservations_loads_and_writes_no_key() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.remember(&acc.id, vec![known("10.0.8.20", Some("A"), None, 1)]).unwrap();
+        assert!(!fx.raw().contains("reserved"));
+        let before = fx.raw();
+        // Fichier d'une version précédente : se relit sans perte, sans réservation.
+        let reloaded = fx.book();
+        assert!(reloaded.reservations(&acc.id).unwrap().is_empty());
+        assert_eq!(reloaded.list(), book.list());
+        assert_eq!(reloaded.known_cameras(&acc.id).unwrap().len(), 1);
+        assert_eq!(fx.raw(), before);
+    }
+
+    #[test]
+    fn bad_reservation_line_is_ignored_not_fatal() {
+        let fx = Fixture::new();
+        let mut book = fx.book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.reserve(&acc.id, ip("10.0.8.60"), None, 1).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&fx.raw()).unwrap();
+        v["accounts"][0]["reserved"].as_array_mut().unwrap().push(serde_json::json!({"ip": "x", "at": 1}));
+        std::fs::write(fx.path(), v.to_string()).unwrap();
+        assert_eq!(fx.book().reservations(&acc.id).unwrap(), [held("10.0.8.60", None, 1)]);
+        v["accounts"][0]["reserved"] = "pas une liste".into();
+        std::fs::write(fx.path(), v.to_string()).unwrap();
+        assert!(fx.book().reservations(&acc.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fill_counts_reserved_as_taken_once() {
+        // Passerelle .1, PC .250, exclues .2–.9 et .100 : réservées .5 (déjà exclue), .60, .61, .62, et .20 (caméra connue).
+        let n = site().validated().unwrap();
+        let cams = [known("10.0.8.20", Some("A"), None, 1)];
+        let held = [ip("10.0.8.5"), ip("10.0.8.60"), ip("10.0.8.61"), ip("10.0.8.62"), ip("10.0.8.20"), ip("192.168.0.9")];
+        let f = network_fill_full(&n, &cams, &[], &held, &[]).unwrap();
+        // La réservée prime sur la caméra à la même adresse : comptée une fois.
+        assert_eq!((f.reserved, f.cameras, f.free), (4, 0, 254 - 1 - 1 - 9 - 4));
+        let segs: Vec<_> = f.segments.iter().filter(|s| s.kind == SegmentKind::Reserved).map(|s| (s.first, s.last)).collect();
+        assert_eq!(segs, [(20, 20), (60, 62)]);
+        assert_eq!(serde_json::to_value(SegmentKind::Reserved).unwrap(), "reserved");
+        // Une adresse qu'on réadresse ne libère jamais une réservée.
+        assert_eq!(network_fill_full(&n, &[], &[], &held, &[ip("10.0.8.60")]).unwrap().reserved, 4);
+        // Sans réservée : le calcul d'avant.
+        assert_eq!(network_fill_full(&n, &cams, &[], &[], &[]).unwrap(), network_fill_with(&n, &cams, &[], &[]).unwrap());
+        // Le carnet compte les siennes.
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.reserve(&acc.id, ip("10.0.8.60"), None, 1).unwrap();
+        let f = book.fill(&acc.id, &[]).unwrap().unwrap();
+        assert_eq!((f.reserved, f.free), (1, 254 - 1 - 1 - 9 - 1));
+    }
+
+    #[test]
+    fn a_reserved_ip_heard_by_a_survey_is_released_and_stays_taken() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.reserve(&acc.id, ip("10.0.8.60"), Some("Cam 110"), 1).unwrap();
+        book.reserve(&acc.id, ip("10.0.8.61"), None, 1).unwrap();
+        let free_before = book.fill(&acc.id, &[]).unwrap().unwrap().free;
+        let now = unix_now();
+        book.record_survey(&acc.id, vec![device("10.0.8.60", Some("AA:BB:CC:00:00:60"), now)], now).unwrap();
+        // .60 répond : la réservation part, l'appareil relevé porte l'adresse.
+        assert_eq!(book.reservations(&acc.id).unwrap(), [held("10.0.8.61", None, 1)]);
+        let f = book.fill(&acc.id, &[]).unwrap().unwrap();
+        assert_eq!((f.reserved, f.devices, f.free), (1, 1, free_before));
+    }
+
+    #[test]
+    fn export_and_import_carry_reservations_and_keep_local_ones() {
+        let (mut src, _fx_src) = empty_book();
+        let a = src.create("Site", "root", pwd(PWD), site()).unwrap();
+        src.reserve(&a.id, ip("10.0.8.60"), Some("Cam 110"), 7).unwrap();
+        let data = src.export();
+        assert!(data.contains("\"reserved\"") && data.contains("Cam 110"));
+        // Compte nouveau : il arrive avec ses réservations.
+        let (mut dst, _fx_dst) = empty_book();
+        dst.import_apply(&data, &HashMap::new()).unwrap();
+        let id = dst.list()[0].id.clone();
+        assert_eq!(dst.reservations(&id).unwrap(), [held("10.0.8.60", Some("Cam 110"), 7)]);
+        // Compte identique : celles du fichier s'ajoutent, les miennes restent (libellé compris).
+        let (mut mine, _fx_mine) = empty_book();
+        let b = mine.create("Site", "root", pwd(PWD), site()).unwrap();
+        mine.reserve(&b.id, ip("10.0.8.60"), Some("Ma cam"), 3).unwrap();
+        mine.reserve(&b.id, ip("10.0.8.70"), None, 3).unwrap();
+        src.reserve(&a.id, ip("10.0.8.80"), None, 8).unwrap();
+        mine.import_apply(&src.export(), &HashMap::new()).unwrap();
+        assert_eq!(
+            mine.reservations(&b.id).unwrap(),
+            [held("10.0.8.60", Some("Ma cam"), 3), held("10.0.8.70", None, 3), held("10.0.8.80", None, 8)]
+        );
+    }
+
+
+    // ---- Appareils relevés anciens ----
+
+    #[test]
+    fn a_device_unseen_for_over_six_months_no_longer_counts_as_taken() {
+        const DAY: u64 = 24 * 3600;
+        assert_eq!(STALE_DEVICE_SECS, 180 * DAY);
+        let now = 1_000 * DAY;
+        let old = device("10.0.8.40", None, now - 181 * DAY);
+        let recent = device("10.0.8.41", None, now - 179 * DAY);
+        assert_eq!(current_devices(&[old.clone(), recent.clone()], now), [recent]);
+        // Le carnet compte à l'heure qu'il est : 181 j libre, 179 j pris.
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        let today = unix_now();
+        let base = book.fill(&acc.id, &[]).unwrap().unwrap().free;
+        book.record_survey(&acc.id, vec![device("10.0.8.40", None, today - 181 * DAY)], today - 181 * DAY).unwrap();
+        assert_eq!(book.fill(&acc.id, &[]).unwrap().unwrap().free, base);
+        book.record_survey(&acc.id, vec![device("10.0.8.41", None, today - 179 * DAY)], today - 179 * DAY).unwrap();
+        let f = book.fill(&acc.id, &[]).unwrap().unwrap();
+        assert_eq!((f.devices, f.free), (1, base - 1));
+        // L'ancien reste dans l'inventaire.
+        assert_eq!(book.devices(&acc.id).unwrap().0.len(), 2);
+    }
+
 }

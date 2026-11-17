@@ -36,7 +36,8 @@
     "missing_mask": "Missing mask (e.g. /24)",
     "invalid_gateway": "Invalid gateway",
     "gateway_outside_network": "The gateway is not in the network",
-    "invalid_exclusions": "Unreadable excluded IPs (e.g. 192.168.1.2-9, 192.168.1.100)"
+    "invalid_exclusions": "Unreadable excluded IPs (e.g. 192.168.1.2-9, 192.168.1.100)",
+    "invalid_ip": "Invalid IP address"
   },
   "notice": {
     "quarantined": "Accounts file unreadable, set aside",

@@ -2,7 +2,7 @@ mod commands;
 mod updater;
 
 use commands::accounts::{
-    StartupNotice, absorb_old_accounts, cmd_account_cameras, cmd_account_create, cmd_account_devices, cmd_account_forget_device, cmd_account_fill, cmd_account_forget_camera, cmd_account_password, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
+    StartupNotice, absorb_old_accounts, cmd_account_cameras, cmd_account_create, cmd_account_devices, cmd_account_forget_device, cmd_account_fill, cmd_account_release, cmd_account_reservations, cmd_account_reserve, cmd_account_forget_camera, cmd_account_password, cmd_account_remove, cmd_accounts_export, cmd_accounts_import_apply,
     cmd_accounts_import_plan, cmd_account_update, cmd_accounts_list,
     cmd_accounts_startup, notice_code,
 };
@@ -106,6 +106,9 @@ pub fn run() {
             cmd_account_forget_camera,
             cmd_account_devices,
             cmd_account_forget_device,
+            cmd_account_reservations,
+            cmd_account_reserve,
+            cmd_account_release,
             cmd_accounts_export,
             cmd_accounts_import_plan,
             cmd_accounts_import_apply,

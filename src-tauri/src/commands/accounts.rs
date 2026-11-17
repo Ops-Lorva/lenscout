@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use lenscout_core::accounts::{
     Account, AccountBook, AccountError, AccountNetwork, Choice, Exclusions, ImportKind, ImportPlan, ImportSummary,
-    KnownCamera, NetworkFill, Startup, write_file_private,
+    KnownCamera, NetworkFill, ReservedIp, Startup, current_devices, unix_now, write_file_private,
 };
 use lenscout_core::secret::Secret;
 use lenscout_core::transport::Credentials;
@@ -324,21 +324,24 @@ pub(crate) fn exclusions_for(state: &Mutex<AccountBook>, id: Option<&str>) -> Ex
 }
 
 /// Ce qu'une feuille ne doit pas proposer pour le compte retenu : ses IP
-/// exclues, les adresses de ses caméras connues et des appareils relevés sur
-/// son réseau (même absents du dernier relevé), sauf `own` (les adresses
-/// actuelles des caméras qu'on réadresse, libres pour elles). Sans compte :
-/// rien, la feuille reste utilisable.
+/// exclues, ses IP réservées, les adresses de ses caméras connues et des
+/// appareils relevés sur son réseau (même absents du dernier relevé, tant
+/// qu'ils ont répondu depuis moins de six mois), sauf `own` (les adresses
+/// actuelles des caméras qu'on réadresse, libres pour elles — jamais une
+/// réservée, comme une exclue). Sans compte : rien, la feuille reste utilisable.
 pub(crate) fn reserved_for(state: &Mutex<AccountBook>, id: Option<&str>, own: &[Ipv4Addr]) -> Exclusions {
     let excluded = exclusions_for(state, id);
     let Some(id) = id else { return excluded };
-    let Ok(taken) = lock(state).and_then(|b| {
+    let Ok((held, taken)) = lock(state).and_then(|b| {
         let cameras = b.known_cameras(id).map_err(code)?;
         let (devices, _) = b.devices(id).map_err(code)?;
-        Ok(cameras.into_iter().map(|c| c.ip).chain(devices.into_iter().map(|d| d.ip)).collect::<Vec<_>>())
+        let held: Vec<Ipv4Addr> = b.reservations(id).map_err(code)?.into_iter().map(|r| r.ip).collect();
+        let devices = current_devices(&devices, unix_now());
+        Ok((held, cameras.into_iter().map(|c| c.ip).chain(devices.into_iter().map(|d| d.ip)).collect::<Vec<_>>()))
     }) else {
         return excluded;
     };
-    excluded.with_addresses(taken.into_iter().filter(|a| !own.contains(a)))
+    excluded.with_addresses(held).with_addresses(taken.into_iter().filter(|a| !own.contains(a)))
 }
 
 /// Remplissage du réseau du compte retenu, `own` comptées libres ; `None` sans
@@ -369,6 +372,22 @@ pub(crate) fn account_devices(book: &AccountBook, id: &str) -> Result<AccountDev
 
 pub(crate) fn account_forget_device(book: &mut AccountBook, id: &str, key: &str) -> Result<(), String> {
     book.forget_device(id, key).map_err(code)
+}
+
+pub(crate) fn account_reservations(book: &AccountBook, id: &str) -> Result<Vec<ReservedIp>, String> {
+    book.reservations(id).map_err(code)
+}
+
+/// Réserve une adresse (libellé facultatif), datée de maintenant. Adresse
+/// illisible : `invalid_ip`.
+pub(crate) fn account_reserve(book: &mut AccountBook, id: &str, ip: &str, label: Option<String>) -> Result<(), String> {
+    let ip: Ipv4Addr = ip.trim().parse().map_err(|_| "invalid_ip".to_string())?;
+    book.reserve(id, ip, label.as_deref(), unix_now()).map_err(code)
+}
+
+pub(crate) fn account_release(book: &mut AccountBook, id: &str, ip: &str) -> Result<(), String> {
+    let ip: Ipv4Addr = ip.trim().parse().map_err(|_| "not_found".to_string())?;
+    book.release(id, ip).map_err(code)
 }
 
 pub(crate) fn account_forget_camera(book: &mut AccountBook, id: &str, key: &str) -> Result<(), String> {
@@ -480,6 +499,27 @@ pub async fn cmd_account_devices(id: String, state: State<'_, Mutex<AccountBook>
 pub async fn cmd_account_forget_device(id: String, key: String, state: State<'_, Mutex<AccountBook>>) -> Result<(), String> {
     let mut book = lock(&state)?;
     account_forget_device(&mut book, &id, &key)
+}
+
+/// Adresses réservées à la main dans le réseau du compte.
+#[tauri::command]
+pub async fn cmd_account_reservations(id: String, state: State<'_, Mutex<AccountBook>>) -> Result<Vec<ReservedIp>, String> {
+    let book = lock(&state)?;
+    account_reservations(&book, &id)
+}
+
+/// Réserve une adresse libre (une caméra posée là, pas encore joignable).
+#[tauri::command]
+pub async fn cmd_account_reserve(id: String, ip: String, label: Option<String>, state: State<'_, Mutex<AccountBook>>) -> Result<(), String> {
+    let mut book = lock(&state)?;
+    account_reserve(&mut book, &id, &ip, label)
+}
+
+/// Libère une adresse réservée.
+#[tauri::command]
+pub async fn cmd_account_release(id: String, ip: String, state: State<'_, Mutex<AccountBook>>) -> Result<(), String> {
+    let mut book = lock(&state)?;
+    account_release(&mut book, &id, &ip)
 }
 
 /// Oublie une caméra connue (`key` : n° de série, sinon MAC).
@@ -652,8 +692,49 @@ mod tests {
         assert!(fill_for(&state, None, &[]).is_none());
     }
 
+    // Vu à l'instant : un appareil vu il y a plus de six mois ne compte plus pris.
     fn seen_device(ip: &str, mac: Option<&str>) -> SeenDevice {
-        SeenDevice { ip: ip.parse().unwrap(), mac: mac.map(str::to_string), vendor: None, kind: DeviceKind::Switch, name: None, model: None, first_seen: 1, last_seen: 1 }
+        let now = lenscout_core::accounts::unix_now();
+        SeenDevice { ip: ip.parse().unwrap(), mac: mac.map(str::to_string), vendor: None, kind: DeviceKind::Switch, name: None, model: None, first_seen: now, last_seen: now }
+    }
+
+    #[test]
+    fn reserved_ips_are_held_even_for_the_cameras_being_moved() {
+        let (mut book, _g_book) = book();
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), site()).unwrap();
+        let ip = |s: &str| s.parse::<std::net::Ipv4Addr>().unwrap();
+        account_reserve(&mut book, &acc.id, "10.0.8.60", Some("Cam 110".into())).unwrap();
+        let state = Mutex::new(book);
+        assert!(reserved_for(&state, Some(&acc.id), &[ip("10.0.8.60")]).contains(ip("10.0.8.60")));
+        assert_eq!(fill_for(&state, Some(&acc.id), &[]).unwrap().reserved, 1);
+    }
+
+    #[test]
+    fn a_device_unseen_for_six_months_is_not_held() {
+        let (mut book, _g_book) = book();
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), site()).unwrap();
+        let old = lenscout_core::accounts::unix_now() - 181 * 24 * 3600;
+        let stale = SeenDevice { first_seen: old, last_seen: old, ..seen_device("10.0.8.40", None) };
+        book.record_survey(&acc.id, vec![stale, seen_device("10.0.8.41", None)], old).unwrap();
+        let state = Mutex::new(book);
+        let ip = |s: &str| s.parse::<std::net::Ipv4Addr>().unwrap();
+        let r = reserved_for(&state, Some(&acc.id), &[]);
+        assert!(!r.contains(ip("10.0.8.40")) && r.contains(ip("10.0.8.41")));
+    }
+
+    #[test]
+    fn reservations_are_listed_made_and_released_with_stable_codes() {
+        let (mut book, _g_book) = book();
+        let acc = account_create(&mut book, "A", "r", Secret::new("x".into()), site()).unwrap();
+        assert_eq!(account_reserve(&mut book, &acc.id, "pas une ip", None).unwrap_err(), "invalid_ip");
+        account_reserve(&mut book, &acc.id, " 10.0.8.60 ", Some("Cam 110".into())).unwrap();
+        let json = serde_json::to_value(account_reservations(&book, &acc.id).unwrap()).unwrap();
+        assert_eq!((json[0]["ip"].as_str(), json[0]["label"].as_str()), (Some("10.0.8.60"), Some("Cam 110")));
+        assert!(json[0]["at"].as_u64().unwrap() > 0);
+        assert_eq!(account_release(&mut book, &acc.id, "10.0.8.61").unwrap_err(), "not_found");
+        account_release(&mut book, &acc.id, "10.0.8.60").unwrap();
+        assert!(account_reservations(&book, &acc.id).unwrap().is_empty());
+        assert_eq!(account_reservations(&book, "zzz").unwrap_err(), "not_found");
     }
 
     #[test]
