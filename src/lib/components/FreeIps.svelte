@@ -25,6 +25,7 @@
     ifaceMask,
     value,
     hidden = false,
+    tab = '',
     onPick,
     onFound = () => {},
   }: {
@@ -35,6 +36,7 @@
     ifaceMask: string | null;
     value: string;
     hidden?: boolean;
+    tab?: string;
     onPick: (ip: string) => void;
     onFound?: (ranges: FreeRange[]) => void;
   } = $props();
@@ -44,7 +46,7 @@
   // Le compte retenu n'est pas celui posé sur le PC : balayer ne servirait à
   // rien (on verrait le réseau de l'interface). On le dit, et on propose de le poser.
   const account = $derived($accountList?.find((a) => a.id === accountId) ?? null);
-  const blocked = $derived(needsJoin(account, $joined));
+  const blocked = $derived(needsJoin(account, $joined, ifaceIp));
   let asked = $state(false);
   function join() {
     asked = true;
@@ -91,12 +93,14 @@
     runId = null;
   }
 
-  // Les feuilles vivent dans l'onglet Réseau, gardé monté : onglet quitté,
+  // Les onglets restent montés : onglet quitté,
   // le balayage s'arrête (pas de trafic dans le dos) ; au retour il reprend
   // s'il n'avait pas fini. Premier passage visible : le premier balayage.
+  // L'onglet qui la porte : `tab`, sinon celui ouvert au montage (feuilles).
+  const home = untrack(() => tab || $page);
   let interrupted = true;
   $effect(() => {
-    const visible = $page === 'network';
+    const visible = $page === home;
     untrack(() => {
       if (!visible && sweep?.phase === 'scanning') {
         cancel();

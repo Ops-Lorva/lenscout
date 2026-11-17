@@ -327,7 +327,7 @@
     <label for="o-account">{$_('accounts.picker')}</label><AccountPicker id="o-account" bind:accountId bind:account />
     {#if kind === 'renumber'}
       {#if iface}
-        <FreeIps {iface} {accountId} own={targets.map((c) => c.ip)} ifaceIp={addr.ip} ifaceMask={addr.mask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
+        <FreeIps tab="operations" {iface} {accountId} own={targets.map((c) => c.ip)} ifaceIp={addr.ip} ifaceMask={addr.mask} value={start} onPick={(a) => (start = a)} onFound={proposeStart} />
       {/if}
       {#if fill?.almost_full}<span class="note warn">{$_('batch.almostFull', { values: { free: fill.free } })}</span>{/if}
       <label for="o-start">{$_('batch.start')}</label><input id="o-start" type="text" bind:value={start} inputmode="decimal" autocomplete="off" />

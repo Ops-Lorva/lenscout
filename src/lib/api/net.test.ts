@@ -228,4 +228,9 @@ test('une feuille IP ne balaie que le réseau du compte posé', () => {
   // Compte sans réseau, ou pas de compte : le réseau de l'interface fait foi.
   expect(needsJoin({ id: 'x' }, null)).toBe(false);
   expect(needsJoin(null, null)).toBe(false);
+  // Carte déjà réglée à la main dans le réseau du compte : on balaie.
+  expect(needsJoin(galleria, null, '192.168.1.2')).toBe(false);
+  expect(needsJoin(galleria, posé('autre'), '192.168.1.77')).toBe(false);
+  // Carte dans un autre réseau : il faut poser le compte.
+  expect(needsJoin(galleria, null, '10.0.8.235')).toBe(true);
 });

@@ -216,8 +216,17 @@ export const dnsFollowing = (dns: string, touched: boolean, gateway: string): st
  * lui qui est posé : sinon le balayage partait du réseau de l'interface (le
  * DHCP du technicien) et proposait des adresses d'un autre réseau.
  */
-export function needsJoin(account: Pick<Account, 'id' | 'pc_ip'> | null | undefined, j: Joined | null): boolean {
-  return !!account?.pc_ip && j?.account_id !== account.id;
+export function needsJoin(
+  account: Pick<Account, 'id' | 'pc_ip'> | null | undefined,
+  j: Joined | null,
+  ifaceIp: string | null = null,
+): boolean {
+  if (!account?.pc_ip || j?.account_id === account.id) return false;
+  // Carte déjà réglée à la main dans le réseau du compte : rien à poser.
+  const c = cidr(account.pc_ip);
+  const n = ifaceIp ? num(ifaceIp) : null;
+  if (c && n !== null && ((n & maskBits(c.prefix)) >>> 0) === ((c.ip & maskBits(c.prefix)) >>> 0)) return false;
+  return true;
 }
 
 /**
