@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::seal;
-use crate::site_survey::device::SeenDevice;
+use crate::site_survey::device::{DeviceKind, SeenDevice};
 use crate::secret::Secret;
 use crate::transport::Credentials;
 
@@ -535,9 +535,13 @@ pub fn network_fill_with(net: &AccountNetwork, cameras: &[KnownCamera], devices:
     let special = [gw, pc];
     let excluded: u32 = merged.iter().map(|&(a, b)| b - a + 1).sum::<u32>()
         - special.iter().flatten().filter(|&&n| in_ex(n)).count() as u32;
+    // Caméras connues, plus celles que le relevé a reconnues comme caméras.
+    let surveyed = devices.iter().filter(|d| d.kind == DeviceKind::Camera).map(|d| d.ip);
     let mut cams: Vec<u32> = cameras
         .iter()
-        .map(|c| u32::from(c.ip))
+        .map(|c| c.ip)
+        .chain(surveyed)
+        .map(u32::from)
         .filter(|&n| host(n) && !in_ex(n) && !special.contains(&Some(n)) && !own.contains(&Ipv4Addr::from(n)))
         .collect();
     cams.sort_unstable();
@@ -1878,6 +1882,19 @@ mod tests {
         let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
         book.record_survey(&acc.id, vec![device("10.0.8.40", None, 1)], 1).unwrap();
         assert_eq!(book.fill(&acc.id, &[]).unwrap().unwrap().devices, 1);
+    }
+
+    #[test]
+    fn surveyed_cameras_count_as_cameras_in_the_fill() {
+        let n = site().validated().unwrap();
+        let cam = SeenDevice { kind: DeviceKind::Camera, ..device("10.0.8.30", None, 1) };
+        let nvr = SeenDevice { kind: DeviceKind::Nvr, ..device("10.0.8.31", None, 1) };
+        let f = network_fill_with(&n, &[known("10.0.8.30", Some("A"), None, 1)], &[cam.clone(), nvr, device("10.0.8.40", None, 1)], &[]).unwrap();
+        // La caméra relevée et déjà connue ne compte qu'une fois, en vert.
+        assert_eq!((f.cameras, f.devices), (1, 2));
+        let g = network_fill_with(&n, &[], &[cam, device("10.0.8.40", None, 1)], &[]).unwrap();
+        assert_eq!((g.cameras, g.devices), (1, 1));
+        assert!(g.segments.iter().any(|s| s.kind == SegmentKind::Camera));
     }
 
     // ---- Champs réseau ----

@@ -360,7 +360,7 @@
               {#if fill.gateway}<li><i class="k-gateway"></i>{$_('accounts.net.gateway')}</li>{/if}
               <li><i class="k-pc"></i>{$_('accounts.net.pc')}</li>
               {#if fill.excluded}<li><i class="k-excluded"></i>{$_('accounts.net.excluded')} {fill.excluded}</li>{/if}
-              <li><i class="k-camera"></i>{$_('accounts.net.cameras')}</li>
+              <li><i class="k-camera"></i>{$_('accounts.net.cameras')}{#if fill.cameras} {fill.cameras}{/if}</li>
               {#if fill.devices}<li><i class="k-device"></i>{$_('accounts.net.devices')} {fill.devices}</li>{/if}
               <!-- Avec des appareils relevés, la ligne d'occupation dit tout (pourcentage compris). -->
               {#if counts && !(fill.devices || fill.crowded)}<li class="count">{$_('accounts.net.summary', { values: counts })}</li>{/if}
