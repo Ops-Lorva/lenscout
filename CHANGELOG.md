@@ -6,6 +6,22 @@ All notable changes to LenScout are documented here (EN/FR).
 Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 `### English` et `### Français` par version. SemVer.
 
+## [0.2.2] - 2026-11-17
+
+### English
+
+- **Fixed: Framing on older Hikvision cameras.** Firmwares without an HTTP stream (e.g. V5.3) now show still images about three times a second, instead of a misleading "Authentication denied".
+- **Fixed: Framing no longer retries after a refused password.** The retries could lock a Hikvision camera for 30 minutes, the right password included.
+- **Fixed: the survey colours the cameras it recognises in green** in the network bar, with their count in the legend.
+- **Fixed (Windows): MAC addresses and vendors are read again** when the account's address is added on top of the network card's own.
+
+### Français
+
+- **Corrigé : le Cadrage sur les anciennes Hikvision.** Les firmwares sans flux HTTP (ex. V5.3) affichent des images fixes, environ trois par seconde, au lieu d'un « Authentification refusée » trompeur.
+- **Corrigé : le Cadrage ne réessaie plus après un mot de passe refusé.** Ces essais pouvaient verrouiller une Hikvision 30 min, bon mot de passe compris.
+- **Corrigé : le relevé met en vert les caméras qu'il reconnaît** dans la barre du réseau, avec leur nombre dans la légende.
+- **Corrigé (Windows) : les adresses MAC et les constructeurs sont de nouveau lus** quand l'adresse du compte est ajoutée en plus de celle de la carte réseau.
+
 ## [0.2.1] - 2026-11-16
 
 ### English
