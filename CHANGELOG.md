@@ -6,6 +6,18 @@ All notable changes to LenScout are documented here (EN/FR).
 Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 `### English` et `### Français` par version. SemVer.
 
+## [0.2.5] - 2026-11-17
+
+### English
+
+- **Excel export of operations**: once an operation is done, Export saves a formatted .xlsx: OK / KO with details, "Change in NVR" (Yes / No, listed first), old and new IP, brand, model, MAC, serial, plus a summary sheet. Filterable table, coloured rows. No password is written.
+- **Settings: check for updates** next to the version, with Install when a new version is out.
+
+### Français
+
+- **Export Excel des opérations** : une fois l'opération terminée, Exporter enregistre un .xlsx mis en forme : OK / KO avec le détail, « À changer dans le NVR » (Oui / Non, en tête), ancienne et nouvelle IP, marque, modèle, MAC, n° de série, et une feuille de synthèse. Tableau filtrable, lignes colorées. Aucun mot de passe n'est écrit.
+- **Réglages : rechercher une mise à jour** à côté de la version, avec Installer quand une version est sortie.
+
 ## [0.2.4] - 2026-11-17
 
 ### English
