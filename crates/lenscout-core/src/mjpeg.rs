@@ -208,7 +208,7 @@ async fn open(
     };
     match resp.status {
         200 => {}
-        401 | 403 => return Err(NetError::Auth),
+        401 => return Err(NetError::Auth),
         s => return Err(NetError::Status(s)),
     }
     let ct = resp
@@ -231,6 +231,45 @@ fn without_resolution(url: &str) -> Option<String> {
     Some(if kept.is_empty() { path.to_string() } else { format!("{path}?{}", kept.join("&")) })
 }
 
+/// Image fixe Hikvision du flux `httpPreview`, `None` pour les autres URL.
+fn picture_url(url: &str) -> Option<String> {
+    url.strip_suffix("/httpPreview").map(|base| format!("{base}/picture"))
+}
+
+/// Écart entre deux images fixes : ~3 images/s, assez pour orienter une
+/// caméra (une image de 2048x1536 pèse quelques centaines de Ko).
+const PICTURE_EVERY: std::time::Duration = std::time::Duration::from_millis(330);
+
+/// Cadrage en images fixes, pour les caméras sans flux MJPEG en HTTP.
+/// `Ok(())` à l'annulation ; un refus est `Auth`, une réponse sans JPEG une erreur.
+async fn poll_pictures(
+    http: &dyn CameraHttp,
+    url: String,
+    creds: &Credentials,
+    cancel: CancellationToken,
+    mut on_frame: impl FnMut(Bytes) + Send,
+) -> Result<(), NetError> {
+    loop {
+        let req = HttpRequest { method: Method::Get, url: url.clone(), body: None, content_type: None };
+        let resp = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            r = http.send(req, Some(creds)) => r?,
+        };
+        match resp.status {
+            200 if resp.body.starts_with(&[0xFF, 0xD8]) => on_frame(Bytes::from(resp.body)),
+            200 => return Err(NetError::Io("image fixe illisible".into())),
+            401 | 403 => return Err(NetError::Auth),
+            s => return Err(NetError::Status(s)),
+        }
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(PICTURE_EVERY) => {}
+        }
+    }
+}
+
 /// `Ok(())` à l'annulation ; `Err` si le flux se ferme ou si l'auth échoue.
 ///
 /// Une caméra qui ne sert pas `resolution=640x360` (refus, ou réponse sans
@@ -244,9 +283,18 @@ pub async fn run_stream(
     mut on_frame: impl FnMut(Bytes) + Send,
 ) -> Result<(), NetError> {
     let retry = without_resolution(&url);
+    let snapshot = picture_url(&url);
     let opened = match (open(http, url, creds, &cancel).await, retry) {
-        (Err(NetError::Status(_)), Some(u)) => open(http, u, creds, &cancel).await,
+        (Err(NetError::Status(s)), Some(u)) if s != 403 => open(http, u, creds, &cancel).await,
         (Err(NetError::Io(m)), Some(u)) if m == NOT_MULTIPART => open(http, u, creds, &cancel).await,
+        (r, _) => r,
+    };
+    let opened = match (opened, snapshot) {
+        // Hikvision sans flux HTTP (V5.3 : 403 « Invalid Operation ») : images fixes.
+        (Err(NetError::Status(_)), Some(u)) => return poll_pictures(http, u, creds, cancel, on_frame).await,
+        (Err(NetError::Io(m)), Some(u)) if m == NOT_MULTIPART => return poll_pictures(http, u, creds, cancel, on_frame).await,
+        // Ailleurs, un 403 est un refus (Axis : compte sans droit de vue).
+        (Err(NetError::Status(403)), None) => Err(NetError::Auth),
         (r, _) => r,
     };
     let Some((mut parser, mut body)) = opened? else { return Ok(()) };
@@ -574,5 +622,63 @@ mod tests {
         let r = run_stream(&http, WITH_RES.into(), &creds(), CancellationToken::new(), |_| {}).await;
         assert!(matches!(r, Err(NetError::Status(500))));
         assert_eq!(urls(&http), [WITH_RES, WITHOUT_RES]);
+    }
+
+    const PREVIEW: &str = "http://192.0.2.21/ISAPI/Streaming/channels/102/httpPreview";
+    const PICTURE: &str = "http://192.0.2.21/ISAPI/Streaming/channels/102/picture";
+    const INVALID_OP: &str = "<ResponseStatus><statusCode>4</statusCode><subStatusCode>invalidOperation</subStatusCode></ResponseStatus>";
+
+    /// Hikvision V5.3 (DS-2CD2132F, 2015) : `httpPreview` répond 403
+    /// « Invalid Operation ». Le cadrage passe en images fixes (`picture`),
+    /// et ce 403 n'est pas un refus d'identifiants.
+    #[tokio::test(start_paused = true)]
+    async fn hikvision_sans_httppreview_passe_en_images_fixes() {
+        for status in [403, 400, 404] {
+            let http = FakeHttp::new()
+                .on(Method::Get, "/ISAPI/Streaming/channels/102/httpPreview", status, INVALID_OP)
+                .on(Method::Get, "/ISAPI/Streaming/channels/102/picture", 200, jpeg(7));
+            let cancel = CancellationToken::new();
+            let (c2, mut seen) = (cancel.clone(), 0);
+            let r = run_stream(&http, PREVIEW.into(), &creds(), cancel, |f| {
+                assert_eq!(f.len(), 11);
+                seen += 1;
+                if seen == 3 { c2.cancel(); }
+            })
+            .await;
+            assert!(r.is_ok(), "statut {status} : {r:?}");
+            assert_eq!(seen, 3);
+            assert_eq!(urls(&http), [PREVIEW, PICTURE, PICTURE, PICTURE]);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn images_fixes_refus_et_reponse_illisible() {
+        // Le bon refus (401) reste un refus, sans essai de `picture`.
+        let http = FakeHttp::new().on(Method::Get, "/ISAPI/Streaming/channels/102/httpPreview", 401, "");
+        let r = run_stream(&http, PREVIEW.into(), &creds(), CancellationToken::new(), |_| {}).await;
+        assert!(matches!(r, Err(NetError::Auth)));
+        assert_eq!(urls(&http), [PREVIEW]);
+        // `picture` refusé : refus aussi ; ni JPEG ni 200 : erreur, jamais une image.
+        let http = FakeHttp::new()
+            .on(Method::Get, "/ISAPI/Streaming/channels/102/httpPreview", 403, INVALID_OP)
+            .on(Method::Get, "/ISAPI/Streaming/channels/102/picture", 401, "");
+        let r = run_stream(&http, PREVIEW.into(), &creds(), CancellationToken::new(), |_| {}).await;
+        assert!(matches!(r, Err(NetError::Auth)));
+        let http = FakeHttp::new()
+            .on(Method::Get, "/ISAPI/Streaming/channels/102/httpPreview", 403, INVALID_OP)
+            .on(Method::Get, "/ISAPI/Streaming/channels/102/picture", 200, "<html>");
+        let mut seen = 0;
+        let r = run_stream(&http, PREVIEW.into(), &creds(), CancellationToken::new(), |_| seen += 1).await;
+        assert!(r.is_err());
+        assert_eq!(seen, 0);
+    }
+
+    /// Hors Hikvision, un 403 reste un refus (Axis : compte sans droit de vue).
+    #[tokio::test]
+    async fn axis_403_reste_un_refus() {
+        let http = FakeHttp::new().on(Method::Get, "/axis-cgi/mjpg", 403, "");
+        let r = run_stream(&http, WITH_RES.into(), &creds(), CancellationToken::new(), |_| {}).await;
+        assert!(matches!(r, Err(NetError::Auth)));
+        assert_eq!(urls(&http), [WITH_RES]);
     }
 }
