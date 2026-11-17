@@ -6,6 +6,20 @@ All notable changes to LenScout are documented here (EN/FR).
 Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 `### English` et `### Français` par version. SemVer.
 
+## [0.2.3] - 2026-11-17
+
+### English
+
+- **New Site tab**: pick a client to see its whole network: occupancy bar, surveyed devices listed in the page, known cameras. A click on a camera opens it in Framing. The account sheet keeps only its settings, with a "View site" button.
+- **Free and reserved IPs**: the Site tab lists every free address of the account's network. An address can be reserved, with an optional label, for a camera set up behind a switch that is not configured yet. A reserved address is taken everywhere: network bar, free IP search, address sheets. The reservation goes away by itself once the device shows up in a survey.
+- **Devices unseen for six months free their address**: they stay in the list, dimmed, and can still be forgotten.
+
+### Français
+
+- **Nouvel onglet Site** : on choisit le client et on voit tout son réseau : barre d'occupation, appareils relevés listés dans la page, caméras connues. Un clic sur une caméra l'ouvre dans le Cadrage. La fiche du compte ne garde que ses réglages, avec un bouton « Voir le site ».
+- **IP libres et réservées** : l'onglet Site liste toutes les adresses libres du réseau du compte. Une adresse se réserve, avec un libellé facultatif, pour une caméra configurée derrière un switch qui ne l'est pas encore. Une adresse réservée est prise partout : barre du réseau, recherche d'IP libres, feuilles d'adresses. La réservation saute d'elle-même dès que l'appareil apparaît dans un relevé.
+- **Un appareil absent des relevés depuis six mois libère son adresse** : il reste dans la liste, atténué, et « Oublier » reste possible.
+
 ## [0.2.2] - 2026-11-17
 
 ### English
