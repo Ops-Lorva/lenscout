@@ -24,7 +24,9 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(3);
 const LOGIN_PARALLEL: usize = 16;
 /// Au-delà de 2 refus en 30 min, une caméra n'est plus essayée : Hikvision
 /// verrouille après 5 à 7 échecs (30 min) et Cadrage / Opérations consomment
-/// aussi des essais. À VÉRIFIER sur vraie Hikvision / LTS.
+/// aussi des essais. Vu sur DS-2CD2132F-IWS (17/11/2026) : verrouillage actif,
+/// nombre d'essais non réglable (`/ISAPI/Security/illegalLoginLock` ne rend
+/// que `<enabled>`), donc le seuil fixe du firmware. LTS non vérifiée.
 const LOGIN_GUARD: LoginGuard = LoginGuard { max_denials: 2, window: Duration::from_secs(30 * 60) };
 
 /// Le test en cours (un seul, remplacé au démarrage du suivant) et les refus
