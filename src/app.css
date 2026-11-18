@@ -190,6 +190,9 @@ select:disabled, input:disabled { opacity: .55; cursor: not-allowed; }
 .field { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); font-weight: 500; }
 /* Barre du haut de chaque écran, bord à bord. */
 .tools.bar { margin: 0; padding: 12px 24px; min-height: 59px; border-bottom: 1px solid var(--line); }
+/* Dans une page en colonne, une longue liste écraserait la barre jusqu'à sa
+   min-height : la barre passée à la ligne (Rescan) finissait sous les onglets. */
+.page > .tools, .page > .tabs, .page > .err { flex-shrink: 0; }
 .tools.bar .title { flex: none; margin-right: 8px; }
 /* Barre de la sélection, sous la barre du haut. */
 .tools.selbar { margin: 0; padding: 8px 24px; min-height: 52px; border-bottom: 1px solid var(--line); background: var(--page); gap: 8px; }
