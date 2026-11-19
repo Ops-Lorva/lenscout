@@ -21,6 +21,9 @@ use crate::proc::async_cmd;
 const PING_TIMEOUT_MS: u64 = 600;
 /// Pings en vol en même temps.
 const CONCURRENCY: usize = 64;
+/// Second tir des pings refusés : moins à la fois (un `ping` qui n'a pas pu
+/// démarrer manquait souvent de place).
+const RETRY_CONCURRENCY: usize = 8;
 /// Plus grand nombre d'adresses balayées ; au-delà, celles du poste d'abord.
 const MAX_CANDIDATES: usize = 1024;
 
@@ -285,8 +288,12 @@ pub struct Pinged {
 }
 
 /// Pingue `targets`, `CONCURRENCY` à la fois ; `progress(faits, total)` à
-/// chaque ping terminé. Plus d'un tir sur dix qui n'a pas pu partir :
-/// `PingUnavailable` (le résultat ne dirait rien du réseau).
+/// chaque ping terminé. Un tir refusé repart une fois, `RETRY_CONCURRENCY` à
+/// la fois : un refus peut être passager (adresse du poste qui apparaît à
+/// peine, processus `ping` qui n'a pas démarré). Restent plus d'un tir sur dix
+/// refusés, et aucune réponse : `PingUnavailable` (le résultat ne dirait rien
+/// du réseau). Une seule réponse prouve que le ping part ; les adresses
+/// restées refusées ne sont alors ni répondantes ni silencieuses.
 pub async fn ping_all(
     targets: &[Ipv4Addr],
     probe: &dyn FreeProbe,
@@ -300,33 +307,52 @@ pub async fn ping_all(
     progress(0, total);
     let mut alive: HashSet<Ipv4Addr> = HashSet::new();
     let mut silent: HashSet<Ipv4Addr> = HashSet::new();
-    let mut unsent = 0usize;
+    let mut refused: Vec<Ipv4Addr> = Vec::new();
     let mut done = 0usize;
+    fire(targets, probe, CONCURRENCY, cancel, |a, r| {
+        done += 1;
+        match r {
+            Reply::Alive => { alive.insert(a); }
+            Reply::Silent => { silent.insert(a); }
+            Reply::Unsent => refused.push(a),
+        }
+        progress(done, total);
+    })
+    .await?;
+    let mut unsent = 0usize;
+    fire(&refused, probe, RETRY_CONCURRENCY, cancel, |a, r| match r {
+        Reply::Alive => { alive.insert(a); }
+        Reply::Silent => { silent.insert(a); }
+        Reply::Unsent => unsent += 1,
+    })
+    .await?;
+    if alive.is_empty() && unsent * 10 > total {
+        return Err(FreeError::PingUnavailable);
+    }
+    Ok(Pinged { alive, silent })
+}
+
+/// Un ping par adresse, `concurrency` en vol ; `each` reçoit chaque sort.
+async fn fire(
+    targets: &[Ipv4Addr],
+    probe: &dyn FreeProbe,
+    concurrency: usize,
+    cancel: &CancellationToken,
+    mut each: impl FnMut(Ipv4Addr, Reply),
+) -> Result<(), FreeError> {
     let mut replies = futures_util::stream::iter(targets.iter().copied())
         .map(|a| async move { (a, probe.ping(a).await) })
-        .buffer_unordered(CONCURRENCY);
+        .buffer_unordered(concurrency);
     loop {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(FreeError::Cancelled),
             next = replies.next() => match next {
-                None => break,
-                Some((a, r)) => {
-                    done += 1;
-                    match r {
-                        Reply::Alive => { alive.insert(a); }
-                        Reply::Silent => { silent.insert(a); }
-                        Reply::Unsent => unsent += 1,
-                    }
-                    progress(done, total);
-                }
+                None => return Ok(()),
+                Some((a, r)) => each(a, r),
             },
         }
     }
-    if unsent * 10 > total {
-        return Err(FreeError::PingUnavailable);
-    }
-    Ok(Pinged { alive, silent })
 }
 
 /// Balaie le sous-réseau de `iface` : ce qui répond au ping, figure dans la
@@ -423,6 +449,9 @@ mod tests {
         neigh: HashSet<Ipv4Addr>,
         unsent: bool,
         unsent_for: HashSet<Ipv4Addr>,
+        /// Premier tir refusé, les suivants partent (adresse du poste pas
+        /// encore là, processus `ping` qui n'a pas pu démarrer).
+        unsent_once: Mutex<HashSet<Ipv4Addr>>,
         pinged: Mutex<Vec<Ipv4Addr>>,
         /// Nombre de pings attendus avant la lecture ARP ; `None` : pas de contrôle.
         pings_before_arp: Option<usize>,
@@ -435,6 +464,7 @@ mod tests {
                 neigh: neigh.iter().map(|s| ip(s)).collect(),
                 unsent: false,
                 unsent_for: HashSet::new(),
+                unsent_once: Mutex::new(HashSet::new()),
                 pinged: Mutex::new(vec![]),
                 pings_before_arp: None,
             }
@@ -445,7 +475,7 @@ mod tests {
     impl FreeProbe for Fake {
         async fn ping(&self, a: Ipv4Addr) -> Reply {
             self.pinged.lock().unwrap().push(a);
-            if self.unsent || self.unsent_for.contains(&a) {
+            if self.unsent || self.unsent_for.contains(&a) || self.unsent_once.lock().unwrap().remove(&a) {
                 Reply::Unsent
             } else if self.alive.contains(&a) {
                 Reply::Alive
@@ -604,6 +634,30 @@ mod tests {
         fake.unsent_for = (100..126).map(|n| Ipv4Addr::new(192, 0, 2, n)).collect();
         let r = scan(&lan(), HashSet::new(), &HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await;
         assert_eq!(r, Err(FreeError::PingUnavailable));
+    }
+
+    /// Un refus passager (premier tir) n'est pas un ping impossible : les
+    /// tirs refusés repartent une fois, et c'est leur second sort qui compte.
+    #[tokio::test]
+    async fn pings_refused_once_are_fired_again_before_any_verdict() {
+        let fake = Fake::new(&["192.0.2.100"], &[]);
+        *fake.unsent_once.lock().unwrap() = (100..200).map(|n| Ipv4Addr::new(192, 0, 2, n)).collect();
+        let fake = Arc::new(fake);
+        let out = scan(&lan(), HashSet::new(), &HashSet::new(), fake.clone(), |_, _| {}, CancellationToken::new()).await.unwrap();
+        // .100 a répondu au second tir : prise ; les autres sont libres.
+        assert!(out.ranges.iter().all(|r| !(r.first..=r.last).contains(&ip("192.0.2.100"))));
+        assert!(out.ranges.iter().any(|r| (r.first..=r.last).contains(&ip("192.0.2.150"))));
+        assert_eq!(fake.pinged.lock().unwrap().len(), 253 + 100);
+    }
+
+    /// Une réponse prouve que le ping part : des refus, même nombreux, ne
+    /// font plus « ping impossible » (ces adresses ne sont jamais libres).
+    #[tokio::test]
+    async fn a_reply_proves_ping_works_despite_refusals() {
+        let mut fake = Fake::new(&["192.0.2.1"], &[]);
+        fake.unsent_for = (100..126).map(|n| Ipv4Addr::new(192, 0, 2, n)).collect();
+        let out = scan(&lan(), HashSet::new(), &HashSet::new(), Arc::new(fake), |_, _| {}, CancellationToken::new()).await.unwrap();
+        assert!(out.ranges.iter().all(|r| !(r.first..=r.last).contains(&ip("192.0.2.110"))));
     }
 
     // Sorties de ping.exe localisées : les accents arrivent en page de code OEM

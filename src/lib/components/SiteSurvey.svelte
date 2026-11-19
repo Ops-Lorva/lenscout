@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { _, locale } from 'svelte-i18n';
   import { interfaceDetails } from '#lib/api/core.ts';
   import { errorKey } from '#lib/api/errors.ts';
+  import { markPingWorked, pingWorked, withoutPingUnavailable } from '#lib/api/freeIps.ts';
   import { activeAddress, joined } from '#lib/api/net.ts';
   import { accountDevices, cancelSurvey, nextSurveyRun, onAccountNetwork, startSurvey, type SeenDevice } from '#lib/api/siteNet.ts';
   import { cameras } from '#lib/stores/cameras.ts';
@@ -71,6 +72,7 @@
           devices = e.devices;
           surveyedAt = e.surveyed_at;
           truncated = e.truncated;
+          markPingWorked();
           onDone();
         }
       });
@@ -80,6 +82,13 @@
       if (run?.id === id) run = null;
     }
   }
+
+  // Un ping a abouti depuis (ici ou dans une recherche d'IP libres) : le
+  // « ping impossible » d'un essai précédent ne vaut plus.
+  $effect(() => {
+    void $pingWorked;
+    untrack(() => (error = withoutPingUnavailable(error)));
+  });
 
   function stop() {
     if (run) void cancelSurvey(run.id).catch(() => {});

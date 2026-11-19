@@ -1,4 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
+import { writable } from 'svelte/store';
 import { errorKey } from './errors';
 
 /** Miroir de `FreeRange` (free_ips.rs). */
@@ -52,6 +53,17 @@ export const cancelFreeIps = (id: number) => invoke<void>('cmd_free_ips_cancel',
 
 /** Clé i18n (espace `free`) d'une erreur du balayage. */
 export const freeErrorKey = (e: unknown): string => `free.${errorKey(e)}`;
+
+/**
+ * Compteur des balayages au ping arrivés au bout (relevé, IP libres) : un
+ * « ping impossible » affiché ailleurs date d'un essai précédent (adresse du
+ * compte pas encore posée, accès au réseau local accordé depuis) et s'efface.
+ */
+export const pingWorked = writable(0);
+export const markPingWorked = () => pingWorked.update((n) => n + 1);
+
+/** `error` (clé i18n), sauf un « ping impossible » : vide. */
+export const withoutPingUnavailable = (error: string): string => (error.endsWith('.error.ping_unavailable') ? '' : error);
 
 const num = (ip: string): number | null => {
   const p = ip.trim().split('.');

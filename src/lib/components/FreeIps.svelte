@@ -3,7 +3,7 @@
   import { page } from '#lib/stores/nav.ts';
   import { _ } from 'svelte-i18n';
   import {
-    cancelFreeIps, freeErrorKey, networkLabel, rangeContaining, rangeLabel, reduceFreeEvent, startFreeIps,
+    cancelFreeIps, freeErrorKey, markPingWorked, networkLabel, rangeContaining, rangeLabel, reduceFreeEvent, startFreeIps,
     type FreeRange, type FreeState,
   } from '#lib/api/freeIps.ts';
   import { joined, joinRequest, needsJoin } from '#lib/api/net.ts';
@@ -74,7 +74,10 @@
         (e) => {
           if (!alive || mine !== run) return;
           sweep = reduceFreeEvent(sweep, e);
-          if (e.kind === 'done') onFound(e.ranges);
+          if (e.kind === 'done') {
+            markPingWorked();
+            onFound(e.ranges);
+          }
         },
         accountId,
         own,

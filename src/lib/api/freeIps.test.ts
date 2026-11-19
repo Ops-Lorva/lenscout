@@ -7,7 +7,8 @@ vi.mock('@tauri-apps/api/core', () => ({
     onmessage: ((m: unknown) => void) | null = null;
   },
 }));
-import { cancelFreeIps, firstFit, networkLabel, rangeContaining, rangeLabel, reduceFreeEvent, startFreeIps, type FreeRange, type FreeState } from './freeIps';
+import { get } from 'svelte/store';
+import { cancelFreeIps, firstFit, markPingWorked, networkLabel, pingWorked, rangeContaining, rangeLabel, reduceFreeEvent, startFreeIps, withoutPingUnavailable, type FreeRange, type FreeState } from './freeIps';
 
 const r = (first: string, last: string, count: number): FreeRange => ({ first, last, count });
 
@@ -94,4 +95,13 @@ test('deux balayages ont deux numéros différents', () => {
   const b = startFreeIps('eth0', () => {});
   expect(b.id).not.toBe(a.id);
   expect(Number.isSafeInteger(a.id)).toBe(true);
+});
+
+test('un ping qui aboutit efface le « ping impossible » d\'un essai précédent, et lui seul', () => {
+  const before = get(pingWorked);
+  markPingWorked();
+  expect(get(pingWorked)).toBe(before + 1);
+  expect(withoutPingUnavailable('free.error.ping_unavailable')).toBe('');
+  expect(withoutPingUnavailable('free.error.not_on_account_network')).toBe('free.error.not_on_account_network');
+  expect(withoutPingUnavailable('')).toBe('');
 });
