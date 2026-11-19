@@ -6,6 +6,22 @@ All notable changes to LenScout are documented here (EN/FR).
 Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 `### English` et `### Français` par version. SemVer.
 
+## [0.2.6] - 2026-11-19
+
+### English
+
+- **Fixed: a camera plugged in directly on 169.254 is now read** (serial, firmware, state) through a temporary address.
+- **Fixed: scanning and applying an account work on an interface without an IP address.**
+- **Fixed: "Ping is not possible" no longer shows after a temporary refusal.**
+- **Fixed: the Rescan button no longer slides under the tabs when the search is empty.**
+
+### Français
+
+- **Corrigé : une caméra branchée en direct en 169.254 est lue** (série, firmware, état) via une adresse temporaire.
+- **Corrigé : scan et pose d'un compte fonctionnent sur une interface sans adresse IP.**
+- **Corrigé : « Ping impossible » ne s'affiche plus après un refus passager.**
+- **Corrigé : le bouton Rescan ne glisse plus sous les onglets quand la recherche est vide.**
+
 ## [0.2.5] - 2026-11-17
 
 ### English
