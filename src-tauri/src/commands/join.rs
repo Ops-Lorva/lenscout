@@ -220,7 +220,14 @@ pub(crate) fn join_target(net: &AccountNetwork, iface: &ScanInterface, others: &
     Ok(TempIp { iface: iface.name.clone(), ip, mask })
 }
 
-fn temp_ip_code(e: TempIpError) -> String {
+/// Le routeur joint-il le réseau du compte par cette interface ? À
+/// demander seulement si elle a une adresse : sans, rien ne part par elle,
+/// la route et le ping passeraient par une autre.
+pub(crate) fn routed_check(base: &ScanInterface) -> bool {
+    !base.is_unaddressed()
+}
+
+pub(crate) fn temp_ip_code(e: TempIpError) -> String {
     match e {
         TempIpError::ElevationRefused => "elevation_refused",
         TempIpError::Busy => "temp_ip_busy",
@@ -274,7 +281,7 @@ async fn release_current(state: &JoinState) -> Result<(), String> {
 
 /// Erreurs : codes stables (`not_found`, `account_no_pc_ip`,
 /// `pc_ip_prefix_unsupported`, `iface_unknown`,
-/// `iface_no_ipv4`, `already_in_network`, `network_overlaps_other_iface`,
+/// `already_in_network`, `network_overlaps_other_iface`,
 /// `pc_ip_in_use`, `elevation_refused`, `temp_ip_busy`, `temp_ip_failed`,
 /// `temp_ip_left`, `join_lost`, `internal`), traduits par le front.
 ///
@@ -303,8 +310,8 @@ pub async fn cmd_join_network(
         if !up.contains(&name) {
             return Err("iface_unknown".to_string());
         }
-        let fresh = ScanInterface::from_details(&name, &get_interface_details(&name))
-            .ok_or_else(|| "iface_no_ipv4".to_string())?;
+        // Sans adresse (IPv4 coupé, pas de bail) : l'adresse du compte se pose quand même.
+        let fresh = ScanInterface::from_details_or_unaddressed(&name, &get_interface_details(&name));
         let others: Vec<ScanInterface> = up
             .iter()
             .filter(|n| **n != name)
@@ -331,7 +338,7 @@ pub async fn cmd_join_network(
     // rien n'est posé : l'adresse du compte couperait l'accès routé.
     let gateway: Option<Ipv4Addr> = account.net.gateway.as_deref().and_then(|g| g.parse().ok());
     let probe = probe_address(target.ip, target.mask, gateway);
-    let via = routed_via(&SystemRoutes, &SystemProbe { iface: base.clone() }, probe).await;
+    let via = if routed_check(&base) { routed_via(&SystemRoutes, &SystemProbe { iface: base.clone() }, probe).await } else { None };
     lenscout_core::debug_log::log(&match via {
         Some(v) => format!("compte : {probe:?} joint par le routeur {v}, rien n'est posé"),
         None => format!("compte : {probe:?} ni routé ni joignable, l'adresse est posée"),
@@ -401,7 +408,7 @@ const PRESENCE_EVERY: std::time::Duration = std::time::Duration::from_millis(200
 
 /// Attend que l'adresse posée soit utilisable (`present`), au plus
 /// `PRESENCE_TIMEOUT`. Code : `pc_ip_not_present`.
-async fn wait_present(t: &TempIp, mut present: impl FnMut(Ipv4Addr) -> bool) -> Result<(), String> {
+pub(crate) async fn wait_present(t: &TempIp, mut present: impl FnMut(Ipv4Addr) -> bool) -> Result<(), String> {
     let ip = t.ip;
     if presence::wait_until(|| present(ip), PRESENCE_TIMEOUT, PRESENCE_EVERY).await {
         Ok(())
@@ -536,6 +543,20 @@ mod tests {
         for bad in ["192.168.1.250/31", "10.0.0.250/7", "192.168.1.250/32", "192.168.1.250/0"] {
             assert_eq!(join_target(&net(Some(bad)), &i, &[]).unwrap_err(), "pc_ip_prefix_unsupported", "{bad}");
         }
+    }
+
+    /// Sans adresse sur l'interface, le profil du compte se pose quand même.
+    #[test]
+    fn an_interface_without_address_can_take_the_account_address() {
+        let none = ScanInterface { name: "en7".into(), ip: Ipv4Addr::UNSPECIFIED, mask: Ipv4Addr::BROADCAST };
+        assert!(none.is_unaddressed());
+        let t = join_target(&net(Some("192.168.1.250/24")), &none, &[]).unwrap();
+        assert_eq!(t, temp("en7", "192.168.1.250", "255.255.255.0"));
+        assert!(!routed_check(&none));
+        assert!(routed_check(&en0("10.0.0.5", "255.255.0.0")));
+        // Auto-assignée en 169.254 : de même.
+        let ll = iface("en7", "169.254.33.4", "255.255.0.0");
+        assert!(join_target(&net(Some("192.168.1.250/24")), &ll, &[]).is_ok());
     }
 
     #[test]

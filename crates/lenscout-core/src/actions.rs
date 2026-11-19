@@ -291,15 +291,28 @@ pub fn on_subnet(iface: &ScanInterface, ip: Ipv4Addr) -> bool {
 ///
 /// Sinon `camera_off_subnet`, avant toute requête et toute invite.
 fn off_subnet_allowed(ctx: &ActionContext, ip: Ipv4Addr) -> bool {
+    off_subnet_refusal(ctx, ip).is_none()
+}
+
+/// Pourquoi `off_subnet_allowed` refuse, pour le journal de mise au point
+/// (seul le terrain dit quelle condition tombe) ; `None` : accepté.
+fn off_subnet_refusal(ctx: &ActionContext, ip: Ipv4Addr) -> Option<String> {
+    if ctx.seen_iface.as_deref() != Some(ctx.iface.name.as_str()) {
+        return Some("dernier scan fait sur une autre interface".into());
+    }
+    if !ctx.seen.contains(&ip) {
+        return Some("pas entendue au dernier scan".into());
+    }
+    if !reachable_with_temp_ip(ip) {
+        return Some("adresse publique".into());
+    }
     let mask = temp_mask(ip);
-    ctx.seen_iface.as_deref() == Some(ctx.iface.name.as_str())
-        && ctx.seen.contains(&ip)
-        && reachable_with_temp_ip(ip)
-        && !ctx
-            .other_ifaces
-            .iter()
-            .filter(|o| o.name != ctx.iface.name)
-            .any(|o| subnets_overlap(ip, mask, o.ip, o.mask))
+    let other = ctx
+        .other_ifaces
+        .iter()
+        .filter(|o| o.name != ctx.iface.name)
+        .find(|o| subnets_overlap(ip, mask, o.ip, o.mask))?;
+    Some(format!("réseau d'une autre interface : {} {}/{}", other.name, other.ip, other.mask))
 }
 
 /// Mode routé : une caméra hors du sous-réseau de l'interface est jointe à
@@ -367,7 +380,8 @@ async fn apply_checked(
     // Le routeur joint la caméra : ni IP temporaire, ni invite ; l'identité
     // (n° de série, la MAC ne passe pas le routeur) est relue comme ailleurs.
     let on = on_subnet(&ctx.iface, cam.ip) || routed_for(ctx, cam.ip).await;
-    if !on && !off_subnet_allowed(ctx, cam.ip) {
+    if !on && let Some(why) = off_subnet_refusal(ctx, cam.ip) {
+        crate::debug_log::log(&format!("action : {} hors du sous-réseau de {} ({}/{}), {why}", cam.ip, ctx.iface.name, ctx.iface.ip, ctx.iface.mask));
         return Err(ActionError::CameraOffSubnet);
     }
     if !on && ctx.account_network {
@@ -396,6 +410,86 @@ async fn apply_checked(
         Err(TempIpError::ElevationRefused) => Err(ActionError::ElevationRefused { ip: cam.ip }),
         Err(TempIpError::Busy) => Err(ActionError::TempIpBusy),
         // Journal encore là : une adresse est restée sur le poste.
+        Err(_) => Err(match read_journal(&ctx.journal) {
+            Ok(Some(left)) => ActionError::TempIpLeft { ip: left.ip },
+            _ => ActionError::TempIpFailed,
+        }),
+    }
+}
+
+/// Les Axis en lien local (169.254/16) hors du sous-réseau de l'interface
+/// que l'IP temporaire peut joindre (`off_subnet_allowed`) : branchées en
+/// direct, le scan les entend sans pouvoir les interroger. Seules sur leur
+/// adresse ; jamais avec un compte posé (il tient le verrou de l'IP temporaire).
+fn link_local_targets<'a>(ctx: &ActionContext, cams: &'a [Camera]) -> Vec<&'a Camera> {
+    if ctx.account_network {
+        return vec![];
+    }
+    let alone = |ip: Ipv4Addr| cams.iter().filter(|c| c.ip == ip).count() == 1;
+    cams.iter()
+        .filter(|c| c.family == Family::Axis && c.ip.is_link_local() && alone(c.ip))
+        .filter(|c| !on_subnet(&ctx.iface, c.ip) && off_subnet_allowed(ctx, c.ip))
+        .collect()
+}
+
+/// Ce que le scan lit d'une Axis (identité, état ; avec `creds`, l'adressage
+/// d'une caméra lue activée), pour les caméras de `link_local_targets`, sous
+/// une seule IP temporaire en 169.254/16. Rend les lignes complétées. Un
+/// n° de série qui n'est pas la MAC de la ligne : un autre appareil, rien de
+/// lui n'entre. Aucune cible : ni invite, ni requête.
+pub async fn read_link_local(ctx: &ActionContext, cams: &[Camera], creds: Option<&Credentials>) -> Result<Vec<Camera>, ActionError> {
+    let targets = link_local_targets(ctx, cams);
+    let Some(first) = targets.first() else {
+        return Ok(vec![]);
+    };
+    let avoid: Vec<Ipv4Addr> = ctx.seen.iter().chain(&ctx.in_use).copied().chain(targets.iter().map(|c| c.ip)).collect();
+    let temp = pick_temp_ip(&ctx.iface.name, first.ip, &avoid, rand::random()).map_err(|_| ActionError::TempIpFailed)?;
+    let read = with_temp_ip(ctx.elevator.as_ref(), &ctx.journal, &temp, &ctx.service, || async {
+        let http = ctx.http.as_ref();
+        let mut out: Vec<Camera> = futures_util::future::join_all(targets.iter().map(|cam| async move {
+            let base = cam.base_url();
+            let (info, activation) = tokio::join!(vapix::device_info(http, &base), vapix::activation_state(http, &base));
+            let info = info.ok()?;
+            let same = match (cam.mac.as_deref().and_then(normalize_mac), info.serial.as_deref().and_then(mac_from_serial)) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            };
+            if !same {
+                return None;
+            }
+            let mut c = (*cam).clone();
+            if c.model.is_none() {
+                c.model = info.model;
+            }
+            if c.brand.is_none() {
+                c.brand = info.brand;
+            }
+            c.serial = info.serial.or(c.serial);
+            c.firmware = info.firmware.or(c.firmware);
+            if activation != Activation::Unknown {
+                c.activation = activation;
+            }
+            Some(c)
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+        if let Some(creds) = creds {
+            let activated = out.iter().filter(|c| c.activation == Activation::Activated).map(|c| (c.ip, c.base_url())).collect();
+            for (ip, addressing) in vapix::addressing_of_all(http, activated, creds, 4).await {
+                if let Some(c) = out.iter_mut().find(|c| c.ip == ip) {
+                    c.addressing = Some(addressing);
+                }
+            }
+        }
+        out
+    })
+    .await;
+    match read {
+        Ok(out) => Ok(out),
+        Err(TempIpError::ElevationRefused) => Err(ActionError::ElevationRefused { ip: first.ip }),
+        Err(TempIpError::Busy) => Err(ActionError::TempIpBusy),
         Err(_) => Err(match read_journal(&ctx.journal) {
             Ok(Some(left)) => ActionError::TempIpLeft { ip: left.ip },
             _ => ActionError::TempIpFailed,
@@ -1557,6 +1651,98 @@ mod tests {
         assert_eq!(plans.len(), 2);
         assert_ne!(plans[0], plans[1], "un ajout puis un retrait");
         assert!(!c.journal.exists());
+    }
+
+    /// Branchée en direct, une Axis neuve en 169.254 est hors du sous-réseau
+    /// de l'interface : n° de série, firmware et état se lisent sous une
+    /// seule IP temporaire, comme une action.
+    #[tokio::test]
+    async fn link_local_cameras_are_read_through_one_temp_ip() {
+        let elev = Arc::new(FakeElevator::new());
+        let http = Arc::new(Watch { inner: axis_ok(), elev: elev.clone(), plans_at: Default::default() });
+        let c = ctx_with(http.clone(), elev.clone(), vec![ll_cam().ip]);
+        let mut seen = ll_cam();
+        seen.activation = Activation::Unknown;
+        let read = read_link_local(&c, &[seen], None).await.unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].serial.as_deref(), Some(SERIAL));
+        assert!(read[0].firmware.is_some());
+        assert_eq!(read[0].activation, Activation::New);
+        // Les lectures, toutes entre l'ajout et le retrait de l'adresse.
+        assert_eq!(*http.plans_at.lock().unwrap(), vec![1, 1]);
+        let plans = elev.plans();
+        assert_eq!(plans.len(), 2);
+        assert!(!c.journal.exists());
+    }
+
+    /// Rien d'autre ne vaut une invite : une adresse non entendue, privée,
+    /// dans le sous-réseau, une autre marque, ou un compte posé.
+    #[tokio::test]
+    async fn only_link_local_axis_heard_on_the_interface_are_read() {
+        let http = Arc::new(axis_ok());
+        let mut hik = cam("169.254.10.21", Family::Hikvision);
+        hik.mac = Some("C0:56:E3:00:00:21".into());
+        let cams = [cam("169.254.10.22", Family::Axis), cam("192.168.0.90", Family::Axis), cam("192.0.2.11", Family::Axis), hik];
+        let seen = cams.iter().map(|c| c.ip).collect();
+        let mut c = ctx_with(http.clone(), Arc::new(PanicElevator), seen);
+        c.seen.retain(|ip| *ip != cams[0].ip);
+        assert_eq!(read_link_local(&c, &cams, None).await, Ok(vec![]));
+        c.seen.push(ll_cam().ip);
+        c.account_network = true;
+        assert_eq!(read_link_local(&c, &[ll_cam()], None).await, Ok(vec![]));
+        assert!(http.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_elevation_reads_nothing() {
+        let http = Arc::new(axis_ok());
+        let elev = Arc::new(FakeElevator::replying(vec![Err(TempIpError::ElevationRefused)]));
+        let c = ctx_with(http.clone(), elev, vec![ll_cam().ip]);
+        let r = read_link_local(&c, &[ll_cam()], None).await;
+        assert_eq!(r, Err(ActionError::ElevationRefused { ip: ll_cam().ip }));
+        assert!(http.requests().is_empty());
+    }
+
+    /// Un autre appareil à cette adresse (n° de série ≠ MAC de la ligne) :
+    /// rien de lui n'entre dans la ligne.
+    #[tokio::test]
+    async fn another_device_at_the_address_fills_nothing() {
+        let elev = Arc::new(FakeElevator::new());
+        let c = ctx_with(Arc::new(axis_ok()), elev, vec![ll_cam().ip]);
+        let mut other = ll_cam();
+        other.mac = Some("AC:CC:8E:99:99:99".into());
+        assert_eq!(read_link_local(&c, &[other], None).await, Ok(vec![]));
+    }
+
+    /// Avec un compte, une Axis lue activée donne aussi son adressage.
+    #[tokio::test]
+    async fn with_an_account_an_activated_camera_gives_its_addressing() {
+        let elev = Arc::new(FakeElevator::new());
+        let http = Arc::new(
+            FakeHttp::new()
+                .on(Method::Post, "/axis-cgi/basicdeviceinfo.cgi", 200, INFO.to_vec())
+                .on(Method::Post, "/axis-cgi/systemready.cgi", 200, NEEDSETUP_NO)
+                .on(Method::Get, "/axis-cgi/param.cgi", 200, "root.Network.BootProto=dhcp\n"),
+        );
+        let c = ctx_with(http, elev, vec![ll_cam().ip]);
+        let read = read_link_local(&c, &[ll_cam()], Some(&creds())).await.unwrap();
+        assert_eq!(read[0].activation, Activation::Activated);
+        assert_eq!(read[0].addressing, Some(crate::model::Addressing::Dhcp));
+        let anonymous = read_link_local(&c, &[ll_cam()], None).await.unwrap();
+        assert_eq!(anonymous[0].addressing, None);
+    }
+
+    /// Le refus d'une IP temporaire dit pourquoi (journal de mise au point).
+    #[test]
+    fn an_off_subnet_refusal_says_why() {
+        let mut c = ctx_with(Arc::new(axis_ok()), Arc::new(PanicElevator), vec![ll_cam().ip, "8.8.8.8".parse().unwrap()]);
+        assert_eq!(off_subnet_refusal(&c, ll_cam().ip), None);
+        assert_eq!(off_subnet_refusal(&c, "169.254.1.1".parse().unwrap()).as_deref(), Some("pas entendue au dernier scan"));
+        assert_eq!(off_subnet_refusal(&c, "8.8.8.8".parse().unwrap()).as_deref(), Some("adresse publique"));
+        c.other_ifaces = vec![ScanInterface { name: "en0".into(), ip: "169.254.77.1".parse().unwrap(), mask: "255.255.0.0".parse().unwrap() }];
+        assert_eq!(off_subnet_refusal(&c, ll_cam().ip).as_deref(), Some("réseau d'une autre interface : en0 169.254.77.1/255.255.0.0"));
+        c.seen_iface = Some("en9".into());
+        assert_eq!(off_subnet_refusal(&c, ll_cam().ip).as_deref(), Some("dernier scan fait sur une autre interface"));
     }
 
     fn plan_for(ip: &str, mask: &str) -> crate::temp_ip::ElevatedPlan {

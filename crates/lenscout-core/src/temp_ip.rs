@@ -899,6 +899,16 @@ pub async fn hold_temp_ip(elev: &dyn Elevator, journal: &Path, t: &TempIp, servi
     Ok(HeldTempIp { t: t.clone(), service: service.to_string(), remove, journal: journal.to_path_buf(), _lock: lock })
 }
 
+/// Interface sans adresse (`ScanInterface::is_unaddressed`) : l'adresse en
+/// lien local (169.254.a.b/16) à poser le temps d'un scan, rien ne pouvant
+/// partir sans adresse. Une caméra neuve branchée en direct s'y trouve.
+pub fn scan_address(iface: &ScanInterface, seed: u64) -> Option<TempIp> {
+    if !iface.is_unaddressed() {
+        return None;
+    }
+    pick_temp_ip(&iface.name, Ipv4Addr::new(169, 254, 0, 0), &[], seed).ok()
+}
+
 /// L'interface vue par le scan, les actions et les adresses libres : celle
 /// de l'adresse gardée quand elle est posée sur cette interface.
 pub fn joined_scope(base: ScanInterface, held: Option<&TempIp>) -> ScanInterface {
@@ -1030,6 +1040,24 @@ mod tests {
     fn no_free_address() {
         let in_use: Vec<Ipv4Addr> = (200..=250).map(|d| Ipv4Addr::new(192, 168, 0, d)).collect();
         assert_eq!(pick_temp_ip("eth0", ip("192.168.0.90"), &in_use, 0), Err(TempIpError::NoFreeAddress));
+    }
+
+    /// Une interface sans adresse ne peut rien envoyer : son scan part d'une
+    /// adresse en lien local posée le temps du scan. Une adresse, même
+    /// auto-assignée, n'en demande aucune.
+    #[test]
+    fn only_an_unaddressed_interface_scans_from_a_link_local_temp_ip() {
+        let none = ScanInterface { name: "en7".into(), ip: ip("0.0.0.0"), mask: ip("255.255.255.255") };
+        for seed in [0, 7, u64::MAX] {
+            let t = scan_address(&none, seed).unwrap();
+            assert_eq!(t.iface, "en7");
+            assert!(t.ip.is_link_local() && t.ip.octets()[2] != 0 && t.ip.octets()[3] != 0, "{t:?}");
+            assert_eq!(t.mask, ip("255.255.0.0"));
+        }
+        let ll = ScanInterface { name: "en7".into(), ip: ip("169.254.33.4"), mask: ip("255.255.0.0") };
+        assert_eq!(scan_address(&ll, 0), None);
+        let lan = ScanInterface { name: "en7".into(), ip: ip("192.168.1.10"), mask: ip("255.255.255.0") };
+        assert_eq!(scan_address(&lan, 0), None);
     }
 
     #[test]

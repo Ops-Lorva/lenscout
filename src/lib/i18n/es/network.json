@@ -25,7 +25,6 @@
   "frame": "Encuadrar",
   "error": {
     "iface_unknown": "Interfaz desconocida",
-    "iface_no_ipv4": "Interfaz sin dirección IPv4",
     "no_socket": "Sin socket de descubrimiento",
     "bad_ip": "Dirección IPv4 no válida",
     "bad_port": "Puerto no válido",

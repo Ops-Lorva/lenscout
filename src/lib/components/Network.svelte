@@ -3,7 +3,7 @@
   import { get } from 'svelte/store';
   import { _ } from 'svelte-i18n';
   import { interfaceDetails, listInterfaces } from '#lib/api/core.ts';
-  import { cancelScan, openCameraWeb, readAddressing, startScan } from '#lib/api/discovery.ts';
+  import { cancelScan, openCameraWeb, readAddressing, readLinkLocal, startScan } from '#lib/api/discovery.ts';
   import type { Camera } from '#lib/api/types.ts';
   import { errorKey } from '#lib/api/errors.ts';
   import { cameraCounts, cameraKey, cameras, clear, filter, query, selection, setAddressing, shouldAutoScan, sort, type SortColumn, toggleSort, upsert, visibleCameras } from '#lib/stores/cameras.ts';
@@ -87,6 +87,14 @@
         if (mine !== run) return;
         if (e.kind === 'upsert') upsert(e.camera);
       });
+      // Branchées en direct en 169.254, hors du sous-réseau : lues par une IP
+      // temporaire (n° de série, firmware, état, adressage avec le compte).
+      if (mine === run) {
+        const [forIface, forAccount] = [iface, account];
+        void readLinkLocal(get(cameras), forIface, forAccount)
+          .then((read) => { if (mine === run) read.forEach((c) => upsert(c)); })
+          .catch((e) => { if (mine === run && forIface === iface) error = `network.${errorKey(e)}`; });
+      }
       // Après la découverte, sans la ralentir : l'adressage des Axis avec le
       // compte du réseau retenu. Un échec laisse « — ».
       if (mine === run && account) {

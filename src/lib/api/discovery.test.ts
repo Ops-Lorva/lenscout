@@ -2,7 +2,7 @@ import { describe, expect, it, test, vi } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke, Channel: class {} }));
-import { addressingKey, cameraBrand, cameraName, readAddressing, shownMac, startScan } from './discovery';
+import { addressingKey, cameraBrand, cameraName, readAddressing, readLinkLocal, shownMac, startScan } from './discovery';
 import type { Camera } from './types';
 
 const cam = (over: Partial<Camera>): Camera => ({
@@ -75,4 +75,19 @@ test('le scan part avec le compte du réseau retenu, aucun en DHCP', async () =>
   expect(invoke).toHaveBeenLastCalledWith('cmd_scan_start', expect.objectContaining({ iface: 'eth0', accountId: 'acc-1' }));
   await startScan('eth0', '', () => {});
   expect(invoke).toHaveBeenLastCalledWith('cmd_scan_start', expect.objectContaining({ accountId: null }));
+});
+
+test('après le scan, seules les Axis en 169.254 sans n° de série partent à la lecture par IP temporaire', async () => {
+  const ll = cam({ ip: '169.254.100.17', activation: 'unknown' });
+  invoke.mockReset();
+  invoke.mockResolvedValueOnce([{ ...ll, serial: 'ACCC8E123456' }]);
+  const others = [cam({ ip: '169.254.1.2', serial: 'X' }), cam({}), cam({ ip: '169.254.1.3', family: 'hikvision' })];
+  const read = await readLinkLocal([ll, ...others], 'USB 10/100/1000 LAN', 'acc');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_read_link_local', { cameras: [ll], iface: 'USB 10/100/1000 LAN', accountId: 'acc' });
+  expect(read[0].serial).toBe('ACCC8E123456');
+  invoke.mockReset();
+  expect(await readLinkLocal(others, 'en7', '')).toEqual([]);
+  expect(invoke).not.toHaveBeenCalled();
+  await readLinkLocal([ll], 'en7', '');
+  expect(invoke).toHaveBeenLastCalledWith('cmd_read_link_local', { cameras: [ll], iface: 'en7', accountId: null });
 });

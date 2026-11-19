@@ -53,3 +53,8 @@
     <button class="mini" onclick={onFrame}>{$_('network.frame')}</button>
   </td>
 </tr>
+
+<style>
+  /* Le message d'une action se lit en entier, sur plusieurs lignes au besoin. */
+  .res { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+</style>

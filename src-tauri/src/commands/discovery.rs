@@ -10,10 +10,11 @@ use lenscout_core::discovery::scanner::{
 use lenscout_core::discovery::sadp::SadpProbe;
 use lenscout_core::http_client::ReqwestCameraHttp;
 use lenscout_core::accounts::{AccountBook, KnownCamera, unix_now};
-use lenscout_core::actions::{SeenState, row_key};
+use lenscout_core::actions::{ActionError, SeenState, read_link_local, row_key};
 use lenscout_core::interfaces::{get_interface_details, list_interfaces_up};
 use lenscout_core::model::{Activation, Addressing, Camera, Family};
 use lenscout_core::presence;
+use lenscout_core::temp_ip::{SystemElevator, joined_scope, scan_address, with_temp_ip};
 use lenscout_core::transport::Datagram;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
@@ -109,6 +110,21 @@ impl ScanState {
         }
     }
 
+    /// Lignes relues après le scan (`cmd_read_link_local`) sur l'interface
+    /// de ce scan : leur état lu remplace celui du scan. Une ligne que le scan
+    /// n'a pas listée n'entre pas.
+    pub fn refresh(&self, iface: &str, cams: &[Camera]) {
+        let mut last = self.last_seen.lock().unwrap();
+        if last.iface.as_deref() != Some(iface) {
+            return;
+        }
+        for c in cams {
+            if let Some(st) = last.states.get_mut(&row_key(c)) {
+                *st = (c.ip, c.activation);
+            }
+        }
+    }
+
     /// N'écrit que si `generation` est encore le scan en cours.
     fn record(&self, generation: u64, ev: &ScanEvent) {
         let mut last = self.last_seen.lock().unwrap();
@@ -183,22 +199,27 @@ fn keep_opened<T>(opened: Vec<(impl std::fmt::Display, std::io::Result<T>)>, log
 /// Envoi témoin d'un scan refusé : depuis l'adresse principale vers sa
 /// passerelle, seulement si le scan partait de l'adresse d'un compte.
 fn control_target(base: &ScanInterface, scanned: &ScanInterface, gateway: Option<Ipv4Addr>) -> Option<(Ipv4Addr, Ipv4Addr)> {
-    (scanned.ip != base.ip).then_some(())?;
+    (scanned.ip != base.ip && !base.is_unaddressed()).then_some(())?;
     Some((base.ip, gateway?))
 }
 
-/// Erreurs : codes stables (`iface_unknown`, `iface_no_ipv4`, `no_socket`,
+/// Erreurs : codes stables (`iface_unknown`, `no_socket`,
 /// `local_network_denied` — tous les envois de découverte refusés par le
 /// système, permission « Réseau local » de macOS —, `account_address_denied`
 /// — refusés depuis l'adresse du compte seulement, l'envoi témoin depuis
 /// l'adresse principale passant (voir `presence::denial_code`) —,
-/// `internal`), traduits par le front.
+/// `elevation_refused`, `temp_ip_busy`, `temp_ip_failed`, `pc_ip_not_present`
+/// — interface sans adresse, voir plus bas —, `internal`), traduits par le front.
 ///
 /// Lance un scan et rend la main à sa fin. Un scan déjà en cours est annulé
 /// d'abord. L'interface vient du front : elle doit figurer parmi les liens
 /// actifs. `account_id` : le compte retenu au sélecteur de réseau ; les
 /// caméras listées dans son réseau entrent dans sa mémoire à la fin du scan
 /// (absent, DHCP : aucune).
+///
+/// Interface sans adresse (IPv4 coupé, pas de bail) et sans compte posé :
+/// rien ne pourrait partir ; une adresse en lien local est posée le temps du
+/// scan, comme une IP temporaire (une caméra neuve branchée en direct y est).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_scan_start(
@@ -208,6 +229,7 @@ pub async fn cmd_scan_start(
     state: State<'_, ScanState>,
     join: State<'_, super::join::JoinState>,
     accounts: State<'_, Mutex<AccountBook>>,
+    journal: State<'_, super::configure::TempIpJournal>,
 ) -> Result<(), String> {
     let token = CancellationToken::new();
     if let Some(old) = state.cancel.lock().unwrap().replace(token.clone()) {
@@ -221,62 +243,90 @@ pub async fn cmd_scan_start(
         }
         let details = get_interface_details(&name);
         let gateway = details.gateway.as_deref().and_then(|g| g.trim().parse::<Ipv4Addr>().ok());
-        ScanInterface::from_details(&name, &details)
-            .map(|i| (i, gateway))
-            .ok_or_else(|| "iface_no_ipv4".to_string())
+        Ok((ScanInterface::from_details_or_unaddressed(&name, &details), gateway))
     })
     .await
     .map_err(|_| "internal".to_string())??;
     // Dans le réseau d'un compte : le scan part de l'adresse posée.
     let scan_iface = join.scope(base.clone());
-    let control = control_target(&base, &scan_iface, gateway);
-
-    // Les sockets s'ouvrent ici, dans le runtime, pas dans un thread bloquant :
-    // tokio doit les enregistrer.
-    let probes = probes(&scan_iface);
-    if probes.is_empty() {
-        return Err("no_socket".to_string());
-    }
-
-    let generation = state.begin(&scan_iface);
-    let (tx, mut rx) = mpsc::channel(256);
-    // Mode routé : le réseau du compte, balayé en HTTP à travers le routeur.
-    let routed = join.routed_on(&base.name).map(|r| RoutedSweep {
-        targets: routed_targets(r.probe, r.mask),
-        http: Arc::new(ReqwestCameraHttp::new(ROUTED_TIMEOUT)),
-    });
-    let cfg = ScanConfig { iface: scan_iface, listen: LISTEN, routed };
-    let http = Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT));
-    let scan = tokio::spawn(run_scan(probes, http, Arc::new(SystemArp), cfg, tx, token.clone()));
-    let mut found = Sightings::default();
-    while let Some(ev) = rx.recv().await {
-        state.record(generation, &ev);
-        found.keep(&ev);
-        // Interne : l'adresse entendue ne part pas au webview.
-        if matches!(ev, ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. } | ScanEvent::HeardRouted { .. }) {
-            continue;
-        }
-        // Webview disparue : plus personne n'écoute, on arrête le scan.
-        if on_event.send(ev).is_err() {
-            token.cancel();
-            break;
-        }
-    }
-    let summary = scan.await.unwrap_or_default();
-    // Même un scan interrompu a vu ce qu'il a listé.
-    if let Some(id) = account_id.as_deref().filter(|id| !id.is_empty()) {
-        super::accounts::remember_cameras(&accounts, id, found.cameras(unix_now()), true);
-    }
-    let witness = match control.filter(|_| summary.local_network_denied) {
-        Some((from, gw)) => tauri::async_runtime::spawn_blocking(move || presence::control_send(from, gw)).await.ok(),
-        None => None,
+    let run = Scan { base: &base, gateway, account_id: account_id.as_deref(), on_event: &on_event, state: &state, join: &join, accounts: &accounts, token };
+    let Some(t) = scan_address(&scan_iface, uuid::Uuid::new_v4().as_u128() as u64) else {
+        return run.from(scan_iface).await;
     };
-    match presence::denial_code(summary.local_network_denied, witness.as_ref()) {
-        Some(code) => {
-            lenscout_core::debug_log::log(&format!("scan : envois refusés, témoin {witness:?} → {code}"));
-            Err(code.to_string())
+    let scoped = joined_scope(scan_iface, Some(&t));
+    with_temp_ip(&SystemElevator, &journal.0, &t, &iface, || async {
+        super::join::wait_present(&t, presence::address_present).await?;
+        run.from(scoped).await
+    })
+    .await
+    .map_err(super::join::temp_ip_code)?
+}
+
+/// Un scan, une fois son adresse de départ connue.
+struct Scan<'a> {
+    /// L'interface telle que lue (adresse principale, ou sans adresse).
+    base: &'a ScanInterface,
+    gateway: Option<Ipv4Addr>,
+    account_id: Option<&'a str>,
+    on_event: &'a Channel<ScanEvent>,
+    state: &'a ScanState,
+    join: &'a super::join::JoinState,
+    accounts: &'a Mutex<AccountBook>,
+    token: CancellationToken,
+}
+
+impl Scan<'_> {
+    async fn from(&self, scan_iface: ScanInterface) -> Result<(), String> {
+        let (state, token) = (self.state, self.token.clone());
+        let control = control_target(self.base, &scan_iface, self.gateway);
+
+        // Les sockets s'ouvrent ici, dans le runtime, pas dans un thread bloquant :
+        // tokio doit les enregistrer.
+        let probes = probes(&scan_iface);
+        if probes.is_empty() {
+            return Err("no_socket".to_string());
         }
-        None => Ok(()),
+
+        let generation = state.begin(&scan_iface);
+        let (tx, mut rx) = mpsc::channel(256);
+        // Mode routé : le réseau du compte, balayé en HTTP à travers le routeur.
+        let routed = self.join.routed_on(&self.base.name).map(|r| RoutedSweep {
+            targets: routed_targets(r.probe, r.mask),
+            http: Arc::new(ReqwestCameraHttp::new(ROUTED_TIMEOUT)),
+        });
+        let cfg = ScanConfig { iface: scan_iface, listen: LISTEN, routed };
+        let http = Arc::new(ReqwestCameraHttp::new(HTTP_TIMEOUT));
+        let scan = tokio::spawn(run_scan(probes, http, Arc::new(SystemArp), cfg, tx, token.clone()));
+        let mut found = Sightings::default();
+        while let Some(ev) = rx.recv().await {
+            state.record(generation, &ev);
+            found.keep(&ev);
+            // Interne : l'adresse entendue ne part pas au webview.
+            if matches!(ev, ScanEvent::Heard { .. } | ScanEvent::HeardSadp { .. } | ScanEvent::HeardRouted { .. }) {
+                continue;
+            }
+            // Webview disparue : plus personne n'écoute, on arrête le scan.
+            if self.on_event.send(ev).is_err() {
+                token.cancel();
+                break;
+            }
+        }
+        let summary = scan.await.unwrap_or_default();
+        // Même un scan interrompu a vu ce qu'il a listé.
+        if let Some(id) = self.account_id.filter(|id| !id.is_empty()) {
+            super::accounts::remember_cameras(self.accounts, id, found.cameras(unix_now()), true);
+        }
+        let witness = match control.filter(|_| summary.local_network_denied) {
+            Some((from, gw)) => tauri::async_runtime::spawn_blocking(move || presence::control_send(from, gw)).await.ok(),
+            None => None,
+        };
+        match presence::denial_code(summary.local_network_denied, witness.as_ref()) {
+            Some(code) => {
+                lenscout_core::debug_log::log(&format!("scan : envois refusés, témoin {witness:?} → {code}"));
+                Err(code.to_string())
+            }
+            None => Ok(()),
+        }
     }
 }
 
@@ -337,6 +387,46 @@ pub async fn cmd_read_addressing(
     Ok(read.into_iter().map(|(ip, addressing)| AddressingOut { ip, addressing }).collect())
 }
 
+/// Code d'un échec de `read_link_local` : celui de l'IP temporaire.
+fn link_local_code(e: &ActionError) -> String {
+    match e {
+        ActionError::ElevationRefused { .. } => "elevation_refused",
+        ActionError::TempIpBusy => "temp_ip_busy",
+        ActionError::TempIpLeft { .. } => "temp_ip_left",
+        _ => "temp_ip_failed",
+    }
+    .to_string()
+}
+
+/// Erreurs : codes stables (`elevation_refused`, `temp_ip_busy`,
+/// `temp_ip_failed`, `temp_ip_left`, et ceux de `build_context`).
+///
+/// Après un scan : les Axis en lien local hors du sous-réseau de
+/// l'interface, que ce scan a entendues (branchées en direct), lues sous une
+/// IP temporaire (`read_link_local`) : n° de série, firmware, état ; avec le
+/// compte retenu, l'adressage des activées. Rend les lignes complétées ;
+/// l'état lu remplace celui du scan. Un compte illisible : lu sans lui.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_read_link_local(
+    cameras: Vec<Camera>,
+    iface: String,
+    account_id: Option<String>,
+    scan: State<'_, ScanState>,
+    journal: State<'_, super::configure::TempIpJournal>,
+    join: State<'_, super::join::JoinState>,
+    accounts: State<'_, Mutex<AccountBook>>,
+) -> Result<Vec<Camera>, String> {
+    let creds = account_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .and_then(|id| super::accounts::credentials_for(&accounts, id).ok());
+    let ctx = super::configure::build_context(iface, &cameras, &scan, &journal.0, &join).await?;
+    let read = read_link_local(&ctx, &cameras, creds.as_ref()).await.map_err(|e| link_local_code(&e))?;
+    scan.refresh(&ctx.iface.name, &read);
+    Ok(read)
+}
+
 /// L'URL est reconstruite ici : le front ne fournit qu'une IPv4 et un port,
 /// jamais un schéma ni un hôte qui ouvrirait autre chose qu'une caméra.
 fn camera_web_url(ip: &str, port: u16) -> Result<String, String> {
@@ -391,6 +481,32 @@ mod tests {
         // Scan sur l'adresse principale : pas de témoin, le refus vaut pour l'app.
         assert_eq!(control_target(&base, &base, Some(gw)), None);
         assert_eq!(control_target(&base, &joined, None), None);
+    }
+
+    /// Pas d'envoi témoin depuis une interface sans adresse.
+    #[test]
+    fn pas_de_temoin_depuis_une_interface_sans_adresse() {
+        let none = ScanInterface { ip: Ipv4Addr::UNSPECIFIED, mask: Ipv4Addr::BROADCAST, ..eth0() };
+        let joined = ScanInterface { ip: "169.254.7.7".parse().unwrap(), ..eth0() };
+        assert_eq!(control_target(&none, &joined, Some("10.0.50.1".parse().unwrap())), None);
+    }
+
+    /// Une caméra lue par l'IP temporaire après le scan : son état lu remplace
+    /// celui du scan, sur la même interface seulement.
+    #[test]
+    fn l_etat_lu_par_l_ip_temporaire_remplace_celui_du_scan() {
+        let state = ScanState::default();
+        let g = state.begin(&eth0());
+        let mut cam = axis("169.254.100.17", "AC:CC:8E:00:00:17", Activation::Unknown);
+        state.record(g, &ScanEvent::Upsert { camera: cam.clone() });
+        cam.activation = Activation::New;
+        state.refresh("wlan0", std::slice::from_ref(&cam));
+        assert_eq!(state.seen().states[0].activation, Activation::Unknown);
+        state.refresh("eth0", std::slice::from_ref(&cam));
+        assert_eq!(state.seen().states[0].activation, Activation::New);
+        // Une ligne que le scan n'a pas listée n'entre pas.
+        state.refresh("eth0", &[axis("169.254.100.18", "AC:CC:8E:00:00:18", Activation::New)]);
+        assert_eq!(state.seen().states.len(), 1);
     }
 
     #[test]

@@ -36,6 +36,18 @@ export function readAddressing(list: Camera[], accountId: string): Promise<Addre
   return invoke<AddressingRead[]>('cmd_read_addressing', { cameras, accountId });
 }
 
+/**
+ * Après un scan : les Axis en lien local (169.254) que le scan n'a pas pu
+ * lire (branchées en direct, hors du sous-réseau de l'interface), lues par
+ * Rust sous une IP temporaire ; avec le compte retenu, l'adressage aussi.
+ * Rend les lignes complétées ; rien à lire, rien ne part.
+ */
+export function readLinkLocal(list: Camera[], iface: string, accountId: string): Promise<Camera[]> {
+  const cameras = list.filter((c) => c.family === 'axis' && c.ip.startsWith('169.254.') && !c.serial);
+  if (!iface || cameras.length === 0) return Promise.resolve([]);
+  return invoke<Camera[]>('cmd_read_link_local', { cameras, iface, accountId: accountId || null });
+}
+
 /** Colonne MAC : celle vue sur le réseau, sinon celle que la caméra déclare (marquée). */
 /** Marque et modèle, sans la marque en double quand le modèle la porte déjà
  * (« AXIS P4705-PLVE » rendu par une Axis, pas « AXIS AXIS P4705-PLVE »). */

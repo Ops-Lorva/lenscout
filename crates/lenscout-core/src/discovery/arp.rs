@@ -45,6 +45,22 @@ impl ScanInterface {
             mask,
         })
     }
+
+    /// `from_details`, et sans adresse IPv4 (IPv4 coupé, bail DHCP pas encore
+    /// obtenu) l'interface quand même, en `0.0.0.0/32` : rien ne lui est dans
+    /// le sous-réseau, une adresse posée (compte, IP temporaire) la remplace.
+    pub fn from_details_or_unaddressed(selected: &str, details: &InterfaceDetails) -> ScanInterface {
+        Self::from_details(selected, details).unwrap_or_else(|| ScanInterface {
+            name: details.bsd_name.clone().unwrap_or_else(|| selected.to_string()),
+            ip: Ipv4Addr::UNSPECIFIED,
+            mask: Ipv4Addr::BROADCAST,
+        })
+    }
+
+    /// Sans adresse IPv4 (`from_details_or_unaddressed`).
+    pub fn is_unaddressed(&self) -> bool {
+        self.ip.is_unspecified()
+    }
 }
 
 /// Hôtes à réveiller : le sous-réseau de l'interface (plafonné à un /22), sans
@@ -381,6 +397,31 @@ mod tests {
         assert_eq!(ScanInterface::from_details("eth0", &details), None);
         details.subnet = None;
         assert_eq!(ScanInterface::from_details("eth0", &details), None);
+    }
+
+    /// IPv4 coupé, bail DHCP pas encore obtenu : l'interface reste
+    /// utilisable, sans adresse ; tout lui est hors sous-réseau.
+    #[test]
+    fn une_interface_sans_adresse_reste_utilisable_sans_adresse() {
+        let mut details = InterfaceDetails {
+            name: "USB 10/100/1000 LAN".to_string(),
+            ip: None,
+            subnet: None,
+            bsd_name: Some("en7".to_string()),
+            ..Default::default()
+        };
+        let none = ScanInterface::from_details_or_unaddressed("USB 10/100/1000 LAN", &details);
+        assert_eq!(none.name, "en7");
+        assert!(none.is_unaddressed());
+        assert!(crate::temp_ip::needs_temp_ip(none.ip, none.mask, Ipv4Addr::new(169, 254, 100, 17)));
+        assert!(crate::temp_ip::needs_temp_ip(none.ip, none.mask, Ipv4Addr::new(192, 168, 0, 90)));
+        assert!(sweep_hosts(&none).is_empty());
+        // Auto-assignée en 169.254 : une adresse comme une autre.
+        details.ip = Some("169.254.33.4".to_string());
+        details.subnet = Some("255.255.0.0".to_string());
+        let ll = ScanInterface::from_details_or_unaddressed("USB 10/100/1000 LAN", &details);
+        assert!(!ll.is_unaddressed());
+        assert_eq!((ll.ip, ll.mask), (Ipv4Addr::new(169, 254, 33, 4), Ipv4Addr::new(255, 255, 0, 0)));
     }
 
     #[test]

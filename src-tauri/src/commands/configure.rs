@@ -66,7 +66,7 @@ pub enum ResetModeDto {
     Full,
 }
 
-/// Erreurs : codes stables (`bad_action`, `iface_unknown`, `iface_no_ipv4`,
+/// Erreurs : codes stables (`bad_action`, `iface_unknown`,
 /// `not_found`, `secret_missing`, `internal`), traduits par le front. Les
 /// erreurs par caméra sont dans les `ActionResult`.
 pub(crate) fn to_action(dto: ActionDto) -> Result<Action, String> {
@@ -131,8 +131,8 @@ pub(crate) async fn build_context(
         if !up.contains(&iface) {
             return Err("iface_unknown".to_string());
         }
-        let scan_iface = ScanInterface::from_details(&iface, &get_interface_details(&iface))
-            .ok_or_else(|| "iface_no_ipv4".to_string())?;
+        // Sans adresse : tout est hors sous-réseau, une IP temporaire joint la caméra.
+        let scan_iface = ScanInterface::from_details_or_unaddressed(&iface, &get_interface_details(&iface));
         let scan_iface = lenscout_core::temp_ip::joined_scope(scan_iface, held.as_ref());
         // Les autres interfaces ne servent qu'au chemin hors sous-réseau :
         // leurs détails coûtent un processus chacune, on ne les lit qu'alors.

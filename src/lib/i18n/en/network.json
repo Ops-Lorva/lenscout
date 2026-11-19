@@ -25,7 +25,6 @@
   "frame": "Frame",
   "error": {
     "iface_unknown": "Unknown interface",
-    "iface_no_ipv4": "Interface has no IPv4 address",
     "no_socket": "No discovery socket",
     "bad_ip": "Invalid IPv4 address",
     "bad_port": "Invalid port",

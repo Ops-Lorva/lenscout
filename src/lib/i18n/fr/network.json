@@ -25,7 +25,6 @@
   "frame": "Cadrer",
   "error": {
     "iface_unknown": "Interface inconnue",
-    "iface_no_ipv4": "Interface sans adresse IPv4",
     "no_socket": "Aucun socket de découverte",
     "bad_ip": "Adresse IPv4 invalide",
     "bad_port": "Port invalide",
