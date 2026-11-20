@@ -6,6 +6,16 @@ All notable changes to LenScout are documented here (EN/FR).
 Le format suit [Keep a Changelog](https://keepachangelog.com/), avec une section
 `### English` et `### Français` par version. SemVer.
 
+## [0.2.7] - 2026-11-20
+
+### English
+
+- **New "Reset & rescan" button on the Site tab**: clears the account's whole surveyed inventory in one click (instead of forgetting each device by hand), then relaunches a survey. Two-click confirmation; manual IP reservations are kept.
+
+### Français
+
+- **Nouveau bouton « Repartir à zéro » dans l'onglet Site** : vide d'un coup tout l'inventaire relevé du compte (au lieu d'oublier chaque appareil à la main), puis relance un relevé. Confirmation en deux clics ; les réservations d'IP manuelles sont conservées.
+
 ## [0.2.6] - 2026-11-19
 
 ### English
