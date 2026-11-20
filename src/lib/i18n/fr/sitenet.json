@@ -16,6 +16,8 @@
   "absent": "Absent au dernier relevé",
   "forget": "Oublier",
   "confirmForget": "Confirmer",
+  "reset": "Repartir à zéro",
+  "confirmReset": "Tout supprimer et re-scanner ?",
   "close": "Fermer",
   "col": {
     "ip": "IP",

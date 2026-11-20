@@ -1359,6 +1359,19 @@ impl AccountBook {
         Ok(())
     }
 
+    /// Vide tout l'inventaire relevé du compte et oublie la date du dernier
+    /// relevé : on repart à zéro avant un nouveau scan (les réservations
+    /// manuelles sont conservées). `NotFound` : compte inconnu.
+    pub fn forget_all_devices(&mut self, id: &str) -> Result<(), AccountError> {
+        let index = self.index_of(id)?;
+        let mut next = self.entries.clone();
+        next[index].devices.clear();
+        next[index].surveyed_at = None;
+        self.write(&next)?;
+        self.entries = next;
+        Ok(())
+    }
+
     /// Appareils relevés vus depuis moins de `STALE_DEVICE_SECS` et adresses
     /// réservées comprises.
     pub fn fill(&self, id: &str, own: &[Ipv4Addr]) -> Result<Option<NetworkFill>, AccountError> {
@@ -1940,6 +1953,19 @@ mod tests {
         assert!(book.devices(&acc.id).unwrap().0.is_empty());
         assert!(matches!(book.forget_device(&acc.id, "10.0.8.31"), Err(AccountError::NotFound)));
         assert!(matches!(book.forget_device("zzz", "x"), Err(AccountError::NotFound)));
+    }
+
+    #[test]
+    fn forget_all_devices_clears_inventory_and_survey_date() {
+        let (mut book, _fx) = empty_book();
+        let acc = book.create("Site", "root", pwd(PWD), site()).unwrap();
+        book.record_survey(&acc.id, vec![device("10.0.8.30", None, 1), device("10.0.8.31", None, 1)], 9).unwrap();
+        assert_eq!(book.devices(&acc.id).unwrap().1, Some(9));
+        book.forget_all_devices(&acc.id).unwrap();
+        let (devices, surveyed_at) = book.devices(&acc.id).unwrap();
+        assert!(devices.is_empty());
+        assert_eq!(surveyed_at, None);
+        assert!(matches!(book.forget_all_devices("zzz"), Err(AccountError::NotFound)));
     }
 
     #[test]

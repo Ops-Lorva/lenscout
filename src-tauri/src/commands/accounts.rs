@@ -374,6 +374,10 @@ pub(crate) fn account_forget_device(book: &mut AccountBook, id: &str, key: &str)
     book.forget_device(id, key).map_err(code)
 }
 
+pub(crate) fn account_forget_all_devices(book: &mut AccountBook, id: &str) -> Result<(), String> {
+    book.forget_all_devices(id).map_err(code)
+}
+
 pub(crate) fn account_reservations(book: &AccountBook, id: &str) -> Result<Vec<ReservedIp>, String> {
     book.reservations(id).map_err(code)
 }
@@ -499,6 +503,13 @@ pub async fn cmd_account_devices(id: String, state: State<'_, Mutex<AccountBook>
 pub async fn cmd_account_forget_device(id: String, key: String, state: State<'_, Mutex<AccountBook>>) -> Result<(), String> {
     let mut book = lock(&state)?;
     account_forget_device(&mut book, &id, &key)
+}
+
+/// Oublie tout l'inventaire relevé du compte (repart à zéro avant un re-scan).
+#[tauri::command]
+pub async fn cmd_account_forget_all_devices(id: String, state: State<'_, Mutex<AccountBook>>) -> Result<(), String> {
+    let mut book = lock(&state)?;
+    account_forget_all_devices(&mut book, &id)
 }
 
 /// Adresses réservées à la main dans le réseau du compte.

@@ -5,7 +5,7 @@
   import { errorKey } from '#lib/api/errors.ts';
   import { markPingWorked, pingWorked, withoutPingUnavailable } from '#lib/api/freeIps.ts';
   import { activeAddress, joined } from '#lib/api/net.ts';
-  import { accountDevices, cancelSurvey, nextSurveyRun, onAccountNetwork, startSurvey, type SeenDevice } from '#lib/api/siteNet.ts';
+  import { accountDevices, cancelSurvey, forgetAllDevices, nextSurveyRun, onAccountNetwork, startSurvey, type SeenDevice } from '#lib/api/siteNet.ts';
   import { cameras } from '#lib/stores/cameras.ts';
   import SiteDevices from './SiteDevices.svelte';
 
@@ -27,6 +27,7 @@
   let run = $state<{ id: number; done: number; total: number } | null>(null);
   let truncated = $state(false);
   let error = $state('');
+  let resetting = $state(false);
 
   let details = $state<{ ip: string | null; subnet: string | null } | null>(null);
   $effect(() => {
@@ -53,11 +54,35 @@
     surveyedAt = null;
     error = '';
     truncated = false;
+    resetting = false;
     void load(id);
   });
 
+  // Repart à zéro : oublie tout l'inventaire relevé (évite d'« oublier »
+  // chaque appareil à la main) puis relance un relevé. Clic en deux temps
+  // pour confirmer la suppression.
+  async function resetAndSurvey() {
+    if (run) return;
+    if (!resetting) { resetting = true; return; }
+    resetting = false;
+    const id = accountId;
+    try {
+      await forgetAllDevices(id);
+    } catch (e) {
+      if (accountId === id) error = `free.${errorKey(e)}`;
+      return;
+    }
+    if (accountId !== id) return;
+    devices = [];
+    surveyedAt = null;
+    truncated = false;
+    onDone();
+    await survey();
+  }
+
   async function survey() {
     if (run) return;
+    resetting = false;
     const id = nextSurveyRun();
     const account = accountId;
     run = { id, done: 0, total: 0 };
@@ -111,6 +136,9 @@
     {#if truncated}<span class="warn">{$_('sitenet.truncated')}</span>{/if}
     <span class="grow"></span>
     {#if !here}<span class="dim-t off">{$_('sitenet.offNetwork')}</span>{/if}
+    {#if surveyedAt !== null || devices.length > 0}
+      <button class="mini" class:confirm={resetting} type="button" onclick={resetAndSurvey} disabled={!here || !iface} title={$_('sitenet.reset')}>{resetting ? $_('sitenet.confirmReset') : $_('sitenet.reset')}</button>
+    {/if}
     <button class="mini" type="button" onclick={survey} disabled={!here || !iface}>{$_('sitenet.survey')}</button>
   {/if}
 </div>
@@ -125,6 +153,7 @@
   .survey { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
   .survey .grow { flex: 1; }
   .survey .warn { color: var(--warn); }
+  .survey .mini.confirm { color: var(--err); border-color: var(--err); }
   .off { font-size: 12px; }
   .err { margin: 0; color: var(--err); font-size: 12.5px; }
 </style>

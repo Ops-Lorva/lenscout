@@ -16,6 +16,8 @@
   "absent": "Missing from the last survey",
   "forget": "Forget",
   "confirmForget": "Confirm",
+  "reset": "Reset & rescan",
+  "confirmReset": "Delete all & rescan?",
   "close": "Close",
   "col": {
     "ip": "IP",

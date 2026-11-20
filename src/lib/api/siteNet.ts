@@ -52,6 +52,9 @@ export const accountDevices = (id: string) => invoke<AccountDevices>('cmd_accoun
 /** `key` : la MAC, sinon l'IP (`deviceKey`). */
 export const forgetDevice = (id: string, key: string) => invoke<void>('cmd_account_forget_device', { id, key });
 
+/** Oublie tout l'inventaire relevé du compte (repart à zéro avant un re-scan). */
+export const forgetAllDevices = (id: string) => invoke<void>('cmd_account_forget_all_devices', { id });
+
 /** Clé d'un appareil, comme Rust : la MAC en majuscules, sinon l'IP. */
 export const deviceKey = (d: SeenDevice): string => d.mac?.toUpperCase() ?? d.ip;
 
